@@ -263,6 +263,33 @@ DataReadErrorCode OpenAppModifier::load(PlugIn &plugIn, const PlugInModifier &pr
 	return kDataReadErrorNone;
 }
 
+DataReadErrorCode FileModifier::load(PlugIn &plugIn, const PlugInModifier &prefix, DataReader &reader) {
+	if (prefix.plugInRevision != 2)
+		return kDataReadErrorUnsupportedRevision;
+
+	if (!loadV2RevisionPrefix(prefix, reader) || !readWhen.load(reader) || !writeWhen.load(reader) || !filePath.load(reader)
+		|| !lineEnding.load(reader) || !macFileType.load(reader) || !macCreator.load(reader) || !unknown1Int.load(reader))
+		return kDataReadErrorReadFailed;
+
+	return kDataReadErrorNone;
+}
+
+PointMotionModifier::PointMotionModifier() : unknown1(0), unknown5(0) {
+}
+
+DataReadErrorCode PointMotionModifier::load(PlugIn &plugIn, const PlugInModifier &prefix, DataReader &reader) {
+	if (prefix.plugInRevision != 1)
+		return kDataReadErrorUnsupportedRevision;
+
+	if (!loadV2RevisionPrefix(prefix, reader) || !startWhen.load(reader) || !stopWhen.load(reader) || !destination.load(reader)
+		|| !reader.readU32(unknown1) || !unknown2Float.load(reader) || !unknown3Float.load(reader) || !unknown4Int.load(reader)
+		|| !reader.readU16(unknown5) || !unknown6Event.load(reader) || !unknown7Label.load(reader) || !unknown8VarRef.load(reader)
+		|| !unknown9Int.load(reader))
+		return kDataReadErrorReadFailed;
+
+	return kDataReadErrorNone;
+}
+
 } // End of namespace Standard
 
 } // End of namespace Data

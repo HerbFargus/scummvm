@@ -91,6 +91,75 @@ static Common::String dlgMgrString(const Data::PlugInTypeTaggedValue &value) {
 	return value.value.asString;
 }
 
+bool KWSmackerModifier::load(const PlugInModifierLoaderContext &context, const Data::KW::KWSmackerModifier &data) {
+	if (!loadDlgMgrEvent(_event1, data.playWhen) || !loadDlgMgrEvent(_event2, data.stopWhen))
+		return false;
+
+	return true;
+}
+
+bool KWSmackerModifier::respondsToEvent(const Event &evt) const {
+	return _event1.respondsTo(evt) || _event2.respondsTo(evt);
+}
+
+VThreadState KWSmackerModifier::consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) {
+	warning("KWSmacker modifier '%s' is not implemented", getName().c_str());
+	return kVThreadReturn;
+}
+
+Common::SharedPtr<Modifier> KWSmackerModifier::shallowClone() const {
+	return Common::SharedPtr<Modifier>(new KWSmackerModifier(*this));
+}
+
+const char *KWSmackerModifier::getDefaultName() const {
+	return "KWSmacker";
+}
+
+bool EditCtrlModifier::load(const PlugInModifierLoaderContext &context, const Data::KW::EditCtrlModifier &data) {
+	return true;
+}
+
+bool EditCtrlModifier::respondsToEvent(const Event &evt) const {
+	return _event1.respondsTo(evt) || _event2.respondsTo(evt);
+}
+
+VThreadState EditCtrlModifier::consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) {
+	warning("EditCtrl modifier '%s' is not implemented", getName().c_str());
+	return kVThreadReturn;
+}
+
+Common::SharedPtr<Modifier> EditCtrlModifier::shallowClone() const {
+	return Common::SharedPtr<Modifier>(new EditCtrlModifier(*this));
+}
+
+const char *EditCtrlModifier::getDefaultName() const {
+	return "EditCtrl";
+}
+
+bool GameModifier::load(const PlugInModifierLoaderContext &context, const Data::KW::GameModifier &data) {
+	if (!loadDlgMgrEvent(_event1, data.enableWhen) || !loadDlgMgrEvent(_event2, data.disableWhen))
+		return false;
+
+	return true;
+}
+
+bool GameModifier::respondsToEvent(const Event &evt) const {
+	return _event1.respondsTo(evt) || _event2.respondsTo(evt);
+}
+
+VThreadState GameModifier::consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) {
+	warning("Game-specific modifier '%s' is not implemented", getName().c_str());
+	return kVThreadReturn;
+}
+
+Common::SharedPtr<Modifier> GameModifier::shallowClone() const {
+	return Common::SharedPtr<Modifier>(new GameModifier(*this));
+}
+
+const char *GameModifier::getDefaultName() const {
+	return "Game-specific";
+}
+
 DlgMgrServerModifier::DlgMgrServerModifier() {
 }
 
@@ -204,7 +273,8 @@ const char *DlgMgrClientModifier::getDefaultName() const {
 }
 
 KnowWonderPlugIn::KnowWonderPlugIn()
-	: _strUtilModifierFactory(this), _dlgMgrServerModifierFactory(this), _dlgMgrClientModifierFactory(this) {
+	: _strUtilModifierFactory(this), _dlgMgrServerModifierFactory(this), _dlgMgrClientModifierFactory(this),
+	  _kwSmackerModifierFactory(this), _editCtrlModifierFactory(this), _gameModifierFactory(this) {
 }
 
 KnowWonderPlugIn::~KnowWonderPlugIn() {
@@ -214,6 +284,15 @@ void KnowWonderPlugIn::registerModifiers(IPlugInModifierRegistrar *registrar) co
 	registrar->registerPlugInModifier("StrUtil", &_strUtilModifierFactory);
 	registrar->registerPlugInModifier("DlgMgrServer", &_dlgMgrServerModifierFactory);
 	registrar->registerPlugInModifier("DlgMgrClient", &_dlgMgrClientModifierFactory);
+	registrar->registerPlugInModifier("KWSmacker", &_kwSmackerModifierFactory);
+	registrar->registerPlugInModifier("EditCtrl", &_editCtrlModifierFactory);
+
+	// Mini-game modifiers from separate Magic School Bus plug-ins
+	static const char *const gameModifierNames[] = {
+		"AntMaze", "Art", "Balloon", "Eyefollower", "LLava", "Lander", "RoverRace", "SmkJump", "Sub", "SvTown", "WhaleMaze"
+	};
+	for (const char *name : gameModifierNames)
+		registrar->registerPlugInModifier(name, &_gameModifierFactory);
 }
 
 } // End of namespace KW

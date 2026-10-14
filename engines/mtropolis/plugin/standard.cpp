@@ -1838,6 +1838,58 @@ const char *OpenAppModifier::getDefaultName() const {
 	return "Open App Modifier"; // ???
 }
 
+bool FileModifier::load(const PlugInModifierLoaderContext &context, const Data::Standard::FileModifier &data) {
+	if (data.readWhen.type == Data::PlugInTypeTaggedValue::kEvent && !_event1.load(data.readWhen.value.asEvent))
+		return false;
+	if (data.writeWhen.type == Data::PlugInTypeTaggedValue::kEvent && !_event2.load(data.writeWhen.value.asEvent))
+		return false;
+
+	return true;
+}
+
+bool FileModifier::respondsToEvent(const Event &evt) const {
+	return _event1.respondsTo(evt) || _event2.respondsTo(evt);
+}
+
+VThreadState FileModifier::consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) {
+	warning("File modifier '%s' is not implemented", getName().c_str());
+	return kVThreadReturn;
+}
+
+Common::SharedPtr<Modifier> FileModifier::shallowClone() const {
+	return Common::SharedPtr<Modifier>(new FileModifier(*this));
+}
+
+const char *FileModifier::getDefaultName() const {
+	return "File";
+}
+
+bool PointMotionModifier::load(const PlugInModifierLoaderContext &context, const Data::Standard::PointMotionModifier &data) {
+	if (data.startWhen.type == Data::PlugInTypeTaggedValue::kEvent && !_event1.load(data.startWhen.value.asEvent))
+		return false;
+	if (data.stopWhen.type == Data::PlugInTypeTaggedValue::kEvent && !_event2.load(data.stopWhen.value.asEvent))
+		return false;
+
+	return true;
+}
+
+bool PointMotionModifier::respondsToEvent(const Event &evt) const {
+	return _event1.respondsTo(evt) || _event2.respondsTo(evt);
+}
+
+VThreadState PointMotionModifier::consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) {
+	warning("Point Motion modifier '%s' is not implemented", getName().c_str());
+	return kVThreadReturn;
+}
+
+Common::SharedPtr<Modifier> PointMotionModifier::shallowClone() const {
+	return Common::SharedPtr<Modifier>(new PointMotionModifier(*this));
+}
+
+const char *PointMotionModifier::getDefaultName() const {
+	return "Point Motion";
+}
+
 StandardPlugInHacks::StandardPlugInHacks() : allowGarbledListModData(false) {
 }
 
@@ -1853,7 +1905,9 @@ StandardPlugIn::StandardPlugIn()
 	, _printModifierFactory(this)
 	, _navigateModifierFactory(this)
 	, _openTitleModifierFactory(this)
-	, _openAppModifierFactory(this) {
+	, _openAppModifierFactory(this)
+	, _fileModifierFactory(this)
+	, _pointMotionModifierFactory(this) {
 }
 
 StandardPlugIn::~StandardPlugIn() {
@@ -1873,6 +1927,8 @@ void StandardPlugIn::registerModifiers(IPlugInModifierRegistrar *registrar) cons
 	registrar->registerPlugInModifier("Navigate", &_navigateModifierFactory);
 	registrar->registerPlugInModifier("OpenTitle", &_openTitleModifierFactory);
 	registrar->registerPlugInModifier("openApp", &_openAppModifierFactory);
+	registrar->registerPlugInModifier("FileMod", &_fileModifierFactory);
+	registrar->registerPlugInModifier("PointMotion", &_pointMotionModifierFactory);
 }
 
 const StandardPlugInHacks &StandardPlugIn::getHacks() const {

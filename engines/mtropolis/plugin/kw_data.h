@@ -60,6 +60,33 @@ protected:
 	DataReadErrorCode load(PlugIn &plugIn, const PlugInModifier &prefix, DataReader &reader) override;
 };
 
+struct KWSmackerModifier : public PlugInModifierData {
+	PlugInTypeTaggedValue playWhen;
+	PlugInTypeTaggedValue stopWhen;
+	PlugInTypeTaggedValue unknown1Event;
+	PlugInTypeTaggedValue unknown2Label;
+	PlugInTypeTaggedValue filePath;
+	PlugInTypeTaggedValue unknown3;	// Null or boolean, sometimes absent
+
+protected:
+	DataReadErrorCode load(PlugIn &plugIn, const PlugInModifier &prefix, DataReader &reader) override;
+};
+
+struct EditCtrlModifier : public PlugInModifierData {
+protected:
+	DataReadErrorCode load(PlugIn &plugIn, const PlugInModifier &prefix, DataReader &reader) override;
+};
+
+// Game-specific modifiers from separate plug-ins (mini-games), which only
+// store enable and disable events.
+struct GameModifier : public PlugInModifierData {
+	PlugInTypeTaggedValue enableWhen;
+	PlugInTypeTaggedValue disableWhen;
+
+protected:
+	DataReadErrorCode load(PlugIn &plugIn, const PlugInModifier &prefix, DataReader &reader) override;
+};
+
 // DlgMgrClient data is written by the plug-in itself in big-endian order,
 // using a reduced set of value types.
 struct DlgMgrValue {

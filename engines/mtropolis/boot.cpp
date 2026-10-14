@@ -1585,42 +1585,49 @@ void BootScriptContext::bootNotebookWin() {
 void BootScriptContext::bootMsbAnimalWin() {
 	addPlugIn(kPlugInStandard);
 	addPlugIn(kPlugInKnowWonder);
+	addPlugIn(kPlugInHoologic);
 	setMainSegmentFile("workspace/MSB/Startup.mfw");
 }
 
 void BootScriptContext::bootMsbBugsWin() {
 	addPlugIn(kPlugInStandard);
 	addPlugIn(kPlugInKnowWonder);
+	addPlugIn(kPlugInHoologic);
 	setMainSegmentFile("workspace/MSB/SignIn.mfx");
 }
 
 void BootScriptContext::bootMsbConcertWin() {
 	addPlugIn(kPlugInStandard);
 	addPlugIn(kPlugInKnowWonder);
+	addPlugIn(kPlugInHoologic);
 	setMainSegmentFile("workspace/MSB/SignInC.mfx");
 }
 
 void BootScriptContext::bootMsbFlightWin() {
 	addPlugIn(kPlugInStandard);
 	addPlugIn(kPlugInKnowWonder);
+	addPlugIn(kPlugInHoologic);
 	setMainSegmentFile("workspace/MSB/SignInF.mfx");
 }
 
 void BootScriptContext::bootMsbMarsWin() {
 	addPlugIn(kPlugInStandard);
 	addPlugIn(kPlugInKnowWonder);
+	addPlugIn(kPlugInHoologic);
 	setMainSegmentFile("workspace/MSB/SignInM.mfx");
 }
 
 void BootScriptContext::bootMsbVolcanoWin() {
 	addPlugIn(kPlugInStandard);
 	addPlugIn(kPlugInKnowWonder);
+	addPlugIn(kPlugInHoologic);
 	setMainSegmentFile("workspace/MSB/SignInV.mfx");
 }
 
 void BootScriptContext::bootMsbWhalesWin() {
 	addPlugIn(kPlugInStandard);
 	addPlugIn(kPlugInKnowWonder);
+	addPlugIn(kPlugInHoologic);
 	setMainSegmentFile("workspace/MSB/SignInW.mfx");
 }
 

@@ -36,6 +36,48 @@ DataReadErrorCode StrUtilModifier::load(PlugIn &plugIn, const PlugInModifier &pr
 	return kDataReadErrorNone;
 }
 
+// mTropolis 2.0 plug-in data starts with a copy of the plug-in revision
+static bool loadV2RevisionPrefix(const PlugInModifier &prefix, DataReader &reader) {
+	if (prefix.getRevision() < 2000 || prefix.plugInRevision == 0)
+		return true;
+
+	uint16 revision = 0;
+	return reader.readU16(revision) && revision == prefix.plugInRevision;
+}
+
+DataReadErrorCode KWSmackerModifier::load(PlugIn &plugIn, const PlugInModifier &prefix, DataReader &reader) {
+	if (prefix.plugInRevision != 1)
+		return kDataReadErrorUnsupportedRevision;
+
+	int64 endPos = reader.tell() + prefix.subObjectSize;
+
+	if (!loadV2RevisionPrefix(prefix, reader) || !playWhen.load(reader) || !stopWhen.load(reader) || !unknown1Event.load(reader)
+		|| !unknown2Label.load(reader) || !filePath.load(reader))
+		return kDataReadErrorReadFailed;
+
+	if (reader.tell() < endPos && !unknown3.load(reader))
+		return kDataReadErrorReadFailed;
+
+	return kDataReadErrorNone;
+}
+
+DataReadErrorCode EditCtrlModifier::load(PlugIn &plugIn, const PlugInModifier &prefix, DataReader &reader) {
+	if (prefix.plugInRevision != 1)
+		return kDataReadErrorUnsupportedRevision;
+
+	return kDataReadErrorNone;
+}
+
+DataReadErrorCode GameModifier::load(PlugIn &plugIn, const PlugInModifier &prefix, DataReader &reader) {
+	if (prefix.plugInRevision != 1)
+		return kDataReadErrorUnsupportedRevision;
+
+	if (!loadV2RevisionPrefix(prefix, reader) || !enableWhen.load(reader) || !disableWhen.load(reader))
+		return kDataReadErrorReadFailed;
+
+	return kDataReadErrorNone;
+}
+
 DlgMgrServerModifier::DlgMgrServerModifier() : version(0) {
 }
 
