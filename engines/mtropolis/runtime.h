@@ -3059,6 +3059,8 @@ public:
 	virtual IModifierContainer *getMessagePropagationContainer();
 	virtual IModifierContainer *getChildContainer();
 	Modifier *findChildModifierByName(const Common::String &name);
+	bool readAttributeIndexed(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib, const DynamicValue &index) override;
+	MiniscriptInstructionOutcome writeRefAttributeIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &writeProxy, const Common::String &attrib, const DynamicValue &index) override;
 
 	const Common::WeakPtr<RuntimeObject> &getParent() const;
 	void setParent(const Common::WeakPtr<RuntimeObject> &parent);

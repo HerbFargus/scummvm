@@ -2458,6 +2458,63 @@ bool KeyboardMessengerModifier::checkKeyEventTrigger(Runtime *runtime, Common::E
 	if (_keyCodeType != kAny && resolvedType != _keyCodeType)
 		return false;
 
+	// Special keys send their Macintosh character codes
+	if (outCharStr.empty()) {
+		char specialChar = 0;
+		switch (resolvedType) {
+		case kHome:
+			specialChar = 0x01;
+			break;
+		case kEnter:
+			specialChar = 0x03;
+			break;
+		case kEnd:
+			specialChar = 0x04;
+			break;
+		case kHelp:
+			specialChar = 0x05;
+			break;
+		case kBackspace:
+			specialChar = 0x08;
+			break;
+		case kTab:
+			specialChar = 0x09;
+			break;
+		case kPageUp:
+			specialChar = 0x0b;
+			break;
+		case kPageDown:
+			specialChar = 0x0c;
+			break;
+		case kReturn:
+			specialChar = 0x0d;
+			break;
+		case kEscape:
+			specialChar = 0x1b;
+			break;
+		case kArrowLeft:
+			specialChar = 0x1c;
+			break;
+		case kArrowRight:
+			specialChar = 0x1d;
+			break;
+		case kArrowUp:
+			specialChar = 0x1e;
+			break;
+		case kArrowDown:
+			specialChar = 0x1f;
+			break;
+		case kDelete:
+			specialChar = 0x7f;
+			break;
+		default:
+			break;
+		}
+
+		if (specialChar)
+			outCharStr = Common::String(specialChar);
+	}
+
 	if (_keyCodeType == kMacRomanChar && (outCharStr.size() == 0 || outCharStr[0] != _macRomanChar))
 		return false;
 

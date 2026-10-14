@@ -10154,6 +10154,20 @@ bool Modifier::readAttribute(MiniscriptThread *thread, DynamicValue &result, con
 	return false;
 }
 
+bool Modifier::readAttributeIndexed(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib, const DynamicValue &index) {
+	if (Modifier *child = findChildModifierByName(attrib))
+		return child->readAttributeIndexed(thread, result, "value", index);
+
+	return RuntimeObject::readAttributeIndexed(thread, result, attrib, index);
+}
+
+MiniscriptInstructionOutcome Modifier::writeRefAttributeIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &writeProxy, const Common::String &attrib, const DynamicValue &index) {
+	if (Modifier *child = findChildModifierByName(attrib))
+		return child->writeRefAttributeIndexed(thread, writeProxy, "value", index);
+
+	return RuntimeObject::writeRefAttributeIndexed(thread, writeProxy, attrib, index);
+}
+
 Modifier *Modifier::findChildModifierByName(const Common::String &name) {
 	IModifierContainer *container = getChildContainer();
 	if (!container)

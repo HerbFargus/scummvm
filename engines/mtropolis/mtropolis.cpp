@@ -23,6 +23,7 @@
 #include "common/debug.h"
 #include "common/events.h"
 #include "common/file.h"
+#include "common/fs.h"
 #include "common/macresman.h"
 #include "common/ptr.h"
 #include "common/compression/stuffit.h"
@@ -39,6 +40,9 @@
 #include "graphics/surface.h"
 #include "graphics/pixelformat.h"
 #include "graphics/wincursor.h"
+#include "graphics/paletteman.h"
+
+#include "image/png.h"
 
 #include "mtropolis/mtropolis.h"
 
@@ -52,6 +56,134 @@
 #include "mtropolis/plugin/obsidian.h"
 
 namespace MTropolis {
+
+// Development aid: when "mtropolis_test_input" names a file, its lines are
+// run as a test script, injecting input through the event queue so a game
+// can be tested without a real mouse or keyboard:
+//   scene <name>     wait until the named scene is active
+//   wait <ms>        wait
+//   click <x> <y>    click at game coordinates
+//   type <text>      type text
+//   key <name>       press enter, escape, backspace or tab
+//   shot <path>      save a PNG of the screen
+//   quit             quit the engine
+class TestInputScript {
+public:
+	explicit TestInputScript(const Common::Path &path);
+
+	void update(OSystem *system, Runtime *runtime, Engine *engine);
+
+private:
+	void pushKey(Common::EventManager *events, Common::KeyCode keycode, uint16 ascii);
+	void saveScreenshot(OSystem *system, const Common::String &path);
+
+	Common::Array<Common::String> _lines;
+	uint _lineIndex;
+	uint32 _waitUntil;
+};
+
+TestInputScript::TestInputScript(const Common::Path &path) : _lineIndex(0), _waitUntil(0) {
+	Common::File f;
+	if (!f.open(Common::FSNode(path))) {
+		warning("Test input: Couldn't open '%s'", path.toString().c_str());
+		return;
+	}
+
+	while (!f.eos()) {
+		Common::String line = f.readLine();
+		line.trim();
+		if (!line.empty() && !line.hasPrefix("#"))
+			_lines.push_back(line);
+	}
+}
+
+void TestInputScript::pushKey(Common::EventManager *events, Common::KeyCode keycode, uint16 ascii) {
+	Common::Event evt;
+	evt.type = Common::EVENT_KEYDOWN;
+	evt.kbd = Common::KeyState(keycode, ascii);
+	events->pushEvent(evt);
+	evt.type = Common::EVENT_KEYUP;
+	events->pushEvent(evt);
+}
+
+void TestInputScript::saveScreenshot(OSystem *system, const Common::String &path) {
+	Graphics::Surface *screen = system->lockScreen();
+	if (!screen)
+		return;
+
+	byte palette[256 * 3];
+	if (screen->format.isCLUT8())
+		system->getPaletteManager()->grabPalette(palette, 0, 256);
+
+	Common::DumpFile out;
+	if (out.open(Common::FSNode(Common::Path(path, Common::Path::kNativeSeparator))))
+		Image::writePNG(out, *screen, screen->format.isCLUT8() ? palette : nullptr);
+	else
+		warning("Test input: Couldn't write '%s'", path.c_str());
+
+	system->unlockScreen();
+}
+
+void TestInputScript::update(OSystem *system, Runtime *runtime, Engine *engine) {
+	uint32 now = system->getMillis();
+
+	while (_lineIndex < _lines.size() && now >= _waitUntil) {
+		const Common::String &line = _lines[_lineIndex];
+		Common::String cmd = line;
+		Common::String arg;
+		size_t space = line.findFirstOf(' ');
+		if (space != Common::String::npos) {
+			cmd = line.substr(0, space);
+			arg = line.substr(space + 1);
+		}
+
+		Common::EventManager *events = system->getEventManager();
+
+		if (cmd == "scene") {
+			Structural *scene = runtime->getActiveMainScene().get();
+			if (!scene || !scene->getName().equalsIgnoreCase(arg))
+				return;
+			debug(1, "Test input: Scene '%s' is active", arg.c_str());
+		} else if (cmd == "wait") {
+			_waitUntil = now + atoi(arg.c_str());
+		} else if (cmd == "click") {
+			int x = 0, y = 0;
+			sscanf(arg.c_str(), "%d %d", &x, &y);
+			Common::Event evt;
+			evt.mouse = Common::Point(x, y);
+			evt.type = Common::EVENT_MOUSEMOVE;
+			events->pushEvent(evt);
+			evt.type = Common::EVENT_LBUTTONDOWN;
+			events->pushEvent(evt);
+			evt.type = Common::EVENT_LBUTTONUP;
+			events->pushEvent(evt);
+			_waitUntil = now + 100;
+		} else if (cmd == "type") {
+			for (uint i = 0; i < arg.size(); i++) {
+				char c = arg[i];
+				Common::KeyCode keycode = static_cast<Common::KeyCode>((c >= 'A' && c <= 'Z') ? (c - 'A' + 'a') : c);
+				pushKey(events, keycode, c);
+			}
+		} else if (cmd == "key") {
+			if (arg == "enter")
+				pushKey(events, Common::KEYCODE_RETURN, 13);
+			else if (arg == "escape")
+				pushKey(events, Common::KEYCODE_ESCAPE, 27);
+			else if (arg == "backspace")
+				pushKey(events, Common::KEYCODE_BACKSPACE, 8);
+			else if (arg == "tab")
+				pushKey(events, Common::KEYCODE_TAB, 9);
+		} else if (cmd == "shot") {
+			saveScreenshot(system, arg);
+			debug(1, "Test input: Saved '%s'", arg.c_str());
+		} else if (cmd == "quit") {
+			engine->quitGame();
+		}
+
+		_lineIndex++;
+	}
+}
+
 
 MTropolisEngine::MTropolisEngine(OSystem *syst, const MTropolisGameDescription *gameDesc) : Engine(syst), _gameDescription(gameDesc), _saveWriter(nullptr), _isTriggeredAutosave(false) {
 	const Common::FSNode gameDataDir(ConfMan.getPath("path"));
@@ -336,7 +468,14 @@ Common::Error MTropolisEngine::run() {
 	}
 
 
+	Common::ScopedPtr<TestInputScript> testInput;
+	if (ConfMan.hasKey("mtropolis_test_input"))
+		testInput.reset(new TestInputScript(Common::Path(ConfMan.get("mtropolis_test_input"), Common::Path::kNativeSeparator)));
+
 	while (!shouldQuit()) {
+		if (testInput)
+			testInput->update(_system, _runtime.get(), this);
+
 		handleEvents();
 
 		if (!_runtime->runFrame())
@@ -350,6 +489,7 @@ Common::Error MTropolisEngine::run() {
 
 	return Common::kNoError;
 }
+
 
 void MTropolisEngine::pauseEngineIntern(bool pause) {
 	Engine::pauseEngineIntern(pause);

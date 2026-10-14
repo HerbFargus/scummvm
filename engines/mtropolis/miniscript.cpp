@@ -634,6 +634,9 @@ MiniscriptInstructionOutcome Send::execute(MiniscriptThread *thread) const {
 		return kMiniscriptInstructionOutcomeContinue;
 	}
 
+	debug(3, "Miniscript: '%s' sends %u/%u to '%s'", thread->getModifier()->getName().c_str(), static_cast<uint>(_evt.eventType), _evt.eventInfo,
+		obj->isModifier() ? static_cast<Modifier *>(obj.get())->getName().c_str() : (obj->isStructural() ? static_cast<Structural *>(obj.get())->getName().c_str() : "?"));
+
 	Common::SharedPtr<MessageProperties> msgProps(new MessageProperties(_evt, payloadValue, thread->getModifier()->getSelfReference()));
 	Common::SharedPtr<MessageDispatch> dispatch;
 	if (obj->isModifier())
@@ -2482,6 +2485,18 @@ void MiniscriptThread::retryInstruction() {
 }
 
 MiniscriptInstructionOutcome MiniscriptThread::IncomingDataWriteInterface::write(MiniscriptThread *thread, const DynamicValue &value, void *objectRef, uintptr ptrOrOffset) {
+	// In mTropolis 2.0, a message sent with a variable as its data passes the variable by reference,
+	// so writing to the incoming data sets the sender's variable.
+	const DynamicValue &incoming = thread->_msgProps->getValue();
+	if (thread->getRuntime()->getProject()->getRuntimeVersion() >= kRuntimeVersion200 && incoming.getType() == DynamicValueTypes::kObject) {
+		Common::SharedPtr<RuntimeObject> obj = incoming.getObject().object.lock();
+		if (obj && obj->isModifier() && static_cast<Modifier *>(obj.get())->isVariable()) {
+			if (!static_cast<VariableModifier *>(obj.get())->varSetValue(thread, value))
+				return kMiniscriptInstructionOutcomeFailed;
+			return kMiniscriptInstructionOutcomeContinue;
+		}
+	}
+
 	thread->_msgProps->setValue(value);
 
 	return kMiniscriptInstructionOutcomeContinue;
