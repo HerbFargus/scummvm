@@ -8051,6 +8051,31 @@ size_t Project::getSegmentForStreamIndex(size_t streamIndex) const {
 	return _streams[streamIndex].segmentIndex;
 }
 
+Common::SeekableReadStream *Project::createReadStreamForProjectPath(const Common::String &path) const {
+	static const char *const kStartupSegmentFolder = "<Startup Segment Folder>";
+
+	Common::String relPath = path;
+	if (relPath.hasPrefixIgnoreCase(kStartupSegmentFolder)) {
+		relPath = relPath.substr(strlen(kStartupSegmentFolder));
+		while (relPath.hasPrefix(":") || relPath.hasPrefix("\\") || relPath.hasPrefix("/"))
+			relPath.deleteChar(0);
+	}
+
+	Common::Path fullPath = _projectRootDir;
+	Common::String component;
+	for (uint i = 0; i <= relPath.size(); i++) {
+		char c = (i < relPath.size()) ? relPath[i] : ':';
+		if (c == ':' || c == '\\' || c == '/') {
+			if (!component.empty())
+				fullPath = fullPath.appendComponent(component);
+			component.clear();
+		} else
+			component += c;
+	}
+
+	return _rootArchive->createReadStreamForMember(fullPath);
+}
+
 void Project::openSegmentStream(int segmentIndex) {
 	if (segmentIndex < 0 || static_cast<size_t>(segmentIndex) > _segments.size()) {
 		error("Invalid segment index %i", segmentIndex);

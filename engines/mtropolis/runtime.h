@@ -2496,6 +2496,9 @@ public:
 
 	size_t getSegmentForStreamIndex(size_t streamIndex) const;
 	void openSegmentStream(int segmentIndex);
+
+	// Opens a file by an authoring-time path such as "<Startup Segment Folder>:Movies:Intro.smk"
+	Common::SeekableReadStream *createReadStreamForProjectPath(const Common::String &path) const;
 	void closeSegmentStream(int segmentIndex);
 	Common::SeekableReadStream *getStreamForSegment(int segmentIndex);
 

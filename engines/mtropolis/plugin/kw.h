@@ -27,6 +27,14 @@
 #include "mtropolis/runtime.h"
 #include "mtropolis/plugin/kw_data.h"
 
+#include "graphics/managed_surface.h"
+
+namespace Video {
+
+class VideoDecoder;
+
+} // End of namespace Video
+
 namespace MTropolis {
 
 namespace KW {
@@ -53,26 +61,54 @@ private:
 	const char *getDefaultName() const override;
 };
 
-class KWSmackerModifier : public Modifier {
+class KWSmackerModifier : public Modifier, public IPostEffect, public IPlayMediaSignalReceiver {
 public:
+	KWSmackerModifier();
+	KWSmackerModifier(const KWSmackerModifier &other);
+	~KWSmackerModifier();
+
 	bool load(const PlugInModifierLoaderContext &context, const Data::KW::KWSmackerModifier &data);
 
 	bool respondsToEvent(const Event &evt) const override;
 	VThreadState consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) override;
 
-	void disable(Runtime *runtime) override {}
+	void disable(Runtime *runtime) override;
+
+	bool readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) override;
+	MiniscriptInstructionOutcome writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) override;
+
+	void playMedia(Runtime *runtime, Project *project) override;
+	void renderPostEffect(Graphics::ManagedSurface &surface) const override;
 
 #ifdef MTROPOLIS_DEBUG_ENABLE
 	const char *debugGetTypeName() const override { return "KWSmacker Modifier"; }
-	SupportStatus debugGetSupportStatus() const override { return kSupportStatusNone; }
+	SupportStatus debugGetSupportStatus() const override { return kSupportStatusPartial; }
+	void debugInspect(IDebugInspectionReport *report) const override;
 #endif
 
 private:
 	Common::SharedPtr<Modifier> shallowClone() const override;
 	const char *getDefaultName() const override;
 
-	Event _event1;
-	Event _event2;
+	void linkInternalReferences(ObjectLinkingScope *scope) override;
+	void visitInternalReferences(IStructuralReferenceVisitor *visitor) override;
+
+	void startPlaying(Runtime *runtime);
+	void stopPlaying();
+	void finishPlaying(Runtime *runtime);
+
+	Event _playWhen;
+	Event _stopWhen;
+	MessengerSendSpec _sendWhenDone;
+	Common::String _moviePath;
+	bool _changePalette;
+
+	Runtime *_runtime;
+	Common::SharedPtr<Video::VideoDecoder> _decoder;
+	Common::SharedPtr<PlayMediaSignaller> _playMediaSignaller;
+	Graphics::ManagedSurface _frameSurface;
+	const Graphics::Surface *_frame;
+	bool _isPlaying;
 };
 
 class EditCtrlModifier : public Modifier {

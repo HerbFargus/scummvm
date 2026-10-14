@@ -22,6 +22,10 @@
 #include "mtropolis/plugin/kw.h"
 #include "mtropolis/plugins.h"
 
+#include "graphics/managed_surface.h"
+
+#include "video/smk_decoder.h"
+
 namespace MTropolis {
 
 namespace KW {
@@ -91,21 +95,193 @@ static Common::String dlgMgrString(const Data::PlugInTypeTaggedValue &value) {
 	return value.value.asString;
 }
 
+KWSmackerModifier::KWSmackerModifier() : _changePalette(false), _runtime(nullptr), _frame(nullptr), _isPlaying(false) {
+}
+
+KWSmackerModifier::KWSmackerModifier(const KWSmackerModifier &other)
+	: Modifier(other), _playWhen(other._playWhen), _stopWhen(other._stopWhen), _sendWhenDone(other._sendWhenDone),
+	  _moviePath(other._moviePath), _changePalette(other._changePalette), _runtime(nullptr), _frame(nullptr), _isPlaying(false) {
+}
+
+KWSmackerModifier::~KWSmackerModifier() {
+	stopPlaying();
+}
+
 bool KWSmackerModifier::load(const PlugInModifierLoaderContext &context, const Data::KW::KWSmackerModifier &data) {
-	if (!loadDlgMgrEvent(_event1, data.playWhen) || !loadDlgMgrEvent(_event2, data.stopWhen))
+	if (!loadDlgMgrEvent(_playWhen, data.playWhen) || !loadDlgMgrEvent(_stopWhen, data.stopWhen))
 		return false;
+
+	// The destination is stored as a label value, with the destination in the label ID
+	if (data.unknown2Label.type != Data::PlugInTypeTaggedValue::kLabel)
+		return false;
+
+	Data::PlugInTypeTaggedValue with;
+	with.type = Data::PlugInTypeTaggedValue::kNull;
+
+	if (!_sendWhenDone.load(data.unknown1Event, MessageFlags(), with, data.unknown2Label.value.asLabel.labelID))
+		return false;
+
+	_moviePath = dlgMgrString(data.filePath);
+	_changePalette = (data.unknown3.type == Data::PlugInTypeTaggedValue::kBoolean && data.unknown3.value.asBoolean != 0);
 
 	return true;
 }
 
 bool KWSmackerModifier::respondsToEvent(const Event &evt) const {
-	return _event1.respondsTo(evt) || _event2.respondsTo(evt);
+	return _playWhen.respondsTo(evt) || _stopWhen.respondsTo(evt);
 }
 
 VThreadState KWSmackerModifier::consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) {
-	warning("KWSmacker modifier '%s' is not implemented", getName().c_str());
+	if (_playWhen.respondsTo(msg->getEvent())) {
+		if (!_isPlaying)
+			startPlaying(runtime);
+	} else if (_stopWhen.respondsTo(msg->getEvent())) {
+		if (_isPlaying)
+			finishPlaying(runtime);
+	}
+
 	return kVThreadReturn;
 }
+
+void KWSmackerModifier::disable(Runtime *runtime) {
+	stopPlaying();
+}
+
+bool KWSmackerModifier::readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) {
+	if (attrib == "moviepath") {
+		result.setString(_moviePath);
+		return true;
+	}
+	if (attrib == "changepal") {
+		result.setBool(_changePalette);
+		return true;
+	}
+
+	return Modifier::readAttribute(thread, result, attrib);
+}
+
+MiniscriptInstructionOutcome KWSmackerModifier::writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) {
+	if (attrib == "moviepath") {
+		DynamicValueWriteStringHelper::create(&_moviePath, result);
+		return kMiniscriptInstructionOutcomeContinue;
+	}
+	if (attrib == "changepal") {
+		DynamicValueWriteBoolHelper::create(&_changePalette, result);
+		return kMiniscriptInstructionOutcomeContinue;
+	}
+
+	return Modifier::writeRefAttribute(thread, result, attrib);
+}
+
+void KWSmackerModifier::startPlaying(Runtime *runtime) {
+	stopPlaying();
+
+	Common::SeekableReadStream *stream = runtime->getProject()->createReadStreamForProjectPath(_moviePath);
+	if (!stream) {
+		warning("KWSmacker: Couldn't open movie '%s'", _moviePath.c_str());
+		finishPlaying(runtime);
+		return;
+	}
+
+	Common::SharedPtr<Video::SmackerDecoder> decoder(new Video::SmackerDecoder());
+	if (!decoder->loadStream(stream)) {
+		warning("KWSmacker: Couldn't load movie '%s'", _moviePath.c_str());
+		finishPlaying(runtime);
+		return;
+	}
+
+	Common::SharedPtr<Window> mainWindow = runtime->getMainWindow().lock();
+	if (mainWindow)
+		decoder->setOutputPixelFormat(mainWindow->getSurface()->format);
+
+	decoder->start();
+
+	_runtime = runtime;
+	_decoder = decoder;
+	_frame = nullptr;
+	_isPlaying = true;
+
+	runtime->addPostEffect(this);
+	_playMediaSignaller = runtime->getProject()->notifyOnPlayMedia(this);
+}
+
+void KWSmackerModifier::stopPlaying() {
+	if (!_isPlaying)
+		return;
+
+	_isPlaying = false;
+	_frame = nullptr;
+
+	if (_playMediaSignaller) {
+		_playMediaSignaller->removeReceiver(this);
+		_playMediaSignaller.reset();
+	}
+
+	if (_runtime) {
+		_runtime->removePostEffect(this);
+		_runtime->setSceneGraphDirty();
+	}
+
+	_decoder.reset();
+}
+
+void KWSmackerModifier::finishPlaying(Runtime *runtime) {
+	stopPlaying();
+	_sendWhenDone.sendFromMessenger(runtime, this, nullptr, DynamicValue(), nullptr);
+}
+
+void KWSmackerModifier::playMedia(Runtime *runtime, Project *project) {
+	if (!_isPlaying)
+		return;
+
+	while (_decoder->needsUpdate()) {
+		const Graphics::Surface *frame = _decoder->decodeNextFrame();
+		if (!frame)
+			break;
+
+		Common::SharedPtr<Window> mainWindow = runtime->getMainWindow().lock();
+		if (!mainWindow)
+			break;
+
+		const Graphics::PixelFormat &destFormat = mainWindow->getSurface()->format;
+		if (frame->format == destFormat || !frame->format.isCLUT8())
+			_frameSurface.copyFrom(*frame);
+		else {
+			Graphics::Surface *converted = frame->convertTo(destFormat, _decoder->getPalette());
+			_frameSurface.copyFrom(*converted);
+			converted->free();
+			delete converted;
+		}
+
+		_frame = &_frameSurface.rawSurface();
+		runtime->setSceneGraphDirty();
+	}
+
+	if (_decoder->endOfVideo())
+		finishPlaying(runtime);
+}
+
+void KWSmackerModifier::renderPostEffect(Graphics::ManagedSurface &surface) const {
+	if (!_frame)
+		return;
+
+	Common::Rect srcRect(0, 0, _frame->w, _frame->h);
+	Common::Rect destRect(0, 0, _frame->w, _frame->h);
+	destRect.clip(Common::Rect(0, 0, surface.w, surface.h));
+	srcRect.setWidth(destRect.width());
+	srcRect.setHeight(destRect.height());
+
+	surface.blitFrom(*_frame, srcRect, destRect);
+}
+
+#ifdef MTROPOLIS_DEBUG_ENABLE
+void KWSmackerModifier::debugInspect(IDebugInspectionReport *report) const {
+	Modifier::debugInspect(report);
+
+	report->declareDynamic("moviePath", _moviePath);
+	report->declareDynamic("isPlaying", _isPlaying ? "true" : "false");
+}
+#endif
 
 Common::SharedPtr<Modifier> KWSmackerModifier::shallowClone() const {
 	return Common::SharedPtr<Modifier>(new KWSmackerModifier(*this));
@@ -113,6 +289,16 @@ Common::SharedPtr<Modifier> KWSmackerModifier::shallowClone() const {
 
 const char *KWSmackerModifier::getDefaultName() const {
 	return "KWSmacker";
+}
+
+void KWSmackerModifier::linkInternalReferences(ObjectLinkingScope *scope) {
+	Modifier::linkInternalReferences(scope);
+	_sendWhenDone.linkInternalReferences(scope);
+}
+
+void KWSmackerModifier::visitInternalReferences(IStructuralReferenceVisitor *visitor) {
+	Modifier::visitInternalReferences(visitor);
+	_sendWhenDone.visitInternalReferences(visitor);
 }
 
 bool EditCtrlModifier::load(const PlugInModifierLoaderContext &context, const Data::KW::EditCtrlModifier &data) {
