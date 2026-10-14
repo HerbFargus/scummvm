@@ -1298,6 +1298,10 @@ static Common::SharedPtr<Structural> dlgMgrResolvePath(Runtime *runtime, const C
 
 void DlgMgrClientModifier::resolveTargets(Runtime *runtime) {
 	for (Track &track : _tracks) {
+		// Cue tracks have no target, their target fields are left over data
+		if (track.trackType == Data::KW::DlgMgrTrack::kTrackTypeCue)
+			continue;
+
 		if (track.targetGUID != 0 && track.target.expired()) {
 			track.target = dlgMgrResolvePath(runtime, track.targetPath, track.targetGUID);
 			if (track.target.expired())
