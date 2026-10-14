@@ -66,6 +66,7 @@ namespace MTropolis {
 //   type <text>      type text
 //   key <name>       press enter, escape, backspace or tab
 //   shot <path>      save a PNG of the screen
+//   probe <x> <y>    log the visual elements at a point
 //   quit             quit the engine
 class TestInputScript {
 public:
@@ -76,6 +77,7 @@ public:
 private:
 	void pushKey(Common::EventManager *events, Common::KeyCode keycode, uint16 ascii);
 	void saveScreenshot(OSystem *system, const Common::String &path);
+	void probe(Structural *structural, const Common::Point &pt);
 
 	Common::Array<Common::String> _lines;
 	uint _lineIndex;
@@ -115,13 +117,33 @@ void TestInputScript::saveScreenshot(OSystem *system, const Common::String &path
 	if (screen->format.isCLUT8())
 		system->getPaletteManager()->grabPalette(palette, 0, 256);
 
+	// The screen's alpha bits aren't shown, so leave them out
+	Graphics::Surface *opaque = screen->convertTo(Graphics::PixelFormat::createFormatRGB24(), screen->format.isCLUT8() ? palette : nullptr);
+	system->unlockScreen();
+
 	Common::DumpFile out;
 	if (out.open(Common::FSNode(Common::Path(path, Common::Path::kNativeSeparator))))
-		Image::writePNG(out, *screen, screen->format.isCLUT8() ? palette : nullptr);
+		Image::writePNG(out, *opaque);
 	else
 		warning("Test input: Couldn't write '%s'", path.c_str());
 
-	system->unlockScreen();
+	opaque->free();
+	delete opaque;
+}
+
+void TestInputScript::probe(Structural *structural, const Common::Point &pt) {
+	if (structural->isElement() && static_cast<Element *>(structural)->isVisual()) {
+		VisualElement *visual = static_cast<VisualElement *>(structural);
+		Common::Point pos = visual->getGlobalPosition();
+		const Common::Rect &rect = visual->getRelativeRect();
+		Common::Rect globalRect(pos.x, pos.y, pos.x + rect.width(), pos.y + rect.height());
+		if (globalRect.contains(pt))
+			debug(1, "Test input: Probe '%s' (%i,%i)-(%i,%i) visible %i ink %i", visual->getName().c_str(),
+				  globalRect.left, globalRect.top, globalRect.right, globalRect.bottom, visual->isVisible() ? 1 : 0, static_cast<int>(visual->getRenderProperties().getInkMode()));
+	}
+
+	for (const Common::SharedPtr<Structural> &child : structural->getChildren())
+		probe(child.get(), pt);
 }
 
 void TestInputScript::update(OSystem *system, Runtime *runtime, Engine *engine) {
@@ -176,6 +198,13 @@ void TestInputScript::update(OSystem *system, Runtime *runtime, Engine *engine) 
 		} else if (cmd == "shot") {
 			saveScreenshot(system, arg);
 			debug(1, "Test input: Saved '%s'", arg.c_str());
+		} else if (cmd == "probe") {
+			int x = 0, y = 0;
+			sscanf(arg.c_str(), "%d %d", &x, &y);
+			if (runtime->getActiveSharedScene())
+				probe(runtime->getActiveSharedScene().get(), Common::Point(x, y));
+			if (runtime->getActiveMainScene())
+				probe(runtime->getActiveMainScene().get(), Common::Point(x, y));
 		} else if (cmd == "quit") {
 			engine->quitGame();
 		}
@@ -407,6 +436,8 @@ Common::Error MTropolisEngine::run() {
 
 	if (selectedMode == kColorDepthModeInvalid)
 		error("Couldn't resolve a color depth mode");
+
+	debug(1, "Color depth mode %i, %s", static_cast<int>(selectedMode), modePixelFormats[selectedMode].toString().c_str());
 
 	// Set up supported pixel modes
 	for (int i = 0; i < kColorDepthModeCount; i++) {
