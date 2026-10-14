@@ -67,6 +67,7 @@ namespace MTropolis {
 //   key <name>       press enter, escape, backspace or tab
 //   shot <path>      save a PNG of the screen
 //   probe <x> <y>    log the visual elements at a point
+//   clickon <name>   click the center of a visual element
 //   quit             quit the engine
 class TestInputScript {
 public:
@@ -78,6 +79,8 @@ private:
 	void pushKey(Common::EventManager *events, Common::KeyCode keycode, uint16 ascii);
 	void saveScreenshot(OSystem *system, const Common::String &path);
 	void probe(Structural *structural, const Common::Point &pt);
+	static VisualElement *findVisual(Structural *structural, const Common::String &name);
+	void pushClick(Common::EventManager *events, const Common::Point &pt);
 
 	Common::Array<Common::String> _lines;
 	uint _lineIndex;
@@ -146,6 +149,30 @@ void TestInputScript::probe(Structural *structural, const Common::Point &pt) {
 		probe(child.get(), pt);
 }
 
+VisualElement *TestInputScript::findVisual(Structural *structural, const Common::String &name) {
+	if (structural->isElement() && static_cast<Element *>(structural)->isVisual() && structural->getName().equalsIgnoreCase(name))
+		return static_cast<VisualElement *>(structural);
+
+	for (const Common::SharedPtr<Structural> &child : structural->getChildren()) {
+		VisualElement *found = findVisual(child.get(), name);
+		if (found)
+			return found;
+	}
+
+	return nullptr;
+}
+
+void TestInputScript::pushClick(Common::EventManager *events, const Common::Point &pt) {
+	Common::Event evt;
+	evt.mouse = pt;
+	evt.type = Common::EVENT_MOUSEMOVE;
+	events->pushEvent(evt);
+	evt.type = Common::EVENT_LBUTTONDOWN;
+	events->pushEvent(evt);
+	evt.type = Common::EVENT_LBUTTONUP;
+	events->pushEvent(evt);
+}
+
 void TestInputScript::update(OSystem *system, Runtime *runtime, Engine *engine) {
 	uint32 now = system->getMillis();
 
@@ -171,14 +198,24 @@ void TestInputScript::update(OSystem *system, Runtime *runtime, Engine *engine) 
 		} else if (cmd == "click") {
 			int x = 0, y = 0;
 			sscanf(arg.c_str(), "%d %d", &x, &y);
-			Common::Event evt;
-			evt.mouse = Common::Point(x, y);
-			evt.type = Common::EVENT_MOUSEMOVE;
-			events->pushEvent(evt);
-			evt.type = Common::EVENT_LBUTTONDOWN;
-			events->pushEvent(evt);
-			evt.type = Common::EVENT_LBUTTONUP;
-			events->pushEvent(evt);
+			pushClick(events, Common::Point(x, y));
+			_waitUntil = now + 100;
+		} else if (cmd == "clickon") {
+			VisualElement *element = nullptr;
+			if (runtime->getActiveMainScene())
+				element = findVisual(runtime->getActiveMainScene().get(), arg);
+			if (!element && runtime->getActiveSharedScene())
+				element = findVisual(runtime->getActiveSharedScene().get(), arg);
+
+			if (element) {
+				Common::Point pos = element->getGlobalPosition();
+				const Common::Rect &rect = element->getRelativeRect();
+				Common::Point center(pos.x + rect.width() / 2, pos.y + rect.height() / 2);
+				debug(1, "Test input: Clicking '%s' at (%i,%i)", arg.c_str(), center.x, center.y);
+				pushClick(events, center);
+			} else {
+				warning("Test input: No element '%s'", arg.c_str());
+			}
 			_waitUntil = now + 100;
 		} else if (cmd == "type") {
 			for (uint i = 0; i < arg.size(); i++) {
