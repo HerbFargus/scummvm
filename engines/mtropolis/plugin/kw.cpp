@@ -706,6 +706,8 @@ void DlgMgrServerModifier::startNextLine(Runtime *runtime) {
 		_lastFrame = -1;
 		_maxEndFrame = 0;
 
+		client->resolveTargets(runtime);
+
 		for (DlgMgrClientModifier::Track &track : client->getTracks()) {
 			track.isStarted = false;
 			track.isFinished = false;
@@ -935,6 +937,13 @@ bool DlgMgrClientModifier::load(const PlugInModifierLoaderContext &context, cons
 		track.cueValue = trackData.cueValue;
 		track.targetGUID = static_cast<uint32>(trackData.targetGUID);
 		track.sourceGUID = static_cast<uint32>(trackData.sourceGUID);
+
+		for (int32 guid : trackData.targetPath)
+			if (guid != 0)
+				track.targetPath.push_back(static_cast<uint32>(guid));
+		for (int32 guid : trackData.sourcePath)
+			if (guid != 0)
+				track.sourcePath.push_back(static_cast<uint32>(guid));
 		track.frames = trackData.frames;
 
 		if (trackData.hasMedia && trackData.mediaName.data.size() > 0)
@@ -1006,6 +1015,45 @@ void DlgMgrClientModifier::sendCue(Runtime *runtime, int32 cueValue) {
 	_cueSend.sendFromMessengerWithCustomData(runtime, this, nullptr, value, nullptr);
 }
 
+static Common::SharedPtr<Structural> dlgMgrResolvePath(Runtime *runtime, const Common::Array<uint32> &path, uint32 guid) {
+	Structural *current = runtime->getProject();
+
+	for (uint32 pathGUID : path) {
+		if (current->getStaticGUID() == pathGUID)
+			continue;
+
+		Structural *next = nullptr;
+		for (const Common::SharedPtr<Structural> &child : current->getChildren()) {
+			if (child->getStaticGUID() == pathGUID) {
+				next = child.get();
+				break;
+			}
+		}
+
+		if (!next)
+			return nullptr;
+
+		current = next;
+	}
+
+	if (current->getStaticGUID() != guid)
+		return nullptr;
+
+	return current->getSelfReference().lock().staticCast<Structural>();
+}
+
+void DlgMgrClientModifier::resolveTargets(Runtime *runtime) {
+	for (Track &track : _tracks) {
+		if (track.targetGUID != 0 && track.target.expired()) {
+			track.target = dlgMgrResolvePath(runtime, track.targetPath, track.targetGUID);
+			if (track.target.expired())
+				warning("DlgMgrClient '%s': Couldn't resolve track target %x", getName().c_str(), track.targetGUID);
+		}
+		if (track.sourceGUID != 0 && track.source.expired())
+			track.source = dlgMgrResolvePath(runtime, track.sourcePath, track.sourceGUID);
+	}
+}
+
 bool DlgMgrClientModifier::isQueued() const {
 	return _isQueued;
 }
@@ -1027,8 +1075,7 @@ void DlgMgrClientModifier::linkInternalReferences(ObjectLinkingScope *scope) {
 			Common::SharedPtr<RuntimeObject> target = scope->resolve(track.targetGUID).lock();
 			if (target && target->isStructural())
 				track.target = target.staticCast<Structural>();
-			else
-				warning("DlgMgrClient '%s': Couldn't resolve track target %x", getName().c_str(), track.targetGUID);
+			// Otherwise the target is in another scene, and is resolved by its path when played
 		}
 		if (track.sourceGUID != 0) {
 			Common::SharedPtr<RuntimeObject> source = scope->resolve(track.sourceGUID).lock();

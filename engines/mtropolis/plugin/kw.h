@@ -272,6 +272,8 @@ public:
 
 		uint32 targetGUID;
 		uint32 sourceGUID;
+		Common::Array<uint32> targetPath;	// Ancestor GUIDs, for targets outside the client's scene
+		Common::Array<uint32> sourcePath;
 		Common::WeakPtr<Structural> target;
 		Common::WeakPtr<Structural> source;
 
@@ -301,6 +303,7 @@ public:
 	void onPlaybackStarted();
 	void onPlaybackFinished(Runtime *runtime, bool notifyDone);
 	void sendCue(Runtime *runtime, int32 cueValue);
+	void resolveTargets(Runtime *runtime);
 	bool isQueued() const;
 
 #ifdef MTROPOLIS_DEBUG_ENABLE
