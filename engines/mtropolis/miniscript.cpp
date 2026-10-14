@@ -208,6 +208,16 @@ bool MiniscriptInstructionLoader<MiniscriptInstructions::BuiltinFunc>::loadInstr
 }
 
 template<>
+bool MiniscriptInstructionLoader<MiniscriptInstructions::CallFunction>::loadInstruction(void *dest, uint32 instrFlags, Data::DataReader &instrDataReader, IMiniscriptInstructionParserFeedback &feedback) {
+	uint32 functionNameAttribute, numArgs;
+	if (!instrDataReader.readU32(functionNameAttribute) || !instrDataReader.readU32(numArgs))
+		return false;
+
+	new (dest) MiniscriptInstructions::CallFunction(functionNameAttribute, numArgs);
+	return true;
+}
+
+template<>
 bool MiniscriptInstructionLoader<MiniscriptInstructions::GetChild>::loadInstruction(void *dest, uint32 instrFlags, Data::DataReader &instrDataReader, IMiniscriptInstructionParserFeedback &feedback) {
 	uint32 childAttribute;
 	if (!instrDataReader.readU32(childAttribute))
@@ -530,6 +540,10 @@ SIMiniscriptInstructionFactory *MiniscriptParser::resolveOpcode(uint16 opcode) {
 		return MiniscriptInstructionFactory<MiniscriptInstructions::ListAppend>::getInstance();
 	case 0x137:
 		return MiniscriptInstructionFactory<MiniscriptInstructions::ListCreate>::getInstance();
+	case 0x138:
+		return MiniscriptInstructionFactory<MiniscriptInstructions::ArgSeparator>::getInstance();
+	case 0x3ea:
+		return MiniscriptInstructionFactory<MiniscriptInstructions::CallFunction>::getInstance();
 	case 0x191:
 		return MiniscriptInstructionFactory<MiniscriptInstructions::PushValue>::getInstance();
 	case 0x192:
@@ -1438,6 +1452,443 @@ MiniscriptInstructionOutcome RangeCreate::execute(MiniscriptThread *thread) cons
 
 GetChild::GetChild(uint32 attribute, bool isLValue, bool isIndexed)
 	: _attribute(attribute), _isLValue(isLValue), _isIndexed(isIndexed) {
+}
+
+MiniscriptInstructionOutcome ArgSeparator::execute(MiniscriptThread *thread) const {
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
+CallFunction::CallFunction(uint32 functionNameAttribute, uint32 numArgs) : _functionNameAttribute(functionNameAttribute), _numArgs(numArgs) {
+}
+
+namespace StringFunctions {
+
+static const char *const kWordDelimiters = " \t\n\r";
+static const char *const kParagraphDelimiters = "\n\r";
+
+static bool isDelimiter(const char *delimiters, char c) {
+	// Matches strchr, which also finds the terminator
+	return c == '\0' || strchr(delimiters, c) != nullptr;
+}
+
+// Converts a 1-based range (negative values count from the end) to an offset and length
+static void clampRange(int32 start, int32 end, int32 length, int32 &outOffset, int32 &outCount) {
+	outOffset = 0;
+	outCount = 0;
+
+	if ((start == 0 && end == 0) || length < 1)
+		return;
+
+	start = CLIP<int32>(start, -length, length + 1);
+	end = CLIP<int32>(end, -length, length + 1);
+
+	if (start < 0)
+		start += length + 1;
+	if (end < 0)
+		end += length + 1;
+
+	if (end == 0) {
+		outCount = 0;
+		outOffset = start - 1;
+	} else {
+		if (start == 0)
+			start = 1;
+
+		int32 lo = MIN(start, end);
+		int32 hi = MAX(start, end);
+		outOffset = lo - 1;
+		outCount = hi - lo + 1;
+	}
+
+	if (outOffset + outCount > length)
+		outCount = length - outOffset;
+}
+
+static int32 countChunks(const Common::String &str, const char *delimiters, bool collapse) {
+	int32 count = 0;
+	bool prevWasDelimiter = false;
+
+	for (uint i = 0; i < str.size(); i++) {
+		bool delim = strchr(delimiters, str[i]) != nullptr;
+		if (delim && (!collapse || !prevWasDelimiter))
+			count++;
+		prevWasDelimiter = delim;
+	}
+
+	if (!prevWasDelimiter)
+		count++;
+
+	if (isDelimiter(delimiters, str.empty() ? '\0' : str[0]))
+		count--;
+
+	return count;
+}
+
+// Finds chunk n (1-based, negative counts from the end) as [start, end)
+static void findChunk(const Common::String &str, const char *delimiters, int32 n, int32 &outStart, int32 &outEnd, bool collapse) {
+	outStart = 0;
+	outEnd = 0;
+
+	if (n == 0)
+		return;
+
+	if (n < 0) {
+		n += countChunks(str, delimiters, collapse) + 1;
+		if (n < 1)
+			return;
+	}
+
+	const char *s = str.c_str();
+
+	if (collapse && isDelimiter(delimiters, s[0]))
+		outStart = strspn(s, delimiters);
+
+	outEnd = outStart + strcspn(s + outStart, delimiters);
+	n--;
+
+	if (n == 0)
+		return;
+
+	while (s[outEnd] != '\0') {
+		outStart = outEnd + 1;
+		if (collapse)
+			outStart += strspn(s + outStart, delimiters);
+		outEnd = outStart + strcspn(s + outStart, delimiters);
+		n--;
+		if (n == 0)
+			return;
+	}
+
+	outStart = outEnd;
+}
+
+static bool getString(const DynamicValue &value, Common::String &outStr) {
+	if (value.getType() == DynamicValueTypes::kString) {
+		outStr = value.getString();
+		return true;
+	}
+
+	DynamicValue converted;
+	if (!value.convertToType(DynamicValueTypes::kString, converted))
+		return false;
+
+	outStr = converted.getString();
+	return true;
+}
+
+static bool getInt(const DynamicValue &value, int32 &outInt) {
+	return value.roundToInt(outInt);
+}
+
+static bool getBool(const DynamicValue &value, bool &outBool) {
+	DynamicValue converted;
+	if (!value.convertToType(DynamicValueTypes::kBoolean, converted))
+		return false;
+
+	outBool = converted.getBool();
+	return true;
+}
+
+// Ranges may also be given as a single index
+static bool getRange(const DynamicValue &value, int32 &outStart, int32 &outEnd) {
+	if (value.getType() == DynamicValueTypes::kIntegerRange) {
+		outStart = value.getIntRange().min;
+		outEnd = value.getIntRange().max;
+		return true;
+	}
+
+	if (!getInt(value, outStart))
+		return false;
+
+	outEnd = outStart;
+	return true;
+}
+
+static void setRangeResult(DynamicValue &result, int32 start, int32 end) {
+	result.setIntRange(IntRange(start, end));
+}
+
+static int32 compareStrings(const Common::String &a, const Common::String &b, bool caseSensitive) {
+	int32 cmp = caseSensitive ? a.compareTo(b) : a.compareToIgnoreCase(b);
+	return (cmp < 0) ? -1 : ((cmp > 0) ? 1 : 0);
+}
+
+static int32 findString(const char *haystack, const char *needle, bool caseSensitive) {
+	size_t needleLength = strlen(needle);
+	if (needleLength == 0)
+		return -1;
+
+	for (const char *p = haystack; *p; p++) {
+		bool match = caseSensitive ? (strncmp(p, needle, needleLength) == 0) : (scumm_strnicmp(p, needle, needleLength) == 0);
+		if (match)
+			return p - haystack;
+	}
+
+	return -1;
+}
+
+// Offset of occurrence n (1-based) searching forwards, or -1
+static int32 findOccurrence(const Common::String &haystack, const Common::String &needle, bool caseSensitive, int32 n) {
+	int32 offset = 0;
+	int32 found = -1;
+
+	while (n > 0) {
+		n--;
+		int32 pos = findString(haystack.c_str() + offset, needle.c_str(), caseSensitive);
+		if (pos < 0)
+			return -1;
+
+		found = offset + pos;
+		offset = found + needle.size();
+	}
+
+	return found;
+}
+
+// Offset of occurrence n (1-based) searching backwards, or -1
+static int32 findOccurrenceReverse(const Common::String &haystack, const Common::String &needle, bool caseSensitive, int32 n) {
+	int32 pos = static_cast<int32>(haystack.size()) - static_cast<int32>(needle.size());
+	if (needle.empty())
+		return -1;
+
+	while (n > 0 && pos >= 0) {
+		bool match = caseSensitive ? (strncmp(haystack.c_str() + pos, needle.c_str(), needle.size()) == 0)
+								   : (scumm_strnicmp(haystack.c_str() + pos, needle.c_str(), needle.size()) == 0);
+		if (match) {
+			n--;
+			if (n == 0)
+				return pos;
+			pos -= needle.size();
+		} else
+			pos--;
+	}
+
+	return -1;
+}
+
+enum ChunkMode {
+	kChunkModeSubstring,
+	kChunkModeRange,
+};
+
+static bool chunkFunction(const DynamicValue &rangeArg, const Common::String &str, const char *delimiters, ChunkMode mode, bool collapse, DynamicValue &result) {
+	int32 first = 0;
+	int32 last = 0;
+	if (!getRange(rangeArg, first, last))
+		return false;
+
+	int32 start = 0;
+	int32 end = 0;
+	if (first != 0 || last != 0) {
+		int32 start1, end1, start2, end2;
+		findChunk(str, delimiters, first, start1, end1, collapse);
+		findChunk(str, delimiters, last, start2, end2, collapse);
+		start = MIN(start1, start2);
+		end = MAX(end1, end2);
+	}
+
+	if (mode == kChunkModeSubstring) {
+		result.setString(str.substr(start, end - start));
+	} else {
+		if (start != 0 || end != 0) {
+			if (start == end)
+				start = end = 0;
+			else
+				start++;
+		}
+		setRangeResult(result, start, end);
+	}
+
+	return true;
+}
+
+static bool replaceRange(const DynamicValue &rangeArg, const Common::String &str, const Common::String &replacement, DynamicValue &result) {
+	int32 first = 0;
+	int32 last = 0;
+	if (!getRange(rangeArg, first, last))
+		return false;
+
+	int32 offset = 0;
+	int32 count = 0;
+	clampRange(first, last, str.size(), offset, count);
+
+	result.setString(str.substr(0, offset) + replacement + str.substr(offset + count));
+	return true;
+}
+
+} // End of namespace StringFunctions
+
+MiniscriptInstructionOutcome CallFunction::execute(MiniscriptThread *thread) const {
+	using namespace StringFunctions;
+
+	const Common::Array<MiniscriptProgram::Attribute> &attribs = thread->getProgram()->getAttributes();
+	if (_functionNameAttribute >= attribs.size()) {
+		thread->error("Invalid function name index");
+		return kMiniscriptInstructionOutcomeFailed;
+	}
+
+	if (_numArgs == 0 || thread->getStackSize() < _numArgs) {
+		thread->error("Stack underflow");
+		return kMiniscriptInstructionOutcomeFailed;
+	}
+
+	for (uint i = 0; i < _numArgs; i++) {
+		MiniscriptInstructionOutcome outcome = thread->dereferenceRValue(i);
+		if (outcome != kMiniscriptInstructionOutcomeContinue)
+			return outcome;
+	}
+
+	Common::Array<DynamicValue> args;
+	args.resize(_numArgs);
+	for (uint i = 0; i < _numArgs; i++)
+		args[i] = thread->getStackValueFromTop(_numArgs - 1 - i).value;
+
+	const Common::String &func = attribs[_functionNameAttribute].name;
+	const uint numArgs = _numArgs;
+	DynamicValue result;
+	bool ok = false;
+
+	Common::String str, str2;
+	int32 n = 0;
+	bool flag = false;
+
+	if (func.equalsIgnoreCase("stringlength")) {
+		if (numArgs == 1 && getString(args[0], str)) {
+			result.setInt(str.size());
+			ok = true;
+		}
+	} else if (func.equalsIgnoreCase("character")) {
+		int32 first, last;
+		if (numArgs == 2 && getRange(args[0], first, last) && getString(args[1], str)) {
+			int32 offset, count;
+			clampRange(first, last, str.size(), offset, count);
+			result.setString(str.substr(offset, count));
+			ok = true;
+		}
+	} else if (func.equalsIgnoreCase("chunk") || func.equalsIgnoreCase("chunkrange")) {
+		if (numArgs == 3 && getString(args[1], str) && getString(args[2], str2))
+			ok = chunkFunction(args[0], str, str2.c_str(), func.equalsIgnoreCase("chunk") ? kChunkModeSubstring : kChunkModeRange, false, result);
+	} else if (func.equalsIgnoreCase("chunkcount")) {
+		if (numArgs == 2 && getString(args[0], str) && getString(args[1], str2)) {
+			result.setInt(countChunks(str, str2.c_str(), false));
+			ok = true;
+		}
+	} else if (func.equalsIgnoreCase("word") || func.equalsIgnoreCase("wordrange")) {
+		if (numArgs == 2 && getString(args[1], str))
+			ok = chunkFunction(args[0], str, kWordDelimiters, func.equalsIgnoreCase("word") ? kChunkModeSubstring : kChunkModeRange, true, result);
+	} else if (func.equalsIgnoreCase("wordcount")) {
+		if (numArgs == 1 && getString(args[0], str)) {
+			result.setInt(countChunks(str, kWordDelimiters, true));
+			ok = true;
+		}
+	} else if (func.equalsIgnoreCase("paragraph") || func.equalsIgnoreCase("paragraphrange")) {
+		if (numArgs == 2 && getString(args[1], str))
+			ok = chunkFunction(args[0], str, kParagraphDelimiters, func.equalsIgnoreCase("paragraph") ? kChunkModeSubstring : kChunkModeRange, false, result);
+	} else if (func.equalsIgnoreCase("paragraphcount")) {
+		if (numArgs == 1 && getString(args[0], str)) {
+			result.setInt(countChunks(str, kParagraphDelimiters, false));
+			ok = true;
+		}
+	} else if (func.equalsIgnoreCase("comparestrings") || func.equalsIgnoreCase("equalstrings")) {
+		if ((numArgs == 2 || numArgs == 3) && getString(args[0], str) && getString(args[1], str2) && (numArgs < 3 || getBool(args[2], flag))) {
+			int32 cmp = compareStrings(str, str2, flag);
+			if (func.equalsIgnoreCase("comparestrings"))
+				result.setInt(cmp);
+			else
+				result.setBool(cmp == 0);
+			ok = true;
+		}
+	} else if (func.equalsIgnoreCase("deletestring")) {
+		if (numArgs == 2 && getString(args[1], str))
+			ok = replaceRange(args[0], str, Common::String(), result);
+	} else if (func.equalsIgnoreCase("replacestring")) {
+		if (numArgs == 3 && getString(args[1], str) && getString(args[2], str2))
+			ok = replaceRange(args[0], str, str2, result);
+	} else if (func.equalsIgnoreCase("insertstring")) {
+		// Inserts the first argument into the second, before the position in the third
+		if (numArgs == 3 && getString(args[0], str2) && getString(args[1], str) && getInt(args[2], n)) {
+			DynamicValue range;
+			range.setIntRange(IntRange(n, 0));
+			ok = replaceRange(range, str, str2, result);
+		}
+	} else if (func.equalsIgnoreCase("findstringrange")) {
+		int32 occurrence = 1;
+		if (numArgs >= 2 && numArgs <= 4 && getString(args[0], str2) && getString(args[1], str)
+			&& (numArgs < 3 || getBool(args[2], flag)) && (numArgs < 4 || getInt(args[3], occurrence))) {
+			int32 pos = (occurrence < 1) ? findOccurrenceReverse(str, str2, flag, -occurrence) : findOccurrence(str, str2, flag, occurrence);
+			if (pos < 0)
+				setRangeResult(result, 0, 0);
+			else
+				setRangeResult(result, pos + 1, pos + str2.size());
+			ok = true;
+		}
+	} else if (func.equalsIgnoreCase("findstringcount")) {
+		if ((numArgs == 2 || numArgs == 3) && getString(args[0], str2) && getString(args[1], str) && (numArgs < 3 || getBool(args[2], flag))) {
+			int32 count = 0;
+			int32 offset = 0;
+			for (;;) {
+				int32 pos = findString(str.c_str() + offset, str2.c_str(), flag);
+				if (pos < 0)
+					break;
+				count++;
+				offset += pos + str2.size();
+			}
+			result.setInt(count);
+			ok = true;
+		}
+	} else if (func.equalsIgnoreCase("chartoascii")) {
+		if (numArgs == 1 && getString(args[0], str)) {
+			result.setInt(str.empty() ? 0 : static_cast<int32>(static_cast<int8>(str[0])));
+			ok = true;
+		}
+	} else if (func.equalsIgnoreCase("asciitochar")) {
+		if (numArgs == 1 && getInt(args[0], n)) {
+			result.setString(Common::String(static_cast<char>(n)));
+			ok = true;
+		}
+	} else if (func.equalsIgnoreCase("lowercase") || func.equalsIgnoreCase("uppercase")) {
+		if (numArgs == 1 && getString(args[0], str)) {
+			if (func.equalsIgnoreCase("lowercase"))
+				str.toLowercase();
+			else
+				str.toUppercase();
+			result.setString(str);
+			ok = true;
+		}
+	} else if (func.equalsIgnoreCase("canget") || func.equalsIgnoreCase("canset")) {
+		bool canAccess = false;
+		if (numArgs == 2 && getString(args[1], str)) {
+			Common::SharedPtr<RuntimeObject> obj;
+			if (args[0].getType() == DynamicValueTypes::kObject)
+				obj = args[0].getObject().object.lock();
+
+			if (obj) {
+				str.toLowercase();
+				if (func.equalsIgnoreCase("canget")) {
+					DynamicValue unused;
+					canAccess = obj->readAttribute(thread, unused, str);
+				} else {
+					DynamicValueWriteProxy proxy;
+					canAccess = (obj->writeRefAttribute(thread, proxy, str) == kMiniscriptInstructionOutcomeContinue);
+				}
+			}
+			result.setBool(canAccess);
+			ok = true;
+		}
+	} else {
+		thread->error("Function '" + func + "' is not implemented");
+		return kMiniscriptInstructionOutcomeFailed;
+	}
+
+	if (!ok) {
+		thread->error(Common::String::format("Invalid arguments to function '%s'", func.c_str()));
+		return kMiniscriptInstructionOutcomeFailed;
+	}
+
+	thread->popValues(numArgs);
+	thread->pushValue(result);
+
+	return kMiniscriptInstructionOutcomeContinue;
 }
 
 MiniscriptInstructionOutcome GetChild::execute(MiniscriptThread *thread) const {

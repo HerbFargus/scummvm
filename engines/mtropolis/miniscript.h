@@ -328,6 +328,26 @@ namespace MiniscriptInstructions {
 		MiniscriptInstructionOutcome execute(MiniscriptThread *thread) const override;
 	};
 
+	// mTropolis 2.0: emitted between the arguments of a function call.
+	// It has no effect on the stack.
+	class ArgSeparator : public MiniscriptInstruction {
+	private:
+		MiniscriptInstructionOutcome execute(MiniscriptThread *thread) const override;
+	};
+
+	// mTropolis 2.0: calls a built-in function, named by an attribute, with
+	// arguments in push order. The arguments are replaced by the result.
+	class CallFunction : public MiniscriptInstruction {
+	public:
+		CallFunction(uint32 functionNameAttribute, uint32 numArgs);
+
+	private:
+		MiniscriptInstructionOutcome execute(MiniscriptThread *thread) const override;
+
+		uint32 _functionNameAttribute;
+		uint32 _numArgs;
+	};
+
 	class PushValue : public MiniscriptInstruction {
 	public:
 		enum DataType {
