@@ -319,6 +319,7 @@ private:
 	bool _isStopped;
 
 	Common::SharedPtr<Graphics::ManagedSurface> _renderSurface;
+	Common::SharedPtr<Graphics::ManagedSurface> _paletteSurface;	// _renderSurface mapped to the palette, for 8-bit displays
 	uint32 _renderedFrame;
 
 	Common::SharedPtr<MToonMetadata> _metadata;

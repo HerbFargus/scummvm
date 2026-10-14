@@ -905,6 +905,13 @@ const Common::SharedPtr<Graphics::ManagedSurface> &CachedImage::optimize(Runtime
 				_optimizedSurface.reset(new Graphics::ManagedSurface());
 				_optimizedSurface->create(w, h, renderFmt);
 				Render::convert16To32(*_optimizedSurface, *_surface);
+			} else if (renderDepth == kColorDepthMode8Bit && (_colorDepth == kColorDepthMode16Bit || _colorDepth == kColorDepthMode32Bit)) {
+				// Map to the palette, like the original player on a 256 color display
+				Graphics::Surface *mapped = _surface->rawSurface().convertTo(renderFmt, nullptr, 0, runtime->getGlobalPalette().getPalette(), Palette::kNumColors, Graphics::kDitherNaive);
+				_optimizedSurface.reset(new Graphics::ManagedSurface());
+				_optimizedSurface->copyFrom(*mapped);
+				mapped->free();
+				delete mapped;
 			} else {
 				return _surface; // Can't optimize
 			}

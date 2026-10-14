@@ -361,6 +361,26 @@ void GraphicElement::render(Window *window) {
 			const ColorRGB8 fillColorRGB8 = _renderProps.getForeColor();
 			uint32 fillColor = pixFmt.ARGBToColor(255, fillColorRGB8.r, fillColorRGB8.g, fillColorRGB8.b);
 
+			if (pixFmt.isCLUT8()) {
+				// Nearest palette entry
+				const Palette *palette = getPalette().get();
+				if (!palette)
+					palette = &getRuntime()->getGlobalPalette();
+
+				const byte *paletteData = palette->getPalette();
+				uint32 bestDistance = 0xffffffffu;
+				for (uint i = 0; i < Palette::kNumColors; i++) {
+					int dr = paletteData[i * 3 + 0] - fillColorRGB8.r;
+					int dg = paletteData[i * 3 + 1] - fillColorRGB8.g;
+					int db = paletteData[i * 3 + 2] - fillColorRGB8.b;
+					uint32 distance = dr * dr + dg * dg + db * db;
+					if (distance < bestDistance) {
+						bestDistance = distance;
+						fillColor = i;
+					}
+				}
+			}
+
 			for (int32 srcY = clippedSrcRect.top; srcY < clippedSrcRect.bottom; srcY++) {
 				int32 spanWidth = clippedDrawRect.width();
 				void *destPixels = window->getSurface()->getBasePtr(clippedDrawRect.left, srcY + srcToDestY);
@@ -1546,14 +1566,29 @@ void MToonElement::render(Window *window) {
 
 		_cachedMToon->getOrRenderFrame(_renderedFrame, frame, _renderSurface);
 
+		Graphics::ManagedSurface *drawSurface = _renderSurface.get();
+
 		const Palette *palette = nullptr;
-		if (_renderSurface->format.bytesPerPixel == 1) {
+		if (_renderSurface->format.bytesPerPixel == 1 || getRuntime()->getRealColorDepth() == kColorDepthMode8Bit) {
 			palette = getPalette().get();
 			if (!palette)
 				palette = &getRuntime()->getGlobalPalette();
+		}
 
+		if (_renderSurface->format.bytesPerPixel == 1) {
 			// FIXME: Should support passing the palette to the blit function instead
 			_renderSurface->setPalette(palette->getPalette(), 0, 256);
+		} else if (palette) {
+			// True color mToon on an 8-bit display
+			if (!_paletteSurface || _renderedFrame != frame || _paletteSurface->w != _renderSurface->w || _paletteSurface->h != _renderSurface->h) {
+				Graphics::Surface *mapped = _renderSurface->rawSurface().convertTo(Graphics::PixelFormat::createFormatCLUT8(), nullptr, 0, palette->getPalette(), Palette::kNumColors, Graphics::kDitherNaive);
+				_paletteSurface.reset(new Graphics::ManagedSurface());
+				_paletteSurface->copyFrom(*mapped);
+				mapped->free();
+				delete mapped;
+			}
+			_paletteSurface->setPalette(palette->getPalette(), 0, 256);
+			drawSurface = _paletteSurface.get();
 		}
 
 		_renderedFrame = frame;
@@ -1585,7 +1620,7 @@ void MToonElement::render(Window *window) {
 				ColorRGB8 transColorRGB8 = _renderProps.getBackColor();
 				uint32 transColor = 0;
 
-				if (_renderSurface->format.bytesPerPixel == 1) {
+				if (drawSurface->format.bytesPerPixel == 1) {
 					assert(palette);
 
 					const byte *paletteData = palette->getPalette();
@@ -1606,11 +1641,11 @@ void MToonElement::render(Window *window) {
 						}
 					}
 				} else
-					transColor = _renderSurface->format.ARGBToColor(255, transColorRGB8.r, transColorRGB8.g, transColorRGB8.b);
+					transColor = drawSurface->format.ARGBToColor(255, transColorRGB8.r, transColorRGB8.g, transColorRGB8.b);
 
-				window->getSurface()->transBlitFrom(*_renderSurface, srcRect, destRect, transColor);
+				window->getSurface()->transBlitFrom(*drawSurface, srcRect, destRect, transColor);
 			} else if (inkMode == VisualElementRenderProperties::kInkModeCopy || inkMode == VisualElementRenderProperties::kInkModeDefault) {
-				window->getSurface()->blitFrom(*_renderSurface, srcRect, destRect);
+				window->getSurface()->blitFrom(*drawSurface, srcRect, destRect);
 			} else {
 				warning("Unsupported mToon ink mode");
 			}
