@@ -24,6 +24,8 @@
 #include "mtropolis/miniscript.h"
 
 #include "graphics/managed_surface.h"
+#include "graphics/fontman.h"
+#include "graphics/font.h"
 
 #include "video/smk_decoder.h"
 
@@ -302,18 +304,256 @@ void KWSmackerModifier::visitInternalReferences(IStructuralReferenceVisitor *vis
 	_sendWhenDone.visitInternalReferences(visitor);
 }
 
+EditCtrlModifier::EditCtrlModifier() : _textLimit(16), _runtime(nullptr), _isShown(false) {
+}
+
+EditCtrlModifier::EditCtrlModifier(const EditCtrlModifier &other)
+	: Modifier(other), _text(other._text), _textLimit(other._textLimit), _runtime(nullptr), _isShown(false) {
+}
+
+EditCtrlModifier::~EditCtrlModifier() {
+	hide();
+}
+
 bool EditCtrlModifier::load(const PlugInModifierLoaderContext &context, const Data::KW::EditCtrlModifier &data) {
 	return true;
 }
 
 bool EditCtrlModifier::respondsToEvent(const Event &evt) const {
-	return _event1.respondsTo(evt) || _event2.respondsTo(evt);
+	return false;
 }
 
 VThreadState EditCtrlModifier::consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) {
-	warning("EditCtrl modifier '%s' is not implemented", getName().c_str());
 	return kVThreadReturn;
 }
+
+void EditCtrlModifier::disable(Runtime *runtime) {
+	hide();
+}
+
+void EditCtrlModifier::show(Runtime *runtime) {
+	if (_isShown)
+		return;
+
+	_runtime = runtime;
+	_isShown = true;
+	runtime->addPostEffect(this);
+	_keySignaller = runtime->getProject()->notifyOnKeyboardEvent(this);
+	runtime->setSceneGraphDirty();
+}
+
+void EditCtrlModifier::hide() {
+	if (!_isShown)
+		return;
+
+	_isShown = false;
+	if (_keySignaller) {
+		_keySignaller->removeReceiver(this);
+		_keySignaller.reset();
+	}
+	if (_runtime) {
+		_runtime->removePostEffect(this);
+		_runtime->setSceneGraphDirty();
+	}
+}
+
+void EditCtrlModifier::sendNamedMessage(Runtime *runtime, const char *messageName) {
+	uint32 messageID = 0;
+	if (!runtime->getProject()->findAuthorMessageID(messageName, messageID)) {
+		warning("EditCtrl: No author message named '%s'", messageName);
+		return;
+	}
+
+	Structural *owner = findStructuralOwner();
+	if (!owner)
+		return;
+
+	DynamicValue data;
+	data.setInt(0);
+
+	Common::SharedPtr<MessageProperties> props(new MessageProperties(Event(EventIDs::kAuthorMessage, messageID), data, getSelfReference()));
+	Common::SharedPtr<MessageDispatch> dispatch(new MessageDispatch(props, owner, true, true, false));
+	runtime->queueMessage(dispatch);
+}
+
+void EditCtrlModifier::onKeyboardEvent(Runtime *runtime, const KeyboardInputEvent &keyEvt) {
+	if (keyEvt.getKeyEventType() != Common::EVENT_KEYDOWN)
+		return;
+
+	const Common::KeyState &key = keyEvt.getKeyState();
+
+	switch (key.keycode) {
+	case Common::KEYCODE_RETURN:
+	case Common::KEYCODE_KP_ENTER:
+		sendNamedMessage(runtime, "enterpressed");
+		return;
+	case Common::KEYCODE_ESCAPE:
+		sendNamedMessage(runtime, "canceldialog");
+		return;
+	case Common::KEYCODE_BACKSPACE:
+		if (!_text.empty())
+			_text.deleteLastChar();
+		break;
+	default:
+		if (key.keycode == Common::KEYCODE_a && (key.flags & Common::KBD_SHIFT) && (key.flags & Common::KBD_ALT)) {
+			sendNamedMessage(runtime, "aboutboxlaunch");
+			return;
+		}
+		if (key.ascii >= 32 && key.ascii < 127 && _text.size() < _textLimit)
+			_text += static_cast<char>(key.ascii);
+		else
+			return;
+		break;
+	}
+
+	runtime->setSceneGraphDirty();
+}
+
+void EditCtrlModifier::renderPostEffect(Graphics::ManagedSurface &surface) const {
+	Structural *owner = findStructuralOwner();
+	if (!owner || !owner->isElement() || !static_cast<Element *>(owner)->isVisual())
+		return;
+
+	const VisualElement *element = static_cast<const VisualElement *>(owner);
+	const Common::Point &origin = element->getCachedAbsoluteOrigin();
+	const Common::Rect &relRect = element->getRelativeRect();
+
+	// The original places the edit window one pixel below the element
+	Common::Rect rect(origin.x, origin.y + 1, origin.x + relRect.width(), origin.y + 1 + relRect.height());
+	rect.clip(Common::Rect(0, 0, surface.w, surface.h));
+	if (rect.isEmpty())
+		return;
+
+	uint32 white, black;
+	if (surface.format.isCLUT8()) {
+		const byte *pal = _runtime->getGlobalPalette().getPalette();
+		uint bestWhite = 0, bestBlack = 0;
+		int bestWhiteDist = INT_MAX, bestBlackDist = INT_MAX;
+		for (uint i = 0; i < 256; i++) {
+			int sum = pal[i * 3] + pal[i * 3 + 1] + pal[i * 3 + 2];
+			if (765 - sum < bestWhiteDist) {
+				bestWhiteDist = 765 - sum;
+				bestWhite = i;
+			}
+			if (sum < bestBlackDist) {
+				bestBlackDist = sum;
+				bestBlack = i;
+			}
+		}
+		white = bestWhite;
+		black = bestBlack;
+	} else {
+		white = surface.format.RGBToColor(255, 255, 255);
+		black = surface.format.RGBToColor(0, 0, 0);
+	}
+
+	surface.fillRect(rect, white);
+
+	const Graphics::Font *font = FontMan.getFontByUsage(Graphics::FontManager::kBigGUIFont);
+	int y = rect.top + (rect.height() - font->getFontHeight()) / 2;
+	font->drawString(&surface, _text, rect.left + 2, y, rect.width() - 4, black);
+
+	// Caret
+	if ((_runtime->getRealTime() / 500) % 2 == 0) {
+		int caretX = rect.left + 2 + font->getStringWidth(_text);
+		if (caretX < rect.right)
+			surface.vLine(caretX, y, y + font->getFontHeight() - 1, black);
+	}
+}
+
+bool EditCtrlModifier::readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) {
+	if (attrib == "text") {
+		result.setString(_text);
+		return true;
+	}
+	if (attrib == "length") {
+		result.setInt(_text.size());
+		return true;
+	}
+	if (attrib == "textlimit") {
+		result.setInt(_textLimit);
+		return true;
+	}
+
+	return Modifier::readAttribute(thread, result, attrib);
+}
+
+MiniscriptInstructionOutcome EditCtrlModifier::writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) {
+	static const struct {
+		const char *name;
+		WritableAttribute attrib;
+	} kAttribs[] = {
+		{"text", kAttribText},
+		{"textlimit", kAttribTextLimit},
+		{"update", kAttribUpdate},
+		{"enable", kAttribEnable},
+		{"disable", kAttribDisable},
+		{"setfocus", kAttribSetFocus},
+	};
+
+	for (const auto &entry : kAttribs) {
+		if (attrib == entry.name) {
+			result.pod.ifc = DynamicValueWriteInterfaceGlue<WriteProxy>::getInstance();
+			result.pod.objectRef = this;
+			result.pod.ptrOrOffset = entry.attrib;
+			return kMiniscriptInstructionOutcomeContinue;
+		}
+	}
+
+	return Modifier::writeRefAttribute(thread, result, attrib);
+}
+
+MiniscriptInstructionOutcome EditCtrlModifier::WriteProxy::write(MiniscriptThread *thread, const DynamicValue &value, void *objectRef, uintptr ptrOrOffset) {
+	static_cast<EditCtrlModifier *>(objectRef)->writeAttribute(thread->getRuntime(), static_cast<WritableAttribute>(ptrOrOffset), value);
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
+MiniscriptInstructionOutcome EditCtrlModifier::WriteProxy::refAttrib(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib) {
+	return kMiniscriptInstructionOutcomeFailed;
+}
+
+MiniscriptInstructionOutcome EditCtrlModifier::WriteProxy::refAttribIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib, const DynamicValue &index) {
+	return kMiniscriptInstructionOutcomeFailed;
+}
+
+void EditCtrlModifier::writeAttribute(Runtime *runtime, WritableAttribute attrib, const DynamicValue &value) {
+	switch (attrib) {
+	case kAttribText: {
+			DynamicValue converted;
+			if (value.getType() == DynamicValueTypes::kString)
+				_text = value.getString();
+			else if (value.convertToType(DynamicValueTypes::kString, converted))
+				_text = converted.getString();
+			if (_text.size() > _textLimit)
+				_text = _text.substr(0, _textLimit);
+			runtime->setSceneGraphDirty();
+		} break;
+	case kAttribTextLimit: {
+			int32 limit = 0;
+			if (value.roundToInt(limit) && limit > 0)
+				_textLimit = limit;
+		} break;
+	case kAttribEnable:
+		show(runtime);
+		break;
+	case kAttribDisable:
+		hide();
+		break;
+	case kAttribUpdate:
+	case kAttribSetFocus:
+		runtime->setSceneGraphDirty();
+		break;
+	}
+}
+
+#ifdef MTROPOLIS_DEBUG_ENABLE
+void EditCtrlModifier::debugInspect(IDebugInspectionReport *report) const {
+	Modifier::debugInspect(report);
+
+	report->declareDynamic("text", _text);
+	report->declareDynamic("shown", _isShown ? "true" : "false");
+}
+#endif
 
 Common::SharedPtr<Modifier> EditCtrlModifier::shallowClone() const {
 	return Common::SharedPtr<Modifier>(new EditCtrlModifier(*this));
@@ -365,6 +605,9 @@ static bool loadDlgMgrSend(MessengerSendSpec &send, const Data::KW::DlgMgrValue 
 static void dlgMgrSendCommand(Runtime *runtime, Modifier *sender, RuntimeObject *target, EventIDs::EventID eventID) {
 	if (!target || !target->isStructural())
 		return;
+
+	debug(2, "DlgMgr: Command %u to '%s' (%s)", static_cast<uint>(eventID), static_cast<Structural *>(target)->getName().c_str(),
+		static_cast<Structural *>(target)->debugGetTypeName());
 
 	Common::SharedPtr<MessageProperties> props(new MessageProperties(Event(eventID, 0), DynamicValue(), sender->getSelfReference()));
 	Common::SharedPtr<MessageDispatch> dispatch(new MessageDispatch(props, static_cast<Structural *>(target), false, true, true));
@@ -764,11 +1007,22 @@ void DlgMgrServerModifier::updateCurrentLine(Runtime *runtime) {
 		if (!track.isStarted) {
 			track.isStarted = true;
 
+			// Sound tracks with a source element play the source's sound through the target
 			Common::SharedPtr<Structural> source = track.source.lock();
-			if (source && target && !track.assetSwapped) {
+			if (target && track.sourceGUID != 0 && !track.assetSwapped) {
 				DynamicValue asset;
-				if (dlgMgrReadAttribute(runtime, this, source.get(), "asset", asset))
+				if (!source || !dlgMgrReadAttribute(runtime, this, source.get(), "asset", asset) || asset.getType() != DynamicValueTypes::kString) {
+					// The source may be in a scene that isn't loaded, so sounds use the media name stored with the track
+					if (track.trackType == Data::KW::DlgMgrTrack::kTrackTypeSound)
+						asset.setString(track.mediaName);
+					else
+						asset.clear();
+				}
+
+				if (asset.getType() == DynamicValueTypes::kString && !asset.getString().empty()) {
+					debug(2, "DlgMgr: Sound '%s' plays asset '%s'", target->getName().c_str(), asset.getString().c_str());
 					dlgMgrWriteAttribute(runtime, this, target.get(), "asset", asset);
+				}
 				track.assetSwapped = true;
 			}
 		}
@@ -964,8 +1218,8 @@ VThreadState DlgMgrClientModifier::consumeMessage(Runtime *runtime, const Common
 
 	if (_playWhen.respondsTo(evt)) {
 		if (_filterByTriggerValue) {
-			const DynamicValue &value = msg->getValue();
-			if (value.getType() != DynamicValueTypes::kInteger || value.getInt() != _triggerValue)
+			int32 value = 0;
+			if (!msg->getValue().roundToInt(value) || value != _triggerValue)
 				return kVThreadReturn;
 		}
 

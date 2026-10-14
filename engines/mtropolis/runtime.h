@@ -2512,6 +2512,7 @@ public:
 	Common::SharedPtr<PlayMediaSignaller> notifyOnPlayMedia(IPlayMediaSignalReceiver *receiver);
 
 	const char *findAuthorMessageName(uint32 id) const;
+	bool findAuthorMessageID(const Common::String &name, uint32 &outID) const;
 
 	const Common::SharedPtr<CursorGraphicCollection> &getCursorGraphics() const;
 
@@ -3057,6 +3058,7 @@ public:
 	// This should only return a propagation container if messages should actually be propagated (i.e. NOT switched-off behaviors!)
 	virtual IModifierContainer *getMessagePropagationContainer();
 	virtual IModifierContainer *getChildContainer();
+	Modifier *findChildModifierByName(const Common::String &name);
 
 	const Common::WeakPtr<RuntimeObject> &getParent() const;
 	void setParent(const Common::WeakPtr<RuntimeObject> &parent);

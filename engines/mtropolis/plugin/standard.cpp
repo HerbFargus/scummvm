@@ -35,6 +35,9 @@
 
 #include "mtropolis/miniscript.h"
 #include "mtropolis/plugin/standard.h"
+#include "engines/engine.h"
+#include "common/system.h"
+#include "common/savefile.h"
 #include "mtropolis/plugins.h"
 
 #include "mtropolis/miniscript.h"
@@ -1838,26 +1841,412 @@ const char *OpenAppModifier::getDefaultName() const {
 	return "Open App Modifier"; // ???
 }
 
+FileModifier::FileModifier()
+	: _defaultOpenMode(kOpenModeReadWrite), _isOpen(false), _isWritable(false), _isDirty(false), _position(0), _lastDelimiter(0), _error(kErrorNone) {
+}
+
+static Common::String fileModString(const Data::PlugInTypeTaggedValue &value) {
+	return (value.type == Data::PlugInTypeTaggedValue::kString) ? value.value.asString : Common::String();
+}
+
 bool FileModifier::load(const PlugInModifierLoaderContext &context, const Data::Standard::FileModifier &data) {
-	if (data.readWhen.type == Data::PlugInTypeTaggedValue::kEvent && !_event1.load(data.readWhen.value.asEvent))
+	if (data.openWhen.type == Data::PlugInTypeTaggedValue::kEvent && !_openWhen.load(data.openWhen.value.asEvent))
 		return false;
-	if (data.writeWhen.type == Data::PlugInTypeTaggedValue::kEvent && !_event2.load(data.writeWhen.value.asEvent))
+	if (data.closeWhen.type == Data::PlugInTypeTaggedValue::kEvent && !_closeWhen.load(data.closeWhen.value.asEvent))
 		return false;
+
+	_filePath = fileModString(data.filePath);
+	_chunkDelimiters = fileModString(data.chunkDelimiters);
+	_macType = fileModString(data.macFileType);
+	_macCreator = fileModString(data.macCreator);
+	if (data.openMode.type == Data::PlugInTypeTaggedValue::kInteger)
+		_defaultOpenMode = data.openMode.value.asInt;
 
 	return true;
 }
 
 bool FileModifier::respondsToEvent(const Event &evt) const {
-	return _event1.respondsTo(evt) || _event2.respondsTo(evt);
+	return _openWhen.respondsTo(evt) || _closeWhen.respondsTo(evt);
 }
 
 VThreadState FileModifier::consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) {
-	warning("File modifier '%s' is not implemented", getName().c_str());
+	if (_openWhen.respondsTo(msg->getEvent()))
+		_error = openFile(runtime, _defaultOpenMode);
+	else if (_closeWhen.respondsTo(msg->getEvent()))
+		closeFile();
+
 	return kVThreadReturn;
 }
 
+void FileModifier::disable(Runtime *runtime) {
+	closeFile();
+}
+
+Common::String FileModifier::getSaveFileName() const {
+	// Files are kept as save files named after the file, without its folder
+	Common::String fileName = _filePath;
+	for (uint i = 0; i < _filePath.size(); i++) {
+		char c = _filePath[i];
+		if (c == ':' || c == '\\' || c == '/')
+			fileName = _filePath.substr(i + 1);
+	}
+	fileName.toLowercase();
+
+	return ConfMan.getActiveDomainName() + "-" + fileName;
+}
+
+FileModifier::ErrorCode FileModifier::openFile(Runtime *runtime, int mode) {
+	if (_isOpen)
+		return kErrorOpenFailed;
+
+	if (_filePath.empty())
+		return kErrorInvalidPath;
+
+	_contents.clear();
+	_position = 0;
+	_isDirty = false;
+
+	if (mode != kOpenModeOverwrite) {
+		Common::ScopedPtr<Common::SeekableReadStream> stream(g_system->getSavefileManager()->openForLoading(getSaveFileName()));
+		if (!stream)
+			stream.reset(runtime->getProject()->createReadStreamForProjectPath(_filePath));
+
+		if (stream) {
+			_contents.resize(stream->size());
+			if (_contents.size() > 0)
+				stream->read(&_contents[0], _contents.size());
+		} else if (mode == kOpenModeRead)
+			return kErrorOpenFailed;
+	}
+
+	_isOpen = true;
+	_isWritable = (mode != kOpenModeRead);
+	_isDirty = (mode == kOpenModeOverwrite);
+	return kErrorNone;
+}
+
+void FileModifier::flush() {
+	if (!_isOpen || !_isWritable || !_isDirty)
+		return;
+
+	Common::ScopedPtr<Common::OutSaveFile> out(g_system->getSavefileManager()->openForSaving(getSaveFileName(), false));
+	if (!out) {
+		warning("FileMod: Couldn't write '%s'", getSaveFileName().c_str());
+		return;
+	}
+
+	if (_contents.size() > 0)
+		out->write(&_contents[0], _contents.size());
+	out->finalize();
+	_isDirty = false;
+}
+
+void FileModifier::closeFile() {
+	flush();
+	_isOpen = false;
+	_isWritable = false;
+	_contents.clear();
+	_position = 0;
+}
+
+FileModifier::ErrorCode FileModifier::readCharacters(uint count, Common::String &outStr) {
+	outStr.clear();
+
+	if (!_isOpen)
+		return kErrorNotOpen;
+
+	if (_position >= _contents.size())
+		return kErrorEndOfFile;
+
+	count = MIN<uint>(count, _contents.size() - _position);
+	outStr = Common::String(&_contents[_position], count);
+	_position += count;
+	return kErrorNone;
+}
+
+FileModifier::ErrorCode FileModifier::readChunk(Common::String &outStr) {
+	outStr.clear();
+
+	if (!_isOpen)
+		return kErrorNotOpen;
+
+	if (_chunkDelimiters.empty()) {
+		uint count = _contents.size() - MIN<uint>(_position, _contents.size());
+		return readCharacters(count, outStr);
+	}
+
+	if (_position >= _contents.size())
+		return kErrorEndOfFile;
+
+	uint end = _position;
+	while (end < _contents.size() && !strchr(_chunkDelimiters.c_str(), _contents[end]))
+		end++;
+
+	outStr = Common::String(&_contents[_position], end - _position);
+	_position = end;
+	_lastDelimiter = 0;
+
+	if (end < _contents.size()) {
+		_lastDelimiter = _contents[end];
+		_position++;
+
+		// CR LF counts as one delimiter, and LF is reported as CR
+		if (_lastDelimiter == '\r') {
+			if (_position < _contents.size() && _contents[_position] == '\n')
+				_position++;
+		} else if (_lastDelimiter == '\n')
+			_lastDelimiter = '\r';
+	}
+
+	return kErrorNone;
+}
+
+bool FileModifier::readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) {
+	Common::String str;
+
+	if (attrib == "filepath") {
+		result.setString(_filePath);
+		return true;
+	}
+	if (attrib == "filename") {
+		Common::String fileName = _filePath;
+		for (uint i = 0; i < _filePath.size(); i++)
+			if (_filePath[i] == ':' || _filePath[i] == '\\' || _filePath[i] == '/')
+				fileName = _filePath.substr(i + 1);
+		result.setString(fileName);
+		return true;
+	}
+	if (attrib == "openmode") {
+		result.setInt(_defaultOpenMode);
+		return true;
+	}
+	if (attrib == "chunkdelimiters") {
+		result.setString(_chunkDelimiters);
+		return true;
+	}
+	if (attrib == "lastdelimiter") {
+		result.setString(_lastDelimiter ? Common::String(_lastDelimiter) : Common::String());
+		return true;
+	}
+	if (attrib == "mactype") {
+		result.setString(_macType);
+		return true;
+	}
+	if (attrib == "maccreator") {
+		result.setString(_macCreator);
+		return true;
+	}
+	if (attrib == "error") {
+		result.setInt(_error);
+		return true;
+	}
+	if (attrib == "index") {
+		result.setInt(_position + 1);
+		return true;
+	}
+	if (attrib == "index0") {
+		result.setInt(_position);
+		return true;
+	}
+	if (attrib == "length") {
+		_error = _isOpen ? kErrorNone : kErrorNotOpen;
+		result.setInt(_isOpen ? _contents.size() : 0);
+		return true;
+	}
+	if (attrib == "readcharacter" || attrib == "read") {
+		_error = readCharacters(1, str);
+		result.setString(str);
+		return true;
+	}
+	if (attrib == "readchunk") {
+		_error = readChunk(str);
+		result.setString(str);
+		return true;
+	}
+	if (attrib == "readtoend") {
+		_error = readCharacters(_contents.size(), str);
+		result.setString(str);
+		return true;
+	}
+	if (attrib == "chunkcount") {
+		uint savedPosition = _position;
+		int32 count = 0;
+		_position = 0;
+		while (readChunk(str) == kErrorNone)
+			count++;
+		_position = savedPosition;
+		result.setInt(count);
+		return true;
+	}
+
+	return Modifier::readAttribute(thread, result, attrib);
+}
+
+bool FileModifier::readAttributeIndexed(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib, const DynamicValue &index) {
+	if (attrib == "read") {
+		int32 count = 0;
+		if (!index.roundToInt(count) || count < 0)
+			return false;
+
+		Common::String str;
+		_error = readCharacters(count, str);
+		result.setString(str);
+		return true;
+	}
+
+	return Modifier::readAttributeIndexed(thread, result, attrib, index);
+}
+
+MiniscriptInstructionOutcome FileModifier::writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) {
+	static const struct {
+		const char *name;
+		WritableAttribute attrib;
+	} kAttribs[] = {
+		{"openmode", kAttribOpenMode},
+		{"close", kAttribClose},
+		{"write", kAttribWrite},
+		{"append", kAttribAppend},
+		{"index", kAttribIndex},
+		{"index0", kAttribIndex0},
+		{"length", kAttribLength},
+		{"filepath", kAttribFilePath},
+		{"chunkdelimiters", kAttribChunkDelimiters},
+		{"mactype", kAttribMacType},
+		{"maccreator", kAttribMacCreator},
+	};
+
+	for (const auto &entry : kAttribs) {
+		if (attrib == entry.name) {
+			result.pod.ifc = DynamicValueWriteInterfaceGlue<WriteProxy>::getInstance();
+			result.pod.objectRef = this;
+			result.pod.ptrOrOffset = entry.attrib;
+			return kMiniscriptInstructionOutcomeContinue;
+		}
+	}
+
+	return Modifier::writeRefAttribute(thread, result, attrib);
+}
+
+MiniscriptInstructionOutcome FileModifier::WriteProxy::write(MiniscriptThread *thread, const DynamicValue &value, void *objectRef, uintptr ptrOrOffset) {
+	FileModifier *self = static_cast<FileModifier *>(objectRef);
+	self->_error = self->writeAttribute(thread->getRuntime(), static_cast<WritableAttribute>(ptrOrOffset), value);
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
+MiniscriptInstructionOutcome FileModifier::WriteProxy::refAttrib(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib) {
+	return kMiniscriptInstructionOutcomeFailed;
+}
+
+MiniscriptInstructionOutcome FileModifier::WriteProxy::refAttribIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib, const DynamicValue &index) {
+	return kMiniscriptInstructionOutcomeFailed;
+}
+
+FileModifier::ErrorCode FileModifier::writeAttribute(Runtime *runtime, WritableAttribute attrib, const DynamicValue &value) {
+	Common::String str;
+	int32 n = 0;
+
+	if (value.getType() == DynamicValueTypes::kString)
+		str = value.getString();
+	else {
+		DynamicValue converted;
+		if (value.convertToType(DynamicValueTypes::kString, converted))
+			str = converted.getString();
+	}
+	value.roundToInt(n);
+
+	switch (attrib) {
+	case kAttribOpenMode: {
+			int mode = _defaultOpenMode;
+			if (value.getType() == DynamicValueTypes::kString) {
+				if (str.equalsIgnoreCase("read"))
+					mode = kOpenModeRead;
+				else if (str.equalsIgnoreCase("readwrite"))
+					mode = kOpenModeReadWrite;
+				else if (str.equalsIgnoreCase("overwrite"))
+					mode = kOpenModeOverwrite;
+				else if (!str.equalsIgnoreCase("default"))
+					mode = atoi(str.c_str());
+			} else
+				mode = n;
+
+			ErrorCode err = openFile(runtime, mode);
+			if (err == kErrorNone)
+				_defaultOpenMode = mode;
+			return err;
+		}
+	case kAttribClose:
+		closeFile();
+		return kErrorNone;
+	case kAttribWrite:
+	case kAttribAppend:
+		if (!_isOpen || !_isWritable)
+			return kErrorNotWritable;
+
+		if (attrib == kAttribAppend)
+			_position = _contents.size();
+
+		if (_position + str.size() > _contents.size())
+			_contents.resize(_position + str.size());
+		if (str.size() > 0)
+			memcpy(&_contents[_position], str.c_str(), str.size());
+		_position += str.size();
+		_isDirty = true;
+		flush();
+		return kErrorNone;
+	case kAttribIndex:
+	case kAttribIndex0:
+		if (attrib == kAttribIndex)
+			n--;
+		if (n < 0)
+			return kErrorEndOfFile;
+		if (static_cast<uint>(n) > _contents.size())
+			return kErrorEndOfFile;
+		_position = n;
+		return kErrorNone;
+	case kAttribLength:
+		if (!_isOpen || !_isWritable)
+			return kErrorNotWritable;
+		if (n < 0)
+			n = 0;
+		_contents.resize(n);
+		if (_position > _contents.size())
+			_position = _contents.size();
+		_isDirty = true;
+		flush();
+		return kErrorNone;
+	case kAttribFilePath:
+		closeFile();
+		_filePath = str;
+		return kErrorNone;
+	case kAttribChunkDelimiters:
+		_chunkDelimiters = str;
+		return kErrorNone;
+	case kAttribMacType:
+		_macType = str;
+		return kErrorNone;
+	case kAttribMacCreator:
+		_macCreator = str;
+		return kErrorNone;
+	}
+
+	return kErrorNone;
+}
+
+#ifdef MTROPOLIS_DEBUG_ENABLE
+void FileModifier::debugInspect(IDebugInspectionReport *report) const {
+	Modifier::debugInspect(report);
+
+	report->declareDynamic("filePath", _filePath);
+	report->declareDynamic("isOpen", _isOpen ? "true" : "false");
+	report->declareDynamic("position", Common::String::format("%u", _position));
+}
+#endif
+
 Common::SharedPtr<Modifier> FileModifier::shallowClone() const {
-	return Common::SharedPtr<Modifier>(new FileModifier(*this));
+	Common::SharedPtr<FileModifier> clone(new FileModifier(*this));
+	clone->_isOpen = false;
+	clone->_contents.clear();
+	return clone;
 }
 
 const char *FileModifier::getDefaultName() const {

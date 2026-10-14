@@ -267,8 +267,8 @@ DataReadErrorCode FileModifier::load(PlugIn &plugIn, const PlugInModifier &prefi
 	if (prefix.plugInRevision != 2)
 		return kDataReadErrorUnsupportedRevision;
 
-	if (!loadV2RevisionPrefix(prefix, reader) || !readWhen.load(reader) || !writeWhen.load(reader) || !filePath.load(reader)
-		|| !lineEnding.load(reader) || !macFileType.load(reader) || !macCreator.load(reader) || !unknown1Int.load(reader))
+	if (!loadV2RevisionPrefix(prefix, reader) || !openWhen.load(reader) || !closeWhen.load(reader) || !filePath.load(reader)
+		|| !chunkDelimiters.load(reader) || !macFileType.load(reader) || !macCreator.load(reader) || !openMode.load(reader))
 		return kDataReadErrorReadFailed;
 
 	return kDataReadErrorNone;

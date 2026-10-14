@@ -326,6 +326,9 @@ Common::Error MTropolisEngine::run() {
 		}
 	} else if (_gameDescription->gameID == GID_MTI) {
 		HackSuites::addMTIQuirks(*_gameDescription, _runtime->getHacks());
+	} else if (_gameDescription->gameID >= GID_MSB_ANIMAL && _gameDescription->gameID <= GID_MSB_WHALES) {
+		// Dialog lines swap in sound assets from other scenes
+		_runtime->getHacks().allowAssetsFromOtherScenes = true;
 	} else if (_gameDescription->gameID == GID_UNIT) {
 		Palette pal;
 		pal.initDefaultPalette(2);

@@ -470,24 +470,88 @@ private:
 
 class FileModifier : public Modifier {
 public:
+	FileModifier();
+
 	bool load(const PlugInModifierLoaderContext &context, const Data::Standard::FileModifier &data);
 
 	bool respondsToEvent(const Event &evt) const override;
 	VThreadState consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) override;
 
-	void disable(Runtime *runtime) override {}
+	void disable(Runtime *runtime) override;
+
+	bool readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) override;
+	bool readAttributeIndexed(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib, const DynamicValue &index) override;
+	MiniscriptInstructionOutcome writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) override;
 
 #ifdef MTROPOLIS_DEBUG_ENABLE
 	const char *debugGetTypeName() const override { return "File Modifier"; }
-	SupportStatus debugGetSupportStatus() const override { return kSupportStatusNone; }
+	SupportStatus debugGetSupportStatus() const override { return kSupportStatusPartial; }
+	void debugInspect(IDebugInspectionReport *report) const override;
 #endif
 
 private:
+	enum OpenMode {
+		kOpenModeRead = 0,
+		kOpenModeOverwrite = 1,
+		kOpenModeReadWrite = 2,
+	};
+
+	enum ErrorCode {
+		kErrorNone = 0,
+		kErrorInvalidPath = 1,
+		kErrorNotWritable = 2,
+		kErrorNotOpen = 3,
+		kErrorOpenFailed = 4,
+		kErrorEndOfFile = 6,
+	};
+
+	enum WritableAttribute {
+		kAttribOpenMode,
+		kAttribClose,
+		kAttribWrite,
+		kAttribAppend,
+		kAttribIndex,
+		kAttribIndex0,
+		kAttribLength,
+		kAttribFilePath,
+		kAttribChunkDelimiters,
+		kAttribMacType,
+		kAttribMacCreator,
+	};
+
+	struct WriteProxy {
+		static MiniscriptInstructionOutcome write(MiniscriptThread *thread, const DynamicValue &value, void *objectRef, uintptr ptrOrOffset);
+		static MiniscriptInstructionOutcome refAttrib(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib);
+		static MiniscriptInstructionOutcome refAttribIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib, const DynamicValue &index);
+	};
+
 	Common::SharedPtr<Modifier> shallowClone() const override;
 	const char *getDefaultName() const override;
 
-	Event _event1;
-	Event _event2;
+	ErrorCode writeAttribute(Runtime *runtime, WritableAttribute attrib, const DynamicValue &value);
+	ErrorCode openFile(Runtime *runtime, int mode);
+	void closeFile();
+	void flush();
+	ErrorCode readCharacters(uint count, Common::String &outStr);
+	ErrorCode readChunk(Common::String &outStr);
+	Common::String getSaveFileName() const;
+
+	Event _openWhen;
+	Event _closeWhen;
+	Common::String _filePath;
+	Common::String _chunkDelimiters;
+	Common::String _macType;
+	Common::String _macCreator;
+	int _defaultOpenMode;
+
+	// Open file state, buffered in memory
+	bool _isOpen;
+	bool _isWritable;
+	bool _isDirty;
+	Common::Array<char> _contents;
+	uint _position;
+	char _lastDelimiter;
+	ErrorCode _error;
 };
 
 class PointMotionModifier : public Modifier {

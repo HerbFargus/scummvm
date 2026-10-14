@@ -8190,6 +8190,23 @@ Common::SharedPtr<KeyboardEventSignaller> Project::notifyOnKeyboardEvent(IKeyboa
 	return _keyboardEventSignaller;
 }
 
+bool Project::findAuthorMessageID(const Common::String &name, uint32 &outID) const {
+	for (const LabelSuperGroup &sg : _labelSuperGroups) {
+		if (sg.name == "Author Messages") {
+			for (size_t j = 0; j < sg.numTotalNodes; j++) {
+				const LabelTree &treeNode = _labelTree[j + sg.firstRootNodeIndex];
+				if (caseInsensitiveEqual(treeNode.name, name)) {
+					outID = treeNode.id;
+					return true;
+				}
+			}
+			break;
+		}
+	}
+
+	return false;
+}
+
 const char *Project::findAuthorMessageName(uint32 id) const {
 	for (size_t i = 0; i < _labelSuperGroups.size(); i++) {
 		const LabelSuperGroup &sg = _labelSuperGroups[i];
@@ -10128,7 +10145,26 @@ bool Modifier::readAttribute(MiniscriptThread *thread, DynamicValue &result, con
 		return true;
 	}
 
+	// Child modifiers of behaviors can be referenced by name
+	if (Modifier *child = findChildModifierByName(attrib)) {
+		result.setObject(child->getSelfReference());
+		return true;
+	}
+
 	return false;
+}
+
+Modifier *Modifier::findChildModifierByName(const Common::String &name) {
+	IModifierContainer *container = getChildContainer();
+	if (!container)
+		return nullptr;
+
+	for (const Common::SharedPtr<Modifier> &child : container->getModifiers()) {
+		if (caseInsensitiveEqual(child->getName(), name))
+			return child.get();
+	}
+
+	return nullptr;
 }
 
 MiniscriptInstructionOutcome Modifier::writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &writeProxy, const Common::String &attrib) {
@@ -10137,6 +10173,14 @@ MiniscriptInstructionOutcome Modifier::writeRefAttribute(MiniscriptThread *threa
 		return kMiniscriptInstructionOutcomeContinue;
 	} else if (attrib == "name") {
 		DynamicValueWriteStringHelper::create(&_name, writeProxy);
+		return kMiniscriptInstructionOutcomeContinue;
+	}
+
+	if (Modifier *child = findChildModifierByName(attrib)) {
+		if (child->isVariable())
+			writeProxy = static_cast<VariableModifier *>(child)->createWriteProxy();
+		else
+			DynamicValueWriteObjectHelper::create(child, writeProxy);
 		return kMiniscriptInstructionOutcomeContinue;
 	}
 

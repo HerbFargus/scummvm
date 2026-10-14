@@ -192,13 +192,13 @@ protected:
 };
 
 struct FileModifier : public PlugInModifierData {
-	PlugInTypeTaggedValue readWhen;
-	PlugInTypeTaggedValue writeWhen;
+	PlugInTypeTaggedValue openWhen;
+	PlugInTypeTaggedValue closeWhen;
 	PlugInTypeTaggedValue filePath;
-	PlugInTypeTaggedValue lineEnding;
+	PlugInTypeTaggedValue chunkDelimiters;
 	PlugInTypeTaggedValue macFileType;
 	PlugInTypeTaggedValue macCreator;
-	PlugInTypeTaggedValue unknown1Int;
+	PlugInTypeTaggedValue openMode;
 
 protected:
 	DataReadErrorCode load(PlugIn &plugIn, const PlugInModifier &prefix, DataReader &reader) override;

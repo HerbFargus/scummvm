@@ -111,26 +111,61 @@ private:
 	bool _isPlaying;
 };
 
-class EditCtrlModifier : public Modifier {
+class EditCtrlModifier : public Modifier, public IPostEffect, public IKeyboardEventReceiver {
 public:
+	EditCtrlModifier();
+	EditCtrlModifier(const EditCtrlModifier &other);
+	~EditCtrlModifier();
+
 	bool load(const PlugInModifierLoaderContext &context, const Data::KW::EditCtrlModifier &data);
 
 	bool respondsToEvent(const Event &evt) const override;
 	VThreadState consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) override;
 
-	void disable(Runtime *runtime) override {}
+	void disable(Runtime *runtime) override;
+
+	bool readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) override;
+	MiniscriptInstructionOutcome writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) override;
+
+	void renderPostEffect(Graphics::ManagedSurface &surface) const override;
+	void onKeyboardEvent(Runtime *runtime, const KeyboardInputEvent &keyEvt) override;
 
 #ifdef MTROPOLIS_DEBUG_ENABLE
 	const char *debugGetTypeName() const override { return "EditCtrl Modifier"; }
-	SupportStatus debugGetSupportStatus() const override { return kSupportStatusNone; }
+	SupportStatus debugGetSupportStatus() const override { return kSupportStatusPartial; }
+	void debugInspect(IDebugInspectionReport *report) const override;
 #endif
 
 private:
+	enum WritableAttribute {
+		kAttribText,
+		kAttribTextLimit,
+		kAttribUpdate,
+		kAttribEnable,
+		kAttribDisable,
+		kAttribSetFocus,
+	};
+
+	struct WriteProxy {
+		static MiniscriptInstructionOutcome write(MiniscriptThread *thread, const DynamicValue &value, void *objectRef, uintptr ptrOrOffset);
+		static MiniscriptInstructionOutcome refAttrib(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib);
+		static MiniscriptInstructionOutcome refAttribIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib, const DynamicValue &index);
+	};
+
 	Common::SharedPtr<Modifier> shallowClone() const override;
 	const char *getDefaultName() const override;
 
-	Event _event1;
-	Event _event2;
+	void writeAttribute(Runtime *runtime, WritableAttribute attrib, const DynamicValue &value);
+	void show(Runtime *runtime);
+	void hide();
+	void sendNamedMessage(Runtime *runtime, const char *messageName);
+
+	Common::String _text;
+	uint _textLimit;
+
+	Runtime *_runtime;
+	bool _isShown;
+	Common::SharedPtr<KeyboardEventSignaller> _keySignaller;
 };
 
 class GameModifier : public Modifier {

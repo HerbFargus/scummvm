@@ -1869,6 +1869,8 @@ MiniscriptInstructionOutcome MToonElement::scriptSetRange(MiniscriptThread *thre
 		return scriptSetRangeTyped(thread, value.getPoint());
 	if (value.getType() == DynamicValueTypes::kLabel)
 		return scriptSetRangeTyped(thread, value.getLabel());
+	if (value.getType() == DynamicValueTypes::kString)
+		return scriptSetRangeByName(thread, value.getString());
 
 	if (thread)
 		thread->error("Invalid type for mToon range");
@@ -1964,6 +1966,12 @@ MiniscriptInstructionOutcome MToonElement::scriptSetRangeTyped(MiniscriptThread 
 		return kMiniscriptInstructionOutcomeFailed;
 	}
 
+	return scriptSetRangeByName(thread, *nameStrPtr);
+}
+
+MiniscriptInstructionOutcome MToonElement::scriptSetRangeByName(MiniscriptThread *thread, const Common::String &name) {
+	const Common::String *nameStrPtr = &name;
+
 	if (!_metadata) {
 		if (thread)
 			thread->error("mToon range couldn't be resolved because the metadata wasn't loaded yet");
@@ -1977,8 +1985,22 @@ MiniscriptInstructionOutcome MToonElement::scriptSetRangeTyped(MiniscriptThread 
 		}
 	}
 
-	if (thread)
-		thread->error("mToon range was assigned to a label but the label doesn't exist in the mToon data");
+	// Range names in mTropolis 2.0 titles are referenced without the spaces in their names
+	Common::String compactName = name;
+	Common::replace(compactName, " ", "");
+	for (const MToonMetadata::FrameRangeDef &frameRange : _metadata->frameRanges) {
+		Common::String compactRangeName = frameRange.name;
+		Common::replace(compactRangeName, " ", "");
+		if (caseInsensitiveEqual(compactRangeName, compactName))
+			return scriptSetRangeTyped(thread, IntRange(frameRange.startFrame + 1, frameRange.endFrame + 1));
+	}
+
+	if (thread) {
+		Common::String available;
+		for (const MToonMetadata::FrameRangeDef &frameRange : _metadata->frameRanges)
+			available += " '" + frameRange.name + "'";
+		thread->error("mToon range '" + name + "' doesn't exist in the mToon data, ranges:" + available);
+	}
 
 	return kMiniscriptInstructionOutcomeFailed;
 }
