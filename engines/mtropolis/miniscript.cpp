@@ -414,8 +414,10 @@ bool MiniscriptParser::parse(const Data::MiniscriptProgram &program, Common::Sha
 		SIMiniscriptInstructionFactory *factory = resolveOpcode(rawInstruction.opcode);
 		rawInstruction.instrFactory = factory;
 
-		if (!factory)
+		if (!factory) {
+			warning("Miniscript: Unknown opcode %x", static_cast<uint>(rawInstruction.opcode));
 			return false;
+		}
 
 		size_t compiledSize = 0;
 		size_t compiledAlignment = 0;
@@ -454,6 +456,8 @@ bool MiniscriptParser::parse(const Data::MiniscriptProgram &program, Common::Sha
 		Data::DataReader instrContentsReader(0, instrContentsStream, reader.getDataFormat(), reader.getRuntimeVersion(), reader.isVersionAutoDetect());
 
 		if (!rawInstruction.instrFactory->create(&programData[baseOffset + rawInstruction.pdPosition], rawInstruction.flags, instrContentsReader, miniscriptInstructions[i], parserFeedback)) {
+			warning("Miniscript: Failed to load instruction with opcode %x, flags %x, %u bytes of data", static_cast<uint>(rawInstruction.opcode), static_cast<uint>(rawInstruction.flags), rawInstruction.contents.size());
+
 			// Destroy any already-created instructions
 			for (size_t di = 0; di < i; di++) {
 				miniscriptInstructions[i - 1 - di]->~MiniscriptInstruction();
