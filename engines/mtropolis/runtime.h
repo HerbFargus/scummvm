@@ -1581,6 +1581,10 @@ public:
 	void drawFrame();
 
 	void queueProject(const Common::SharedPtr<ProjectDescription> &desc);
+
+	// Open Title: requests that the engine boots another title file
+	void requestOpenTitle(const Common::String &path);
+	bool takeOpenTitleRequest(Common::String &outPath);
 	void closeProject();
 
 	void addVolume(int volumeID, const char *name, bool isMounted);
@@ -1899,6 +1903,7 @@ private:
 
 	Common::Array<VolumeState> _volumes;
 	Common::SharedPtr<ProjectDescription> _queuedProjectDesc;
+	Common::String _openTitleRequest;
 	Common::SharedPtr<Project> _project;
 	Common::ScopedPtr<VThread> _vthread;
 	Common::Array<Common::SharedPtr<MessageDispatch> > _messageQueue;

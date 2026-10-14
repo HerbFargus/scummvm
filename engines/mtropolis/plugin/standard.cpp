@@ -1782,10 +1782,9 @@ bool OpenTitleModifier::respondsToEvent(const Event &evt) const {
 }
 
 VThreadState OpenTitleModifier::consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) {
-#ifdef MTROPOLIS_DEBUG_ENABLE
-	if (Debugger *debugger = runtime->debugGetDebugger())
-		debugger->notify(kDebugSeverityWarning, "Open Title modifier was executed, which isn't implemented yet");
-#endif
+	if (_executeWhen.respondsTo(msg->getEvent()))
+		runtime->requestOpenTitle(_pathOrUrl);
+
 	return kVThreadReturn;
 }
 

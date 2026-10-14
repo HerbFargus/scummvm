@@ -275,6 +275,7 @@ Common::Error MTropolisEngine::run() {
 	BootConfiguration bootConfig = bootProject(*_gameDescription);
 
 	_runtime->queueProject(bootConfig._projectDesc);
+	Common::String mainSegmentPath = bootConfig._mainSegmentPath;
 
 	preferredWidth = bootConfig._width;
 	preferredHeight = bootConfig._height;
@@ -477,6 +478,30 @@ Common::Error MTropolisEngine::run() {
 			testInput->update(_system, _runtime.get(), this);
 
 		handleEvents();
+
+		Common::String openTitlePath;
+		if (_runtime->takeOpenTitleRequest(openTitlePath)) {
+			// Titles are opened relative to the folder of the current main segment
+			static const char *const kStartupSegmentFolder = "<Startup Segment Folder>";
+
+			Common::String relPath = openTitlePath;
+			if (relPath.hasPrefixIgnoreCase(kStartupSegmentFolder))
+				relPath = relPath.substr(strlen(kStartupSegmentFolder));
+			for (uint i = 0; i < relPath.size(); i++)
+				if (relPath[i] == ':' || relPath[i] == '\\')
+					relPath.setChar('/', i);
+			while (relPath.hasPrefix("/"))
+				relPath.deleteChar(0);
+
+			size_t lastSlash = mainSegmentPath.findLastOf('/');
+			Common::String newMainSegment = (lastSlash == Common::String::npos) ? relPath : mainSegmentPath.substr(0, lastSlash + 1) + relPath;
+
+			debug(1, "Opening title '%s' as '%s'", openTitlePath.c_str(), newMainSegment.c_str());
+
+			BootConfiguration titleConfig = bootProject(*_gameDescription, newMainSegment);
+			mainSegmentPath = titleConfig._mainSegmentPath;
+			_runtime->queueProject(titleConfig._projectDesc);
+		}
 
 		if (!_runtime->runFrame())
 			break;

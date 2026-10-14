@@ -7307,6 +7307,19 @@ void Runtime::queueProject(const Common::SharedPtr<ProjectDescription> &desc) {
 	_queuedProjectDesc = desc;
 }
 
+void Runtime::requestOpenTitle(const Common::String &path) {
+	_openTitleRequest = path;
+}
+
+bool Runtime::takeOpenTitleRequest(Common::String &outPath) {
+	if (_openTitleRequest.empty())
+		return false;
+
+	outPath = _openTitleRequest;
+	_openTitleRequest.clear();
+	return true;
+}
+
 void Runtime::closeProject() {
 	// TODO: There are actually some elaborate cases here involving opening projects, project return list,
 	// Project Ended message, etc. and Obsidian actually attempts to stop MIDI playback on project end.

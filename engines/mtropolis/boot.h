@@ -44,9 +44,11 @@ struct BootConfiguration {
 	uint16 _height;
 
 	Common::SharedPtr<ProjectDescription> _projectDesc;
+	Common::String _mainSegmentPath;	// VFS path of the main segment, with '/' separators
 };
 
-BootConfiguration bootProject(const MTropolisGameDescription &gameDesc);
+// mainSegmentOverride boots another title of the same game (used by Open Title)
+BootConfiguration bootProject(const MTropolisGameDescription &gameDesc, const Common::String &mainSegmentOverride = Common::String());
 void bootAddSearchPaths(const Common::FSNode &gameDataDir, const MTropolisGameDescription &gameDesc);
 
 } // End of namespace MTropolis
