@@ -928,7 +928,7 @@ bool ListVariableModifier::load(const PlugInModifierLoaderContext &context, cons
 		storage->_preferredContentType = DynamicValueTypes::kObject;
 		if (data.persistentValuesGarbled) {
 			// Ignore and let the game fix it
-		} else {
+		} else if (data.havePersistentData && data.numValues > 0) {
 			warning("Loading object reference lists from data is not implemented");
 		}
 		loadData = false;
@@ -1125,7 +1125,50 @@ MiniscriptInstructionOutcome ListVariableModifier::writeRefAttributeIndexed(Mini
 		storage->_list->createWriteProxyForIndex(realIndex, writeProxy);
 		writeProxy.containerList = storage->_list;
 		return kMiniscriptInstructionOutcomeContinue;
+	} else if (attrib == "insert") {
+		size_t realIndex = 0;
+		if (!storage->_list->dynamicValueToIndex(realIndex, index))
+			return kMiniscriptInstructionOutcomeFailed;
+
+		writeProxy.pod.ifc = DynamicValueWriteInterfaceGlue<InsertProxyInterface>::getInstance();
+		writeProxy.pod.objectRef = storage->_list.get();
+		writeProxy.pod.ptrOrOffset = realIndex;
+		writeProxy.containerList = storage->_list;
+		return kMiniscriptInstructionOutcomeContinue;
 	}
+	return kMiniscriptInstructionOutcomeFailed;
+}
+
+MiniscriptInstructionOutcome ListVariableModifier::InsertProxyInterface::write(MiniscriptThread *thread, const DynamicValue &dest, void *objectRef, uintptr ptrOrOffset) {
+	DynamicList *list = static_cast<DynamicList *>(objectRef);
+	size_t size = list->getSize();
+
+	if (ptrOrOffset < size) {
+		// Shift the following entries up
+		DynamicValue last;
+		if (!list->getAtIndex(size - 1, last) || !list->setAtIndex(size, last))
+			return kMiniscriptInstructionOutcomeFailed;
+
+		for (size_t i = size - 1; i > ptrOrOffset; i--) {
+			DynamicValue moved;
+			if (!list->getAtIndex(i - 1, moved) || !list->setAtIndex(i, moved))
+				return kMiniscriptInstructionOutcomeFailed;
+		}
+	}
+
+	if (!list->setAtIndex(ptrOrOffset, dest)) {
+		thread->error("Failed to insert into list");
+		return kMiniscriptInstructionOutcomeFailed;
+	}
+
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
+MiniscriptInstructionOutcome ListVariableModifier::InsertProxyInterface::refAttrib(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib) {
+	return kMiniscriptInstructionOutcomeFailed;
+}
+
+MiniscriptInstructionOutcome ListVariableModifier::InsertProxyInterface::refAttribIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib, const DynamicValue &index) {
 	return kMiniscriptInstructionOutcomeFailed;
 }
 
@@ -2252,30 +2295,319 @@ const char *FileModifier::getDefaultName() const {
 	return "File";
 }
 
+PointMotionModifier::PointMotionModifier()
+	: _easeFlags(0), _durationMode(false), _speed(100.0), _duration(3.0), _updateRate(30), _fixedStep(false), _hasDoneSend(false),
+	  _running(false), _curX(0.0), _curY(0.0), _progress(0.0), _startTime(0.0), _lastTime(0.0) {
+}
+
+PointMotionModifier::~PointMotionModifier() {
+	if (_scheduledEvent)
+		_scheduledEvent->cancel();
+}
+
 bool PointMotionModifier::load(const PlugInModifierLoaderContext &context, const Data::Standard::PointMotionModifier &data) {
-	if (data.startWhen.type == Data::PlugInTypeTaggedValue::kEvent && !_event1.load(data.startWhen.value.asEvent))
+	if (data.startWhen.type != Data::PlugInTypeTaggedValue::kEvent || !_startWhen.load(data.startWhen.value.asEvent))
 		return false;
-	if (data.stopWhen.type == Data::PlugInTypeTaggedValue::kEvent && !_event2.load(data.stopWhen.value.asEvent))
+	if (data.stopWhen.type != Data::PlugInTypeTaggedValue::kEvent || !_stopWhen.load(data.stopWhen.value.asEvent))
 		return false;
+
+	if (data.destination.type == Data::PlugInTypeTaggedValue::kPoint && !data.destination.value.asPoint.toScummVMPoint(_destination))
+		return false;
+
+	// The low half holds the ease flags and the high half the timing mode
+	_easeFlags = data.unknown1 & 0xffff;
+	_durationMode = ((data.unknown1 >> 16) == 1);
+
+	if (data.unknown2Float.type == Data::PlugInTypeTaggedValue::kFloat)
+		_speed = data.unknown2Float.value.asFloat.toXPFloat().toDouble();
+	if (data.unknown3Float.type == Data::PlugInTypeTaggedValue::kFloat)
+		_duration = data.unknown3Float.value.asFloat.toXPFloat().toDouble();
+	if (data.unknown4Int.type == Data::PlugInTypeTaggedValue::kInteger)
+		_updateRate = CLIP<int32>(data.unknown4Int.value.asInt, 1, 100);
+
+	_fixedStep = (data.unknown5 != 0);
+
+	// The done message, unless its event is "none"
+	if (data.unknown6Event.type == Data::PlugInTypeTaggedValue::kEvent && data.unknown6Event.value.asEvent.eventID != 1) {
+		int32 msgFlags = (data.unknown9Int.type == Data::PlugInTypeTaggedValue::kInteger) ? data.unknown9Int.value.asInt : 0;
+
+		MessageFlags messageFlags;
+		messageFlags.immediate = ((msgFlags & Data::Standard::MediaCueMessengerModifier::kMessageFlagImmediate) != 0);
+		messageFlags.cascade = ((msgFlags & Data::Standard::MediaCueMessengerModifier::kMessageFlagCascade) != 0);
+		messageFlags.relay = ((msgFlags & Data::Standard::MediaCueMessengerModifier::kMessageFlagRelay) != 0);
+
+		uint32 destination = (data.unknown7Label.type == Data::PlugInTypeTaggedValue::kLabel) ? data.unknown7Label.value.asLabel.labelID : 0;
+		if (!_doneSend.load(data.unknown6Event, messageFlags, data.unknown8VarRef, destination))
+			return false;
+
+		_hasDoneSend = true;
+	}
 
 	return true;
 }
 
 bool PointMotionModifier::respondsToEvent(const Event &evt) const {
-	return _event1.respondsTo(evt) || _event2.respondsTo(evt);
+	return _startWhen.respondsTo(evt) || _stopWhen.respondsTo(evt) || evt.eventType == EventIDs::kParentDisabled;
 }
 
 VThreadState PointMotionModifier::consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) {
-	warning("Point Motion modifier '%s' is not implemented", getName().c_str());
+	if (_running && (_stopWhen.respondsTo(msg->getEvent()) || msg->getEvent().eventType == EventIDs::kParentDisabled)) {
+		stop(runtime, false);
+		return kVThreadReturn;
+	}
+
+	if (!_running && _startWhen.respondsTo(msg->getEvent()))
+		start(runtime);
+
 	return kVThreadReturn;
 }
 
+void PointMotionModifier::disable(Runtime *runtime) {
+	if (_running)
+		stop(runtime, false);
+}
+
+void PointMotionModifier::start(Runtime *runtime) {
+	Structural *owner = findStructuralOwner();
+	if (!owner || !owner->isElement() || !static_cast<Element *>(owner)->isVisual())
+		return;
+
+	const Common::Rect &rect = static_cast<VisualElement *>(owner)->getRelativeRect();
+	_curX = rect.left;
+	_curY = rect.top;
+	_progress = 0.0;
+	_startTime = _lastTime = static_cast<double>(runtime->getPlayTime());
+	_running = true;
+
+	scheduleTick(runtime);
+	sendToOwner(runtime, EventIDs::kMotionStarted);
+}
+
+void PointMotionModifier::stop(Runtime *runtime, bool completed) {
+	_running = false;
+	if (_scheduledEvent) {
+		_scheduledEvent->cancel();
+		_scheduledEvent.reset();
+	}
+
+	// These are pushed tasks, so the done message is sent first
+	sendToOwner(runtime, EventIDs::kMotionEnded);
+	if (completed && _hasDoneSend)
+		_doneSend.sendFromMessenger(runtime, this, nullptr, DynamicValue(), nullptr);
+}
+
+void PointMotionModifier::scheduleTick(Runtime *runtime) {
+	uint64 period = MAX<uint64>(1, 1000 / _updateRate);
+	_scheduledEvent = runtime->getScheduler().scheduleMethod<PointMotionModifier, &PointMotionModifier::trigger>(runtime->getPlayTime() + period, this);
+}
+
+void PointMotionModifier::trigger(Runtime *runtime) {
+	_scheduledEvent.reset();
+
+	Structural *owner = findStructuralOwner();
+	if (!owner || !owner->isElement() || !static_cast<Element *>(owner)->isVisual()) {
+		_running = false;
+		return;
+	}
+
+	VisualElement *visual = static_cast<VisualElement *>(owner);
+	const Common::Rect &rect = visual->getRelativeRect();
+
+	// Pick up moves made by something else
+	if (static_cast<int32>(round(_curX)) != rect.left || static_cast<int32>(round(_curY)) != rect.top) {
+		_curX = rect.left;
+		_curY = rect.top;
+	}
+
+	double now = static_cast<double>(runtime->getPlayTime());
+	bool done = _durationMode ? durationStep(now) : speedStep(now);
+
+	int32 dx = static_cast<int32>(round(_curX)) - rect.left;
+	int32 dy = static_cast<int32>(round(_curY)) - rect.top;
+	if (dx != 0 || dy != 0) {
+		VisualElement::OffsetTranslateTaskData *taskData = runtime->getVThread().pushTask("VisualElement::offsetTranslateTask", visual, &VisualElement::offsetTranslateTask);
+		taskData->dx = dx;
+		taskData->dy = dy;
+	}
+
+	if (done)
+		stop(runtime, true);
+	else
+		scheduleTick(runtime);
+}
+
+bool PointMotionModifier::speedStep(double now) {
+	double dx = _destination.x - _curX;
+	double dy = _destination.y - _curY;
+	double dist = sqrt(dx * dx + dy * dy);
+
+	double ease = 1.0;
+	if ((_easeFlags & kEaseIn) && _progress < 0.2)
+		ease = MAX(_progress / 0.2, 0.05);
+	else if ((_easeFlags & kEaseOut) && _progress > 0.8)
+		ease = MAX((1.0 - _progress) / 0.2, 0.05);
+
+	double step = 0.0;
+	if (_fixedStep)
+		step = _speed / _updateRate * ease;
+	else {
+		step = _speed * ease * (now - _lastTime) / 1000.0;
+		_lastTime = now;
+	}
+
+	if (_progress < 1.0 && dist > 0.0) {
+		double total = dist / (1.0 - _progress);
+		_progress = (total - dist + step) / total;
+	}
+
+	if (dist > 0.5 && step < dist) {
+		_curX += dx * (step / dist);
+		_curY += dy * (step / dist);
+		return false;
+	}
+
+	_curX = _destination.x;
+	_curY = _destination.y;
+	return true;
+}
+
+// Area left under the velocity profile at time t, which ramps over the eased parts and is flat between them
+double PointMotionModifier::durationRemainingArea(double t) const {
+	double total = _duration * 1000.0;
+	double end = _startTime + total;
+	double rampInEnd = _startTime + ((_easeFlags & kEaseIn) ? 0.2 * total : 0.0);
+	double rampOutStart = _startTime + ((_easeFlags & kEaseOut) ? 0.8 * total : total);
+
+	if (t >= end)
+		return 0.0;
+	if (t >= rampOutStart)
+		return (end - t) * (end - t) / (end - rampOutStart) / 2.0;
+	if (t >= rampInEnd)
+		return (end + rampOutStart) / 2.0 - t;
+	return (end - (t - _startTime) * (t - _startTime) / (rampInEnd - _startTime) - rampInEnd - _startTime + rampOutStart) / 2.0;
+}
+
+bool PointMotionModifier::durationStep(double now) {
+	double dx = _destination.x - _curX;
+	double dy = _destination.y - _curY;
+	double dist = sqrt(dx * dx + dy * dy);
+
+	double prev = _lastTime;
+	_lastTime = now;
+
+	if (_duration * 1000.0 - (now - _startTime) > 0.0) {
+		double prevArea = durationRemainingArea(prev);
+		double move = (prevArea > 0.0) ? dist - durationRemainingArea(now) * (dist / prevArea) : dist;
+		if (dist > 0.5 && move < dist) {
+			_curX += dx * (move / dist);
+			_curY += dy * (move / dist);
+			return false;
+		}
+	}
+
+	_curX = _destination.x;
+	_curY = _destination.y;
+	return true;
+}
+
+void PointMotionModifier::sendToOwner(Runtime *runtime, EventIDs::EventID eventID) {
+	Structural *owner = findStructuralOwner();
+	if (!owner)
+		return;
+
+	Common::SharedPtr<MessageProperties> props(new MessageProperties(Event(eventID, 0), DynamicValue(), getSelfReference()));
+	Common::SharedPtr<MessageDispatch> dispatch(new MessageDispatch(props, owner, true, true, false));
+	runtime->sendMessageOnVThread(dispatch);
+}
+
+bool PointMotionModifier::readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) {
+	if (attrib == "destination") {
+		result.setPoint(_destination);
+		return true;
+	} else if (attrib == "speed") {
+		result.setFloat(_speed);
+		return true;
+	} else if (attrib == "duration") {
+		result.setFloat(_duration);
+		return true;
+	} else if (attrib == "updaterate") {
+		result.setInt(_updateRate);
+		return true;
+	}
+
+	return Modifier::readAttribute(thread, result, attrib);
+}
+
+MiniscriptInstructionOutcome PointMotionModifier::writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &writeProxy, const Common::String &attrib) {
+	if (attrib == "destination") {
+		DynamicValueWriteFuncHelper<PointMotionModifier, &PointMotionModifier::scriptSetDestination, true>::create(this, writeProxy);
+		return kMiniscriptInstructionOutcomeContinue;
+	} else if (attrib == "speed") {
+		DynamicValueWriteFuncHelper<PointMotionModifier, &PointMotionModifier::scriptSetSpeed, true>::create(this, writeProxy);
+		return kMiniscriptInstructionOutcomeContinue;
+	} else if (attrib == "duration") {
+		DynamicValueWriteFuncHelper<PointMotionModifier, &PointMotionModifier::scriptSetDuration, true>::create(this, writeProxy);
+		return kMiniscriptInstructionOutcomeContinue;
+	} else if (attrib == "updaterate") {
+		DynamicValueWriteFuncHelper<PointMotionModifier, &PointMotionModifier::scriptSetUpdateRate, true>::create(this, writeProxy);
+		return kMiniscriptInstructionOutcomeContinue;
+	}
+
+	return Modifier::writeRefAttribute(thread, writeProxy, attrib);
+}
+
+MiniscriptInstructionOutcome PointMotionModifier::scriptSetDestination(MiniscriptThread *thread, const DynamicValue &value) {
+	if (value.getType() != DynamicValueTypes::kPoint)
+		return kMiniscriptInstructionOutcomeFailed;
+
+	_destination = value.getPoint();
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
+MiniscriptInstructionOutcome PointMotionModifier::scriptSetSpeed(MiniscriptThread *thread, const DynamicValue &value) {
+	DynamicValue converted;
+	if (!value.convertToType(DynamicValueTypes::kFloat, converted) || converted.getFloat() <= 0.0)
+		return kMiniscriptInstructionOutcomeFailed;
+
+	_speed = converted.getFloat();
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
+MiniscriptInstructionOutcome PointMotionModifier::scriptSetDuration(MiniscriptThread *thread, const DynamicValue &value) {
+	DynamicValue converted;
+	if (!value.convertToType(DynamicValueTypes::kFloat, converted) || converted.getFloat() <= 0.0)
+		return kMiniscriptInstructionOutcomeFailed;
+
+	_duration = converted.getFloat();
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
+MiniscriptInstructionOutcome PointMotionModifier::scriptSetUpdateRate(MiniscriptThread *thread, const DynamicValue &value) {
+	int32 rate = 0;
+	if (!value.roundToInt(rate) || rate < 1 || rate > 100)
+		return kMiniscriptInstructionOutcomeFailed;
+
+	_updateRate = rate;
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
 Common::SharedPtr<Modifier> PointMotionModifier::shallowClone() const {
-	return Common::SharedPtr<Modifier>(new PointMotionModifier(*this));
+	Common::SharedPtr<PointMotionModifier> clone(new PointMotionModifier(*this));
+	clone->_scheduledEvent.reset();
+	clone->_running = false;
+	return clone;
 }
 
 const char *PointMotionModifier::getDefaultName() const {
 	return "Point Motion";
+}
+
+void PointMotionModifier::linkInternalReferences(ObjectLinkingScope *scope) {
+	_doneSend.linkInternalReferences(scope);
+}
+
+void PointMotionModifier::visitInternalReferences(IStructuralReferenceVisitor *visitor) {
+	_doneSend.visitInternalReferences(visitor);
 }
 
 StandardPlugInHacks::StandardPlugInHacks() : allowGarbledListModData(false) {
