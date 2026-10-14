@@ -35,9 +35,93 @@ namespace KW {
 // - IdxIter
 // - StrUtil
 // - TicTacToe
+// - DlgMgrServer, DlgMgrClient (Magic School Bus dialog manager)
 
 
 struct StrUtilModifier : public PlugInModifierData {
+protected:
+	DataReadErrorCode load(PlugIn &plugIn, const PlugInModifier &prefix, DataReader &reader) override;
+};
+
+struct DlgMgrServerModifier : public PlugInModifierData {
+	DlgMgrServerModifier();
+
+	uint16 version;
+
+	PlugInTypeTaggedValue enableWhen;
+	PlugInTypeTaggedValue disableWhen;
+	PlugInTypeTaggedValue unknown1Event;	// Version 2+
+	PlugInTypeTaggedValue captionFile;		// Version 2+, .ccd file
+	PlugInTypeTaggedValue unknown2Event;	// Version 3+
+	PlugInTypeTaggedValue unknown3Event;	// Version 3+
+	PlugInTypeTaggedValue registryKey;		// Version 4+
+
+protected:
+	DataReadErrorCode load(PlugIn &plugIn, const PlugInModifier &prefix, DataReader &reader) override;
+};
+
+// DlgMgrClient data is written by the plug-in itself in big-endian order,
+// using a reduced set of value types.
+struct DlgMgrValue {
+	DlgMgrValue();
+
+	bool load(DataReader &reader);
+
+	uint16 type;	// Same type codes as PlugInTypeTaggedValue
+	int32 value1;	// Integer, boolean, event ID or label ID
+	int32 value2;	// Event info or label super group ID
+};
+
+struct DlgMgrBlob {
+	bool load(DataReader &reader);
+
+	Common::Array<uint8> data;
+};
+
+struct DlgMgrTrack {
+	DlgMgrTrack();
+
+	bool load(DataReader &reader);
+
+	int32 unknown1[5];
+	int32 trackType;	// 1 = sound, 2 = lip sync, 3 = ?
+	int32 unknown2;
+	int32 unknown3[8];
+	int32 unknown4;
+	int32 unknown5[8];
+	int32 unknown6;
+	int32 unknown7[4];
+
+	bool hasMedia;
+	int32 mediaUnknown1;
+	int32 mediaUnknown2;
+	DlgMgrBlob mediaName;
+
+	Common::Array<int32> frames;
+
+	Common::Array<int32> childUnknowns;
+	Common::Array<DlgMgrBlob> children;
+};
+
+struct DlgMgrClientModifier : public PlugInModifierData {
+	DlgMgrClientModifier();
+
+	uint16 version;
+
+	DlgMgrValue playWhen;
+	DlgMgrValue unknown1Event;
+	DlgMgrValue unknown2Event;
+	DlgMgrValue unknown3Label;
+	DlgMgrValue unknown4Int;
+
+	Common::Array<DlgMgrTrack> tracks;
+
+	DlgMgrValue unknown5;	// Version 2+
+	DlgMgrValue unknown6;	// Version 2+
+	DlgMgrValue unknown7;	// Version 4+
+	DlgMgrValue unknown8;	// Version 4+
+	DlgMgrValue unknown9;	// Version 5+
+
 protected:
 	DataReadErrorCode load(PlugIn &plugIn, const PlugInModifier &prefix, DataReader &reader) override;
 };
