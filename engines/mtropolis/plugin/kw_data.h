@@ -50,11 +50,11 @@ struct DlgMgrServerModifier : public PlugInModifierData {
 
 	PlugInTypeTaggedValue enableWhen;
 	PlugInTypeTaggedValue disableWhen;
-	PlugInTypeTaggedValue unknown1Event;	// Version 2+
-	PlugInTypeTaggedValue captionFile;		// Version 2+, .ccd file
-	PlugInTypeTaggedValue unknown2Event;	// Version 3+
-	PlugInTypeTaggedValue unknown3Event;	// Version 3+
-	PlugInTypeTaggedValue registryKey;		// Version 4+
+	PlugInTypeTaggedValue captionTextEvent;		// Version 2+, sent with the caption text
+	PlugInTypeTaggedValue captionFile;			// Version 2+, .ccd file
+	PlugInTypeTaggedValue captionSpeakerEvent;	// Version 3+, sent with the speaker name
+	PlugInTypeTaggedValue captionClearEvent;	// Version 3+
+	PlugInTypeTaggedValue registryKey;			// Version 4+
 
 protected:
 	DataReadErrorCode load(PlugIn &plugIn, const PlugInModifier &prefix, DataReader &reader) override;
@@ -106,18 +106,34 @@ struct DlgMgrBlob {
 };
 
 struct DlgMgrTrack {
+	enum TrackType {
+		kTrackTypeAnimation = 6,	// Sets the target's cel from a frame list or a looping cel range
+		kTrackTypeSound = 7,		// Plays the target sound element
+		kTrackTypeCue = 8,			// Sends the client's cue message
+	};
+
 	DlgMgrTrack();
 
 	bool load(DataReader &reader);
 
-	int32 unknown1[5];
-	int32 trackType;	// 1 = sound, 2 = lip sync, 3 = ?
+	int32 loopStartCel;
+	int32 loopEndCel;
+	int32 unknown1;
+	int32 startFrame;
+	int32 endFrame;
 	int32 unknown2;
-	int32 unknown3[8];
-	int32 unknown4;
-	int32 unknown5[8];
-	int32 unknown6;
-	int32 unknown7[4];
+
+	// Object references, as a GUID followed by up to 8 ancestor GUIDs
+	int32 targetGUID;
+	int32 targetPath[8];
+	int32 sourceGUID;	// Sound tracks copy this element's asset to the target
+	int32 sourcePath[8];
+
+	int32 trackType;
+	int32 hideAtEnd;
+	int32 preload;
+	int32 unknown3;
+	int32 cueValue;
 
 	bool hasMedia;
 	int32 mediaUnknown1;
@@ -136,18 +152,18 @@ struct DlgMgrClientModifier : public PlugInModifierData {
 	uint16 version;
 
 	DlgMgrValue playWhen;
-	DlgMgrValue unknown1Event;
-	DlgMgrValue unknown2Event;
-	DlgMgrValue unknown3Label;
-	DlgMgrValue unknown4Int;
+	DlgMgrValue stopWhen;
+	DlgMgrValue cueEvent;
+	DlgMgrValue cueDestination;	// Label value, the label ID is the destination
+	DlgMgrValue cueUnknown;
 
 	Common::Array<DlgMgrTrack> tracks;
 
-	DlgMgrValue unknown5;	// Version 2+
-	DlgMgrValue unknown6;	// Version 2+
-	DlgMgrValue unknown7;	// Version 4+
-	DlgMgrValue unknown8;	// Version 4+
-	DlgMgrValue unknown9;	// Version 5+
+	DlgMgrValue triggerValue;			// Version 2+
+	DlgMgrValue filterByTriggerValue;	// Version 2+
+	DlgMgrValue doneEvent;				// Version 4+
+	DlgMgrValue doneDestination;		// Version 4+
+	DlgMgrValue doneWith;				// Version 5+
 
 protected:
 	DataReadErrorCode load(PlugIn &plugIn, const PlugInModifier &prefix, DataReader &reader) override;

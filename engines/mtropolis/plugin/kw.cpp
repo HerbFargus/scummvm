@@ -21,6 +21,7 @@
 
 #include "mtropolis/plugin/kw.h"
 #include "mtropolis/plugins.h"
+#include "mtropolis/miniscript.h"
 
 #include "graphics/managed_surface.h"
 
@@ -346,35 +347,535 @@ const char *GameModifier::getDefaultName() const {
 	return "Game-specific";
 }
 
-DlgMgrServerModifier::DlgMgrServerModifier() {
+static bool loadDlgMgrSend(MessengerSendSpec &send, const Data::KW::DlgMgrValue &evt, const Data::KW::DlgMgrValue &dest) {
+	// An event ID of 1 is used for "no message"
+	if (evt.type != Data::PlugInTypeTaggedValue::kEvent || evt.value1 == 1)
+		return false;
+
+	Data::Event dataEvent;
+	dataEvent.eventID = static_cast<uint32>(evt.value1);
+	dataEvent.eventInfo = static_cast<uint32>(evt.value2);
+	if (!send.send.load(dataEvent))
+		return false;
+
+	send.destination = (dest.type == Data::PlugInTypeTaggedValue::kLabel) ? static_cast<uint32>(dest.value1) : 0;
+	return true;
+}
+
+static void dlgMgrSendCommand(Runtime *runtime, Modifier *sender, RuntimeObject *target, EventIDs::EventID eventID) {
+	if (!target || !target->isStructural())
+		return;
+
+	Common::SharedPtr<MessageProperties> props(new MessageProperties(Event(eventID, 0), DynamicValue(), sender->getSelfReference()));
+	Common::SharedPtr<MessageDispatch> dispatch(new MessageDispatch(props, static_cast<Structural *>(target), false, true, true));
+	runtime->queueMessage(dispatch);
+}
+
+static bool dlgMgrReadAttribute(Runtime *runtime, Modifier *sender, RuntimeObject *target, const char *attrib, DynamicValue &result) {
+	if (!target)
+		return false;
+
+	MiniscriptThread thread(runtime, nullptr, nullptr, nullptr, sender);
+	return target->readAttribute(&thread, result, attrib);
+}
+
+static void dlgMgrWriteAttribute(Runtime *runtime, Modifier *sender, RuntimeObject *target, const char *attrib, const DynamicValue &value) {
+	if (!target)
+		return;
+
+	MiniscriptThread thread(runtime, nullptr, nullptr, nullptr, sender);
+	DynamicValueWriteProxy proxy;
+	if (target->writeRefAttribute(&thread, proxy, attrib) == kMiniscriptInstructionOutcomeContinue)
+		(void)proxy.pod.ifc->write(&thread, value, proxy.pod.objectRef, proxy.pod.ptrOrOffset);
+}
+
+static void dlgMgrSetBool(Runtime *runtime, Modifier *sender, RuntimeObject *target, const char *attrib, bool value) {
+	DynamicValue v;
+	v.setBool(value);
+	dlgMgrWriteAttribute(runtime, sender, target, attrib, v);
+}
+
+static void dlgMgrSetInt(Runtime *runtime, Modifier *sender, RuntimeObject *target, const char *attrib, int32 value) {
+	DynamicValue v;
+	v.setInt(value);
+	dlgMgrWriteAttribute(runtime, sender, target, attrib, v);
+}
+
+// Cel for an animation track at a timeline frame, or -1 to leave it alone
+static int32 dlgMgrCelForFrame(const DlgMgrClientModifier::Track &track, int32 frame) {
+	if (track.frames.size() > 0) {
+		if (frame < track.startFrame || frame > track.endFrame)
+			return 1;
+
+		int32 index = frame - track.startFrame;
+		if (index < static_cast<int32>(track.frames.size()))
+			return track.frames[index];
+
+		return -1;
+	}
+
+	if (track.loopStartCel <= 0 || track.loopEndCel < track.loopStartCel)
+		return -1;
+
+	int32 rangeSize = track.loopEndCel - track.loopStartCel + 1;
+	int32 pos = (frame - track.startFrame + 1) % rangeSize;
+	if (pos == 0)
+		return track.loopEndCel;
+
+	return track.loopStartCel - 1 + pos;
+}
+
+DlgMgrServerModifier::DlgMgrServerModifier()
+	: _plugIn(nullptr), _runtime(nullptr), _isRunning(false), _isPlaying(false), _skipRequested(false), _paused(false),
+	  _captions(false), _debugOutput(false), _relink(false), _startTime(0), _frameOffset(0), _lastFrame(-1), _maxEndFrame(0) {
+}
+
+DlgMgrServerModifier::DlgMgrServerModifier(const DlgMgrServerModifier &other)
+	: Modifier(other), _enableWhen(other._enableWhen), _disableWhen(other._disableWhen), _captionTextEvent(other._captionTextEvent),
+	  _captionSpeakerEvent(other._captionSpeakerEvent), _captionClearEvent(other._captionClearEvent), _captionFile(other._captionFile),
+	  _registryKey(other._registryKey), _titleName(other._titleName), _plugIn(other._plugIn), _runtime(nullptr), _isRunning(false),
+	  _isPlaying(false), _skipRequested(false), _paused(false), _captions(other._captions), _debugOutput(false), _relink(false),
+	  _startTime(0), _frameOffset(0), _lastFrame(-1), _maxEndFrame(0) {
 }
 
 DlgMgrServerModifier::~DlgMgrServerModifier() {
+	stopEngine();
 }
 
 bool DlgMgrServerModifier::load(const PlugInModifierLoaderContext &context, const Data::KW::DlgMgrServerModifier &data) {
 	if (!loadDlgMgrEvent(_enableWhen, data.enableWhen) || !loadDlgMgrEvent(_disableWhen, data.disableWhen)
-		|| !loadDlgMgrEvent(_unknown1Event, data.unknown1Event) || !loadDlgMgrEvent(_unknown2Event, data.unknown2Event)
-		|| !loadDlgMgrEvent(_unknown3Event, data.unknown3Event))
+		|| !loadDlgMgrEvent(_captionTextEvent, data.captionTextEvent) || !loadDlgMgrEvent(_captionSpeakerEvent, data.captionSpeakerEvent)
+		|| !loadDlgMgrEvent(_captionClearEvent, data.captionClearEvent))
 		return false;
 
 	_captionFile = dlgMgrString(data.captionFile);
 	_registryKey = dlgMgrString(data.registryKey);
+	_plugIn = static_cast<KnowWonderPlugIn *>(context.plugIn);
 
 	return true;
 }
 
 bool DlgMgrServerModifier::respondsToEvent(const Event &evt) const {
-	return _enableWhen.respondsTo(evt) || _disableWhen.respondsTo(evt) || _unknown1Event.respondsTo(evt)
-		|| _unknown2Event.respondsTo(evt) || _unknown3Event.respondsTo(evt);
+	return _enableWhen.respondsTo(evt) || _disableWhen.respondsTo(evt) || evt.eventType == EventIDs::kSceneEnded
+		|| evt.eventType == EventIDs::kStop || evt.eventType == EventIDs::kParentDisabled;
 }
 
 VThreadState DlgMgrServerModifier::consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) {
-	warning("DlgMgrServer: Event %u/%u is not implemented (caption file '%s')", msg->getEvent().eventType, msg->getEvent().eventInfo, _captionFile.c_str());
+	const Event &evt = msg->getEvent();
+
+	if (_enableWhen.respondsTo(evt)) {
+		startEngine(runtime);
+	} else if (evt.eventType == EventIDs::kSceneEnded) {
+		// Scene changes stop the current line and drop everything queued
+		stopCurrentLine(runtime, false, false);
+		flushQueue(runtime, true);
+	} else if (evt.eventType == EventIDs::kStop) {
+		if (_isPlaying)
+			_skipRequested = true;
+	} else if (_disableWhen.respondsTo(evt) || evt.eventType == EventIDs::kParentDisabled) {
+		stopCurrentLine(runtime, false, false);
+		flushQueue(runtime, true);
+		stopEngine();
+	}
+
 	return kVThreadReturn;
 }
 
 void DlgMgrServerModifier::disable(Runtime *runtime) {
+	stopEngine();
+}
+
+bool DlgMgrServerModifier::readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) {
+	if (attrib == "playing") {
+		result.setBool(_isPlaying || _queue.size() > 0);
+		return true;
+	}
+	if (attrib == "logpixelsx" || attrib == "logpixelsy") {
+		result.setInt(96);
+		return true;
+	}
+	if (attrib == "osver") {
+		result.setInt(0x5f);
+		return true;
+	}
+	if (attrib == "windows") {
+		result.setBool(true);
+		return true;
+	}
+	if (attrib == "debugoutput") {
+		result.setBool(_debugOutput);
+		return true;
+	}
+	if (attrib == "relink") {
+		result.setBool(_relink);
+		return true;
+	}
+	if (attrib == "caption") {
+		result.setBool(_captions);
+		return true;
+	}
+	if (attrib == "pause") {
+		result.setBool(_paused);
+		return true;
+	}
+	if (attrib == "titlename") {
+		result.setString(_titleName);
+		return true;
+	}
+	if (attrib == "titlepath" || attrib == "installpath" || attrib == "sourcepath") {
+		// The original reads these from the registry. Paths are resolved
+		// relative to the project, so an empty path is used.
+		result.setString("");
+		return true;
+	}
+	if (attrib == "ccdefaultenabled") {
+		result.setBool(false);
+		return true;
+	}
+
+	return Modifier::readAttribute(thread, result, attrib);
+}
+
+MiniscriptInstructionOutcome DlgMgrServerModifier::writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) {
+	static const struct {
+		const char *name;
+		WritableAttribute attrib;
+	} kAttribs[] = {
+		{"cancel", kAttribCancel},
+		{"flush", kAttribFlush},
+		{"soundstopped", kAttribSoundStopped},
+		{"debugoutput", kAttribDebugOutput},
+		{"relink", kAttribRelink},
+		{"caption", kAttribCaption},
+		{"pause", kAttribPause},
+		{"waitcursor", kAttribWaitCursor},
+		{"restoredisplay", kAttribRestoreDisplay},
+	};
+
+	for (const auto &entry : kAttribs) {
+		if (attrib == entry.name) {
+			result.pod.ifc = DynamicValueWriteInterfaceGlue<WriteProxy>::getInstance();
+			result.pod.objectRef = this;
+			result.pod.ptrOrOffset = entry.attrib;
+			return kMiniscriptInstructionOutcomeContinue;
+		}
+	}
+
+	if (attrib == "titlename") {
+		DynamicValueWriteStringHelper::create(&_titleName, result);
+		return kMiniscriptInstructionOutcomeContinue;
+	}
+
+	return Modifier::writeRefAttribute(thread, result, attrib);
+}
+
+MiniscriptInstructionOutcome DlgMgrServerModifier::WriteProxy::write(MiniscriptThread *thread, const DynamicValue &value, void *objectRef, uintptr ptrOrOffset) {
+	static_cast<DlgMgrServerModifier *>(objectRef)->writeAttribute(thread->getRuntime(), static_cast<WritableAttribute>(ptrOrOffset), value);
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
+MiniscriptInstructionOutcome DlgMgrServerModifier::WriteProxy::refAttrib(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib) {
+	return kMiniscriptInstructionOutcomeFailed;
+}
+
+MiniscriptInstructionOutcome DlgMgrServerModifier::WriteProxy::refAttribIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib, const DynamicValue &index) {
+	return kMiniscriptInstructionOutcomeFailed;
+}
+
+void DlgMgrServerModifier::writeAttribute(Runtime *runtime, WritableAttribute attrib, const DynamicValue &value) {
+	bool flag = false;
+	if (value.getType() == DynamicValueTypes::kBoolean)
+		flag = value.getBool();
+	else if (value.getType() == DynamicValueTypes::kInteger)
+		flag = (value.getInt() != 0);
+
+	switch (attrib) {
+	case kAttribCancel:
+		if (flag)
+			stopCurrentLine(runtime, true, true);
+		break;
+	case kAttribFlush:
+		if (flag) {
+			stopCurrentLine(runtime, false, true);
+			flushQueue(runtime, true);
+		}
+		break;
+	case kAttribDebugOutput:
+		_debugOutput = flag;
+		break;
+	case kAttribRelink:
+		_relink = flag;
+		break;
+	case kAttribCaption:
+		_captions = flag;
+		break;
+	case kAttribPause:
+		setPaused(runtime, flag);
+		break;
+	case kAttribSoundStopped:
+	case kAttribWaitCursor:
+	case kAttribRestoreDisplay:
+		break;
+	}
+}
+
+void DlgMgrServerModifier::playMedia(Runtime *runtime, Project *project) {
+	if (_skipRequested) {
+		_skipRequested = false;
+		stopCurrentLine(runtime, true, true);
+	}
+
+	if (!_isPlaying) {
+		if (!_paused)
+			startNextLine(runtime);
+	} else if (!_paused)
+		updateCurrentLine(runtime);
+}
+
+void DlgMgrServerModifier::enqueue(DlgMgrClientModifier *client) {
+	_queue.push_back(client->getSelfReference());
+}
+
+void DlgMgrServerModifier::cancelClient(Runtime *runtime, DlgMgrClientModifier *client, bool notify) {
+	if (getCurrentClient() == client) {
+		stopCurrentLine(runtime, true, notify);
+		return;
+	}
+
+	for (uint i = 0; i < _queue.size(); i++) {
+		if (_queue[i].lock().get() == client) {
+			_queue.remove_at(i);
+			client->onPlaybackFinished(runtime, notify);
+			return;
+		}
+	}
+}
+
+void DlgMgrServerModifier::startEngine(Runtime *runtime) {
+	if (_isRunning)
+		return;
+
+	_runtime = runtime;
+	_isRunning = true;
+	_playMediaSignaller = runtime->getProject()->notifyOnPlayMedia(this);
+
+	if (_plugIn)
+		_plugIn->setDlgMgrServer(getSelfReference());
+}
+
+void DlgMgrServerModifier::stopEngine() {
+	if (!_isRunning)
+		return;
+
+	_isRunning = false;
+	_isPlaying = false;
+	_queue.clear();
+	_currentClient.reset();
+
+	if (_playMediaSignaller) {
+		_playMediaSignaller->removeReceiver(this);
+		_playMediaSignaller.reset();
+	}
+}
+
+DlgMgrClientModifier *DlgMgrServerModifier::getCurrentClient() const {
+	Common::SharedPtr<RuntimeObject> client = _currentClient.lock();
+	return client ? static_cast<DlgMgrClientModifier *>(client.get()) : nullptr;
+}
+
+int32 DlgMgrServerModifier::getCurrentFrame(Runtime *runtime) const {
+	// The original plug-in runs its timeline at 12 frames per second
+	uint64 elapsed = runtime->getPlayTime() - _startTime;
+	return _frameOffset + 1 + static_cast<int32>(elapsed * 12 / 1000);
+}
+
+void DlgMgrServerModifier::startNextLine(Runtime *runtime) {
+	while (_queue.size() > 0) {
+		Common::SharedPtr<RuntimeObject> clientObj = _queue[0].lock();
+		_queue.remove_at(0);
+
+		if (!clientObj)
+			continue;
+
+		DlgMgrClientModifier *client = static_cast<DlgMgrClientModifier *>(clientObj.get());
+
+		_currentClient = clientObj;
+		_isPlaying = true;
+		_startTime = runtime->getPlayTime();
+		_frameOffset = 0;
+		_lastFrame = -1;
+		_maxEndFrame = 0;
+
+		for (DlgMgrClientModifier::Track &track : client->getTracks()) {
+			track.isStarted = false;
+			track.isFinished = false;
+			track.isSoundPlaying = false;
+			track.isShown = false;
+			track.assetSwapped = false;
+
+			if (track.endFrame > _maxEndFrame)
+				_maxEndFrame = track.endFrame;
+
+			Common::SharedPtr<Structural> target = track.target.lock();
+			if (track.preload && target)
+				dlgMgrSendCommand(runtime, this, target.get(), EventIDs::kPreloadMedia);
+		}
+
+		client->onPlaybackStarted();
+
+		debug(1, "DlgMgr: Playing '%s' (%u tracks, %i frames)", client->getName().c_str(), client->getTracks().size(), _maxEndFrame);
+
+		return;
+	}
+}
+
+void DlgMgrServerModifier::updateCurrentLine(Runtime *runtime) {
+	DlgMgrClientModifier *client = getCurrentClient();
+	if (!client) {
+		_isPlaying = false;
+		return;
+	}
+
+	int32 frame = getCurrentFrame(runtime);
+	if (frame <= _lastFrame)
+		return;
+
+	_lastFrame = frame;
+
+	for (DlgMgrClientModifier::Track &track : client->getTracks()) {
+		if (track.isFinished)
+			continue;
+
+		Common::SharedPtr<Structural> target = track.target.lock();
+
+		if (track.trackType == Data::KW::DlgMgrTrack::kTrackTypeCue) {
+			if (frame >= track.startFrame) {
+				track.isFinished = true;
+				client->sendCue(runtime, track.cueValue);
+			}
+			continue;
+		}
+
+		if (frame < track.startFrame)
+			continue;
+
+		if (!track.isStarted) {
+			track.isStarted = true;
+
+			Common::SharedPtr<Structural> source = track.source.lock();
+			if (source && target && !track.assetSwapped) {
+				DynamicValue asset;
+				if (dlgMgrReadAttribute(runtime, this, source.get(), "asset", asset))
+					dlgMgrWriteAttribute(runtime, this, target.get(), "asset", asset);
+				track.assetSwapped = true;
+			}
+		}
+
+		if (track.trackType == Data::KW::DlgMgrTrack::kTrackTypeSound) {
+			if (!track.isSoundPlaying) {
+				track.isSoundPlaying = true;
+				dlgMgrSendCommand(runtime, this, target.get(), EventIDs::kPlay);
+			}
+		} else {
+			if (!track.isShown && (!track.hideAtEnd || track.endFrame != track.startFrame)) {
+				track.isShown = true;
+				dlgMgrSetBool(runtime, this, target.get(), "visible", true);
+			}
+
+			if (track.trackType == Data::KW::DlgMgrTrack::kTrackTypeAnimation && frame <= track.endFrame) {
+				int32 cel = dlgMgrCelForFrame(track, frame);
+				if (cel > 0)
+					dlgMgrSetInt(runtime, this, target.get(), "cel", cel);
+			}
+		}
+
+		if (frame > track.endFrame) {
+			track.isFinished = true;
+
+			if (track.trackType == Data::KW::DlgMgrTrack::kTrackTypeSound) {
+				if (track.isSoundPlaying)
+					dlgMgrSendCommand(runtime, this, target.get(), EventIDs::kStop);
+				track.isSoundPlaying = false;
+			} else if (track.hideAtEnd) {
+				dlgMgrSetBool(runtime, this, target.get(), "visible", false);
+			}
+		}
+	}
+
+	if (frame > _maxEndFrame) {
+		_isPlaying = false;
+		_currentClient.reset();
+		client->onPlaybackFinished(runtime, true);
+	}
+}
+
+void DlgMgrServerModifier::stopCurrentLine(Runtime *runtime, bool resetTracks, bool notifyDone) {
+	DlgMgrClientModifier *client = getCurrentClient();
+	_isPlaying = false;
+	_currentClient.reset();
+	_skipRequested = false;
+
+	if (!client)
+		return;
+
+	for (DlgMgrClientModifier::Track &track : client->getTracks()) {
+		Common::SharedPtr<Structural> target = track.target.lock();
+
+		if (track.trackType == Data::KW::DlgMgrTrack::kTrackTypeSound) {
+			if (track.isSoundPlaying)
+				dlgMgrSendCommand(runtime, this, target.get(), EventIDs::kStop);
+			track.isSoundPlaying = false;
+		} else if (resetTracks) {
+			if (track.trackType == Data::KW::DlgMgrTrack::kTrackTypeCue) {
+				if (!track.isFinished)
+					client->sendCue(runtime, track.cueValue);
+			} else {
+				if (track.trackType == Data::KW::DlgMgrTrack::kTrackTypeAnimation) {
+					int32 cel = dlgMgrCelForFrame(track, track.endFrame);
+					if (cel > 0)
+						dlgMgrSetInt(runtime, this, target.get(), "cel", cel);
+				}
+
+				if (track.hideAtEnd)
+					dlgMgrSetBool(runtime, this, target.get(), "visible", false);
+			}
+		}
+
+		track.isFinished = true;
+	}
+
+	client->onPlaybackFinished(runtime, notifyDone);
+}
+
+void DlgMgrServerModifier::flushQueue(Runtime *runtime, bool notifyDone) {
+	Common::Array<Common::WeakPtr<RuntimeObject> > queue;
+	queue.swap(_queue);
+
+	for (const Common::WeakPtr<RuntimeObject> &clientWeak : queue) {
+		Common::SharedPtr<RuntimeObject> client = clientWeak.lock();
+		if (client)
+			static_cast<DlgMgrClientModifier *>(client.get())->onPlaybackFinished(runtime, notifyDone);
+	}
+}
+
+void DlgMgrServerModifier::setPaused(Runtime *runtime, bool paused) {
+	if (paused == _paused)
+		return;
+
+	_paused = paused;
+
+	DlgMgrClientModifier *client = getCurrentClient();
+	if (_isPlaying && client) {
+		if (paused)
+			_frameOffset = getCurrentFrame(runtime) - 1;
+		else
+			_startTime = runtime->getPlayTime();
+
+		for (DlgMgrClientModifier::Track &track : client->getTracks()) {
+			if (track.trackType == Data::KW::DlgMgrTrack::kTrackTypeSound && track.isSoundPlaying)
+				dlgMgrSetBool(runtime, this, track.target.lock().get(), "paused", paused);
+		}
+	}
 }
 
 #ifdef MTROPOLIS_DEBUG_ENABLE
@@ -383,6 +884,8 @@ void DlgMgrServerModifier::debugInspect(IDebugInspectionReport *report) const {
 
 	report->declareDynamic("captionFile", _captionFile);
 	report->declareDynamic("registryKey", _registryKey);
+	report->declareDynamic("queued", Common::String::format("%u", _queue.size()));
+	report->declareDynamic("playing", _isPlaying ? "true" : "false");
 }
 #endif
 
@@ -394,19 +897,28 @@ const char *DlgMgrServerModifier::getDefaultName() const {
 	return "DlgMgrServer";
 }
 
-DlgMgrClientModifier::Track::Track() : trackType(0) {
+DlgMgrClientModifier::Track::Track()
+	: trackType(0), startFrame(0), endFrame(0), loopStartCel(0), loopEndCel(0), hideAtEnd(false), preload(false), cueValue(0),
+	  targetGUID(0), sourceGUID(0), isStarted(false), isFinished(false), isSoundPlaying(false), isShown(false), assetSwapped(false) {
 }
 
-DlgMgrClientModifier::DlgMgrClientModifier() {
+DlgMgrClientModifier::DlgMgrClientModifier()
+	: _hasCue(false), _hasDone(false), _triggerValue(0), _filterByTriggerValue(false), _plugIn(nullptr), _isQueued(false) {
 }
 
 DlgMgrClientModifier::~DlgMgrClientModifier() {
 }
 
 bool DlgMgrClientModifier::load(const PlugInModifierLoaderContext &context, const Data::KW::DlgMgrClientModifier &data) {
-	if (!loadDlgMgrEvent(_playWhen, data.playWhen) || !loadDlgMgrEvent(_unknown1Event, data.unknown1Event)
-		|| !loadDlgMgrEvent(_unknown2Event, data.unknown2Event))
+	if (!loadDlgMgrEvent(_playWhen, data.playWhen) || !loadDlgMgrEvent(_stopWhen, data.stopWhen))
 		return false;
+
+	_hasCue = loadDlgMgrSend(_cueSend, data.cueEvent, data.cueDestination);
+	_hasDone = loadDlgMgrSend(_doneSend, data.doneEvent, data.doneDestination);
+
+	if (data.triggerValue.type == Data::PlugInTypeTaggedValue::kInteger)
+		_triggerValue = data.triggerValue.value1;
+	_filterByTriggerValue = (data.filterByTriggerValue.type == Data::PlugInTypeTaggedValue::kBoolean && data.filterByTriggerValue.value1 != 0);
 
 	_tracks.resize(data.tracks.size());
 	for (uint i = 0; i < data.tracks.size(); i++) {
@@ -414,32 +926,130 @@ bool DlgMgrClientModifier::load(const PlugInModifierLoaderContext &context, cons
 		Track &track = _tracks[i];
 
 		track.trackType = trackData.trackType;
+		track.startFrame = trackData.startFrame;
+		track.endFrame = trackData.endFrame;
+		track.loopStartCel = trackData.loopStartCel;
+		track.loopEndCel = trackData.loopEndCel;
+		track.hideAtEnd = (trackData.hideAtEnd != 0);
+		track.preload = (trackData.preload != 0);
+		track.cueValue = trackData.cueValue;
+		track.targetGUID = static_cast<uint32>(trackData.targetGUID);
+		track.sourceGUID = static_cast<uint32>(trackData.sourceGUID);
 		track.frames = trackData.frames;
+
 		if (trackData.hasMedia && trackData.mediaName.data.size() > 0)
 			track.mediaName = Common::String(reinterpret_cast<const char *>(&trackData.mediaName.data[0]), trackData.mediaName.data.size());
 	}
+
+	_plugIn = static_cast<KnowWonderPlugIn *>(context.plugIn);
 
 	return true;
 }
 
 bool DlgMgrClientModifier::respondsToEvent(const Event &evt) const {
-	return _playWhen.respondsTo(evt) || _unknown1Event.respondsTo(evt) || _unknown2Event.respondsTo(evt);
+	return _playWhen.respondsTo(evt) || _stopWhen.respondsTo(evt) || evt.eventType == EventIDs::kParentDisabled;
 }
 
 VThreadState DlgMgrClientModifier::consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) {
-	Common::String media;
-	for (const Track &track : _tracks) {
-		if (!track.mediaName.empty()) {
-			media = track.mediaName;
-			break;
+	const Event &evt = msg->getEvent();
+
+	if (_playWhen.respondsTo(evt)) {
+		if (_filterByTriggerValue) {
+			const DynamicValue &value = msg->getValue();
+			if (value.getType() != DynamicValueTypes::kInteger || value.getInt() != _triggerValue)
+				return kVThreadReturn;
 		}
+
+		if (!_isQueued) {
+			DlgMgrServerModifier *server = findServer();
+			if (server) {
+				_isQueued = true;
+				server->enqueue(this);
+			} else
+				warning("DlgMgrClient '%s': No dialog manager server is running", getName().c_str());
+		}
+	} else if (_stopWhen.respondsTo(evt) || evt.eventType == EventIDs::kParentDisabled) {
+		DlgMgrServerModifier *server = findServer();
+		if (server && _isQueued)
+			server->cancelClient(runtime, this, evt.eventType != EventIDs::kParentDisabled);
 	}
 
-	warning("DlgMgrClient '%s': Event %u/%u is not implemented (media '%s')", getName().c_str(), msg->getEvent().eventType, msg->getEvent().eventInfo, media.c_str());
 	return kVThreadReturn;
 }
 
 void DlgMgrClientModifier::disable(Runtime *runtime) {
+	DlgMgrServerModifier *server = findServer();
+	if (server && _isQueued)
+		server->cancelClient(runtime, this, false);
+}
+
+Common::Array<DlgMgrClientModifier::Track> &DlgMgrClientModifier::getTracks() {
+	return _tracks;
+}
+
+void DlgMgrClientModifier::onPlaybackStarted() {
+}
+
+void DlgMgrClientModifier::onPlaybackFinished(Runtime *runtime, bool notifyDone) {
+	_isQueued = false;
+
+	if (notifyDone && _hasDone)
+		_doneSend.sendFromMessengerWithCustomData(runtime, this, nullptr, DynamicValue(), nullptr);
+}
+
+void DlgMgrClientModifier::sendCue(Runtime *runtime, int32 cueValue) {
+	if (!_hasCue)
+		return;
+
+	DynamicValue value;
+	value.setInt(cueValue);
+	_cueSend.sendFromMessengerWithCustomData(runtime, this, nullptr, value, nullptr);
+}
+
+bool DlgMgrClientModifier::isQueued() const {
+	return _isQueued;
+}
+
+DlgMgrServerModifier *DlgMgrClientModifier::findServer() const {
+	return _plugIn ? _plugIn->getDlgMgrServer() : nullptr;
+}
+
+void DlgMgrClientModifier::linkInternalReferences(ObjectLinkingScope *scope) {
+	Modifier::linkInternalReferences(scope);
+
+	if (_hasCue)
+		_cueSend.linkInternalReferences(scope);
+	if (_hasDone)
+		_doneSend.linkInternalReferences(scope);
+
+	for (Track &track : _tracks) {
+		if (track.targetGUID != 0) {
+			Common::SharedPtr<RuntimeObject> target = scope->resolve(track.targetGUID).lock();
+			if (target && target->isStructural())
+				track.target = target.staticCast<Structural>();
+			else
+				warning("DlgMgrClient '%s': Couldn't resolve track target %x", getName().c_str(), track.targetGUID);
+		}
+		if (track.sourceGUID != 0) {
+			Common::SharedPtr<RuntimeObject> source = scope->resolve(track.sourceGUID).lock();
+			if (source && source->isStructural())
+				track.source = source.staticCast<Structural>();
+		}
+	}
+}
+
+void DlgMgrClientModifier::visitInternalReferences(IStructuralReferenceVisitor *visitor) {
+	Modifier::visitInternalReferences(visitor);
+
+	if (_hasCue)
+		_cueSend.visitInternalReferences(visitor);
+	if (_hasDone)
+		_doneSend.visitInternalReferences(visitor);
+
+	for (Track &track : _tracks) {
+		visitor->visitWeakStructuralRef(track.target);
+		visitor->visitWeakStructuralRef(track.source);
+	}
 }
 
 #ifdef MTROPOLIS_DEBUG_ENABLE
@@ -447,6 +1057,8 @@ void DlgMgrClientModifier::debugInspect(IDebugInspectionReport *report) const {
 	Modifier::debugInspect(report);
 
 	report->declareDynamic("numTracks", Common::String::format("%u", _tracks.size()));
+	report->declareDynamic("triggerValue", Common::String::format("%i", _triggerValue));
+	report->declareDynamic("queued", _isQueued ? "true" : "false");
 }
 #endif
 
@@ -464,6 +1076,15 @@ KnowWonderPlugIn::KnowWonderPlugIn()
 }
 
 KnowWonderPlugIn::~KnowWonderPlugIn() {
+}
+
+void KnowWonderPlugIn::setDlgMgrServer(const Common::WeakPtr<RuntimeObject> &server) {
+	_dlgMgrServer = server;
+}
+
+DlgMgrServerModifier *KnowWonderPlugIn::getDlgMgrServer() const {
+	Common::SharedPtr<RuntimeObject> server = _dlgMgrServer.lock();
+	return server ? static_cast<DlgMgrServerModifier *>(server.get()) : nullptr;
 }
 
 void KnowWonderPlugIn::registerModifiers(IPlugInModifierRegistrar *registrar) const {

@@ -91,10 +91,10 @@ DataReadErrorCode DlgMgrServerModifier::load(PlugIn &plugIn, const PlugInModifie
 	if (!enableWhen.load(reader) || !disableWhen.load(reader))
 		return kDataReadErrorReadFailed;
 
-	if (version >= 2 && (!unknown1Event.load(reader) || !captionFile.load(reader)))
+	if (version >= 2 && (!captionTextEvent.load(reader) || !captionFile.load(reader)))
 		return kDataReadErrorReadFailed;
 
-	if (version >= 3 && (!unknown2Event.load(reader) || !unknown3Event.load(reader)))
+	if (version >= 3 && (!captionSpeakerEvent.load(reader) || !captionClearEvent.load(reader)))
 		return kDataReadErrorReadFailed;
 
 	if (version >= 4 && !registryKey.load(reader))
@@ -164,35 +164,33 @@ bool DlgMgrBlob::load(DataReader &reader) {
 }
 
 DlgMgrTrack::DlgMgrTrack()
-	: unknown1{0, 0, 0, 0, 0}, trackType(0), unknown2(0), unknown3{0, 0, 0, 0, 0, 0, 0, 0}, unknown4(0),
-	  unknown5{0, 0, 0, 0, 0, 0, 0, 0}, unknown6(0), unknown7{0, 0, 0, 0}, hasMedia(false), mediaUnknown1(0), mediaUnknown2(0) {
+	: loopStartCel(0), loopEndCel(0), unknown1(0), startFrame(0), endFrame(0), unknown2(0),
+	  targetGUID(0), targetPath{0, 0, 0, 0, 0, 0, 0, 0}, sourceGUID(0), sourcePath{0, 0, 0, 0, 0, 0, 0, 0},
+	  trackType(0), hideAtEnd(0), preload(0), unknown3(0), cueValue(0), hasMedia(false), mediaUnknown1(0), mediaUnknown2(0) {
 }
 
 bool DlgMgrTrack::load(DataReader &reader) {
-	for (int32 &v : unknown1)
-		if (!readIntValue(reader, v))
-			return false;
-
-	if (!readIntValue(reader, trackType) || !readIntValue(reader, unknown2))
+	if (!readIntValue(reader, loopStartCel) || !readIntValue(reader, loopEndCel) || !readIntValue(reader, unknown1)
+		|| !readIntValue(reader, startFrame) || !readIntValue(reader, endFrame) || !readIntValue(reader, unknown2))
 		return false;
 
-	for (int32 &v : unknown3)
-		if (!readIntValue(reader, v))
-			return false;
-
-	if (!readIntValue(reader, unknown4))
+	if (!readIntValue(reader, targetGUID))
 		return false;
 
-	for (int32 &v : unknown5)
+	for (int32 &v : targetPath)
 		if (!readIntValue(reader, v))
 			return false;
 
-	if (!readIntValue(reader, unknown6))
+	if (!readIntValue(reader, sourceGUID))
 		return false;
 
-	for (int32 &v : unknown7)
+	for (int32 &v : sourcePath)
 		if (!readIntValue(reader, v))
 			return false;
+
+	if (!readIntValue(reader, trackType) || !readIntValue(reader, hideAtEnd) || !readIntValue(reader, preload)
+		|| !readIntValue(reader, unknown3) || !readIntValue(reader, cueValue))
+		return false;
 
 	int32 hasMediaInt = 0;
 	if (!readIntValue(reader, hasMediaInt))
@@ -239,8 +237,8 @@ DataReadErrorCode DlgMgrClientModifier::load(PlugIn &plugIn, const PlugInModifie
 	if (version < 1 || version > 5)
 		return kDataReadErrorReadFailed;
 
-	if (!playWhen.load(reader) || !unknown1Event.load(reader) || !unknown2Event.load(reader)
-		|| !unknown3Label.load(reader) || !unknown4Int.load(reader))
+	if (!playWhen.load(reader) || !stopWhen.load(reader) || !cueEvent.load(reader)
+		|| !cueDestination.load(reader) || !cueUnknown.load(reader))
 		return kDataReadErrorReadFailed;
 
 	int32 numTracks = 0;
@@ -252,13 +250,13 @@ DataReadErrorCode DlgMgrClientModifier::load(PlugIn &plugIn, const PlugInModifie
 		if (!track.load(reader))
 			return kDataReadErrorReadFailed;
 
-	if (version >= 2 && (!unknown5.load(reader) || !unknown6.load(reader)))
+	if (version >= 2 && (!triggerValue.load(reader) || !filterByTriggerValue.load(reader)))
 		return kDataReadErrorReadFailed;
 
-	if (version >= 4 && (!unknown7.load(reader) || !unknown8.load(reader)))
+	if (version >= 4 && (!doneEvent.load(reader) || !doneDestination.load(reader)))
 		return kDataReadErrorReadFailed;
 
-	if (version >= 5 && !unknown9.load(reader))
+	if (version >= 5 && !doneWith.load(reader))
 		return kDataReadErrorReadFailed;
 
 	return kDataReadErrorNone;
