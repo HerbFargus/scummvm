@@ -2721,7 +2721,7 @@ DataReadErrorCode loadDataObject(const PlugInModifierRegistry &registry, DataRea
 	Common::SharedPtr<DataObject> sharedPtr(dataObject);
 	DataReadErrorCode errorCode = dataObject->load(static_cast<DataObjectTypes::DataObjectType>(type), revision, reader);
 	if (errorCode != kDataReadErrorNone) {
-		warning("Data object type 0x%x failed to load (err %d)", static_cast<int>(type), static_cast<int>(errorCode));
+		warning("Data object type 0x%x revision %u failed to load (err %d)", static_cast<int>(type), static_cast<uint>(revision), static_cast<int>(errorCode));
 		outObject.reset();
 		return errorCode;
 	}

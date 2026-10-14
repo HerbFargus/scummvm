@@ -1720,7 +1720,7 @@ static const MTropolisGameDescription gameDescriptions[] = {
 	  // Published by Microsoft, 1999
 		{
 			"msb_animal",
-			MetaEngineDetection::GAME_NOT_IMPLEMENTED,
+			"",
 			{
 				{ "MTPLAY32.EXE", 0, "ed776bfe63d17a7d57d9625c3efe5a0a", 1085952},
 				// { "reports.mfw", 0, "bb588986e16f9e9ae12816c6d9f51268", 35712973},
@@ -1755,7 +1755,7 @@ static const MTropolisGameDescription gameDescriptions[] = {
 			},
 			Common::EN_ANY,
 			Common::kPlatformWindows,
-			ADGF_UNSUPPORTED,
+			ADGF_UNSTABLE,
 			GUIO0()
 		},
 		GID_MSB_ANIMAL,
@@ -1767,7 +1767,7 @@ static const MTropolisGameDescription gameDescriptions[] = {
 	  // Published by Microsoft, 2000
 		{
 			"msb_bugs",
-			MetaEngineDetection::GAME_NOT_IMPLEMENTED,
+			"",
 			{
 				{ "MTPLAY32.EXE", 0, "ed776bfe63d17a7d57d9625c3efe5a0a", 1085952 },
 				// { "Bus.mfw", 0, "cdbe91cfaa4634c5920413a3ee56b1dd", 19193104 },
@@ -1803,7 +1803,7 @@ static const MTropolisGameDescription gameDescriptions[] = {
 			},
 			Common::EN_ANY,
 			Common::kPlatformWindows,
-			ADGF_UNSUPPORTED,
+			ADGF_UNSTABLE,
 			GUIO0()
 		},
 		GID_MSB_BUGS,
@@ -1845,7 +1845,7 @@ static const MTropolisGameDescription gameDescriptions[] = {
 	  // Published by Microsoft, 2000
 		{
 			"msb_flight",
-			MetaEngineDetection::GAME_NOT_IMPLEMENTED,
+			"",
 			{
 				{ "MTPLAY32.EXE", 0, "ed776bfe63d17a7d57d9625c3efe5a0a", 1085952 },
 				// { "balloon.mfx", 0, "bafca52d8e8bcbe6f9b5f7bfeb2be29b", 4827052 },
@@ -1863,7 +1863,7 @@ static const MTropolisGameDescription gameDescriptions[] = {
 			},
 			Common::EN_ANY,
 			Common::kPlatformWindows,
-			ADGF_UNSUPPORTED,
+			ADGF_UNSTABLE,
 			GUIO0()
 		},
 		GID_MSB_FLIGHT,
@@ -1875,7 +1875,7 @@ static const MTropolisGameDescription gameDescriptions[] = {
 	  // Published by Microsoft, 2000
 		{
 			"msb_mars",
-			MetaEngineDetection::GAME_NOT_IMPLEMENTED,
+			"",
 			{
 				{ "Mtplay32.exe", 0, "ed776bfe63d17a7d57d9625c3efe5a0a", 1085952 },
 				// { "Bus.mfx", 0, "b72a82877c8dfe8d0dd1f96f8f9259e2", 51951667 },
@@ -1893,7 +1893,7 @@ static const MTropolisGameDescription gameDescriptions[] = {
 			},
 			Common::EN_ANY,
 			Common::kPlatformWindows,
-			ADGF_UNSUPPORTED,
+			ADGF_UNSTABLE,
 			GUIO0()
 		},
 		GID_MSB_MARS,
@@ -1905,7 +1905,7 @@ static const MTropolisGameDescription gameDescriptions[] = {
 	  // Published by Microsoft, 2001
 		{
 			"msb_volcano",
-			MetaEngineDetection::GAME_NOT_IMPLEMENTED,
+			"",
 			{
 				{ "Mtplay32.exe", 0, "ed776bfe63d17a7d57d9625c3efe5a0a", 1085952 },
 				// { "Art.mfx", 0, "672cf2da2dd8233074746e1e657c2f62", 7297320 },
@@ -1923,7 +1923,7 @@ static const MTropolisGameDescription gameDescriptions[] = {
 			},
 			Common::EN_ANY,
 			Common::kPlatformWindows,
-			ADGF_UNSUPPORTED,
+			ADGF_UNSTABLE,
 			GUIO0()
 		},
 		GID_MSB_VOLCANO,
@@ -1935,7 +1935,7 @@ static const MTropolisGameDescription gameDescriptions[] = {
 	  // Published by Microsoft, 2001
 		{
 			"msb_whales",
-			MetaEngineDetection::GAME_NOT_IMPLEMENTED,
+			"",
 			{
 				{ "Mtplay32.exe", 0, "ed776bfe63d17a7d57d9625c3efe5a0a", 1085952 },
 				// { "BOB.mfx", 0, "d4d6abc27f96febfcd70258d05be39be", 20627391 },
@@ -1953,7 +1953,7 @@ static const MTropolisGameDescription gameDescriptions[] = {
 			},
 			Common::EN_ANY,
 			Common::kPlatformWindows,
-			ADGF_UNSUPPORTED,
+			ADGF_UNSTABLE,
 			GUIO0()
 		},
 		GID_MSB_WHALES,
