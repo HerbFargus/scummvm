@@ -1298,11 +1298,28 @@ void ImageElement::render(Window *window) {
 
 		if (inkMode == VisualElementRenderProperties::kInkModeBackgroundMatte || inkMode == VisualElementRenderProperties::kInkModeBackgroundTransparent) {
 			const ColorRGB8 transColorRGB8 = _renderProps.getBackColor();
-			uint32 transColor = optimized->format.ARGBToColor(0, transColorRGB8.r, transColorRGB8.g, transColorRGB8.b);
+			uint32 transColor = 0;
 
-			// Awful hack to work around transBlit not working with either 0 or -1
-			if (transColor == 0)
-				transColor = optimized->format.ARGBToColor(255, transColorRGB8.r, transColorRGB8.g, transColorRGB8.b);
+			if (optimized->format.bytesPerPixel == 1) {
+				// Paletted images are keyed by the palette entry matching the background color
+				const Palette *palette = getPalette().get();
+				if (!palette)
+					palette = &getRuntime()->getGlobalPalette();
+
+				const byte *paletteData = palette->getPalette();
+				for (uint i = 0; i < Palette::kNumColors; i++) {
+					if (transColorRGB8 == ColorRGB8(paletteData[i * 3 + 0], paletteData[i * 3 + 1], paletteData[i * 3 + 2])) {
+						transColor = i;
+						break;
+					}
+				}
+			} else {
+				transColor = optimized->format.ARGBToColor(0, transColorRGB8.r, transColorRGB8.g, transColorRGB8.b);
+
+				// Awful hack to work around transBlit not working with either 0 or -1
+				if (transColor == 0)
+					transColor = optimized->format.ARGBToColor(255, transColorRGB8.r, transColorRGB8.g, transColorRGB8.b);
+			}
 
 			window->getSurface()->transBlitFrom(*optimized, srcRect, destRect, transColor, false, alpha);
 		} else if (inkMode == VisualElementRenderProperties::kInkModeDefault || inkMode == VisualElementRenderProperties::kInkModeCopy) {
