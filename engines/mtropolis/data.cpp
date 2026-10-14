@@ -1561,7 +1561,7 @@ DragMotionModifier::DragMotionModifier()
 }
 
 DataReadErrorCode DragMotionModifier::load(DataReader &reader) {
-	if (_revision != 1000)
+	if (_revision != 1000 && _revision != 2000)
 		return kDataReadErrorUnsupportedRevision;
 
 	if (!modHeader.load(reader, _revision >= 2000))
