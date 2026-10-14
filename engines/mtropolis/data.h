@@ -1811,6 +1811,7 @@ struct CompoundVariableModifier : public DataObject {
 	Point editorLayoutPosition;
 	uint16 lengthOfName;
 	uint16 numChildren;
+	uint32 unknown8;	// Revision 2 only
 	uint8 unknown7[4];
 
 	Common::String name;

@@ -1898,17 +1898,22 @@ CursorModifierV1::MacOnlyPart::MacOnlyPart() : unknown1(0), unknown2(0), cursorI
 
 CompoundVariableModifier::CompoundVariableModifier()
 	: modifierFlags(0), sizeIncludingTag(0), unknown1{0, 0}, guid(0), unknown4{0, 0, 0, 0, 0, 0}, unknown5(0),
-	  lengthOfName(0), numChildren(0), unknown7{0, 0, 0, 0} {
+	  lengthOfName(0), numChildren(0), unknown8(0), unknown7{0, 0, 0, 0} {
 }
 
 DataReadErrorCode CompoundVariableModifier::load(DataReader &reader) {
-	if (_revision != 1)
+	if (_revision != 1 && _revision != 2)
 		return kDataReadErrorUnsupportedRevision;
 
 	if (!reader.readU32(modifierFlags) || !reader.readU32(sizeIncludingTag) || !reader.readBytes(unknown1)
 		|| !reader.readU32(guid) || !reader.readBytes(unknown4) || !reader.readU32(unknown5)
-		|| !editorLayoutPosition.load(reader) || !reader.readU16(lengthOfName) || !reader.readU16(numChildren)
-		|| !reader.readTerminatedStr(name, lengthOfName) || !reader.readBytes(unknown7))
+		|| !editorLayoutPosition.load(reader) || !reader.readU16(lengthOfName) || !reader.readU16(numChildren))
+		return kDataReadErrorReadFailed;
+
+	if (_revision >= 2 && !reader.readU32(unknown8))
+		return kDataReadErrorReadFailed;
+
+	if (!reader.readTerminatedStr(name, lengthOfName) || !reader.readBytes(unknown7))
 		return kDataReadErrorReadFailed;
 
 	return kDataReadErrorNone;
@@ -1970,7 +1975,7 @@ PointVariableModifier::PointVariableModifier() : unknown5{0, 0, 0, 0} {
 }
 
 DataReadErrorCode PointVariableModifier::load(DataReader &reader) {
-	if (_revision != 1000)
+	if (_revision != 1000 && _revision != 2000)
 		return kDataReadErrorUnsupportedRevision;
 
 	if (!modHeader.load(reader, _revision >= 2000) || !reader.readBytes(unknown5) || !value.load(reader))
