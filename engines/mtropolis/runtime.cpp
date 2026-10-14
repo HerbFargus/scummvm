@@ -6607,7 +6607,9 @@ void Runtime::instantiateIfAlias(Common::SharedPtr<Modifier> &modifier, const Co
 		clonedModifier->setSelfReference(clonedModifier);
 		clonedModifier->setRuntimeGUID(allocateRuntimeGUID());
 
-		clonedModifier->setName(modifier->getName());
+		// Rev 4 alias data has no name, the instance uses the template's
+		if (!modifier->getName().empty())
+			clonedModifier->setName(modifier->getName());
 
 		modifier = clonedModifier;
 		clonedModifier->setParent(relinkParent);
