@@ -2355,9 +2355,9 @@ MiniscriptInstructionOutcome Jump::execute(MiniscriptThread *thread) const {
 		thread->popValues(1);
 
 		if (!isTrue)
-			thread->jumpOffset(this->_instrOffset);
+			thread->jumpOffset(static_cast<int32>(this->_instrOffset));
 	} else {
-		thread->jumpOffset(this->_instrOffset);
+		thread->jumpOffset(static_cast<int32>(this->_instrOffset));
 	}
 
 	return kMiniscriptInstructionOutcomeContinue;
@@ -2448,14 +2448,15 @@ MiniscriptInstructionOutcome MiniscriptThread::dereferenceRValue(size_t offset) 
 	return kMiniscriptInstructionOutcomeContinue;
 }
 
-void MiniscriptThread::jumpOffset(size_t offset) {
+void MiniscriptThread::jumpOffset(int32 offset) {
 	if (offset == 0) {
 		this->error("Invalid jump offset");
 		_failed = true;
 		return;
 	}
 
-	_currentInstruction += offset - 1;
+	// Negative offsets jump backwards (loops)
+	_currentInstruction = static_cast<size_t>(static_cast<int64>(_currentInstruction) + offset - 1);
 }
 
 bool MiniscriptThread::evaluateTruthOfResult(bool &isTrue) {

@@ -456,7 +456,7 @@ public:
 	MiniscriptStackValue &getStackValueFromTop(size_t offset);
 	MiniscriptInstructionOutcome dereferenceRValue(size_t offset);
 
-	void jumpOffset(size_t offset);
+	void jumpOffset(int32 offset);
 
 	bool evaluateTruthOfResult(bool &isTrue);
 
