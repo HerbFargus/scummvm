@@ -342,6 +342,7 @@ Common::Error MTropolisEngine::run() {
 
 	_runtime->queueProject(bootConfig._projectDesc);
 	Common::String mainSegmentPath = bootConfig._mainSegmentPath;
+	Common::Array<Common::String> titleStack;	// Titles to return to, for Open Title
 
 	preferredWidth = bootConfig._width;
 	preferredHeight = bootConfig._height;
@@ -567,8 +568,19 @@ Common::Error MTropolisEngine::run() {
 			debug(1, "Opening title '%s' as '%s'", openTitlePath.c_str(), newMainSegment.c_str());
 
 			BootConfiguration titleConfig = bootProject(*_gameDescription, newMainSegment);
+			titleStack.push_back(mainSegmentPath);
 			mainSegmentPath = titleConfig._mainSegmentPath;
 			_runtime->queueProject(titleConfig._projectDesc);
+			_runtime->setCanReturnToPreviousTitle(true);
+		} else if (_runtime->takeReturnToPreviousTitleRequest() && !titleStack.empty()) {
+			mainSegmentPath = titleStack.back();
+			titleStack.pop_back();
+
+			debug(1, "Returning to title '%s'", mainSegmentPath.c_str());
+
+			BootConfiguration titleConfig = bootProject(*_gameDescription, mainSegmentPath);
+			_runtime->queueProject(titleConfig._projectDesc);
+			_runtime->setCanReturnToPreviousTitle(!titleStack.empty());
 		}
 
 		if (!_runtime->runFrame())

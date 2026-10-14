@@ -5581,6 +5581,12 @@ void Runtime::executeHighLevelSceneReturn() {
 		_sceneStack.resize(1); // Reserve shared scene slot
 
 	if (_sceneReturnList.size() == 0) {
+		// A title opened with Open Title returns to the title that opened it
+		if (_canReturnToPreviousTitle) {
+			_returnToPreviousTitleRequested = true;
+			return;
+		}
+
 		warning("A scene return was requested, but no scenes are in the scene return list");
 		return;
 	}
@@ -7391,6 +7397,16 @@ void Runtime::queueProject(const Common::SharedPtr<ProjectDescription> &desc) {
 
 void Runtime::requestOpenTitle(const Common::String &path) {
 	_openTitleRequest = path;
+}
+
+void Runtime::setCanReturnToPreviousTitle(bool canReturn) {
+	_canReturnToPreviousTitle = canReturn;
+}
+
+bool Runtime::takeReturnToPreviousTitleRequest() {
+	bool requested = _returnToPreviousTitleRequested;
+	_returnToPreviousTitleRequested = false;
+	return requested;
 }
 
 bool Runtime::takeOpenTitleRequest(Common::String &outPath) {

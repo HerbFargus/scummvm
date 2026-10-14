@@ -1585,6 +1585,8 @@ public:
 	// Open Title: requests that the engine boots another title file
 	void requestOpenTitle(const Common::String &path);
 	bool takeOpenTitleRequest(Common::String &outPath);
+	void setCanReturnToPreviousTitle(bool canReturn);
+	bool takeReturnToPreviousTitleRequest();
 	void closeProject();
 
 	void addVolume(int volumeID, const char *name, bool isMounted);
@@ -1904,6 +1906,8 @@ private:
 	Common::Array<VolumeState> _volumes;
 	Common::SharedPtr<ProjectDescription> _queuedProjectDesc;
 	Common::String _openTitleRequest;
+	bool _canReturnToPreviousTitle = false;
+	bool _returnToPreviousTitleRequested = false;
 	Common::SharedPtr<Project> _project;
 	Common::ScopedPtr<VThread> _vthread;
 	Common::Array<Common::SharedPtr<MessageDispatch> > _messageQueue;
