@@ -1228,7 +1228,7 @@ MiniscriptInstructionOutcome DynamicList::WriteProxyInterface::refAttribIndexed(
 
 			Common::SharedPtr<RuntimeObject> obj = list->getObjectReference()[ptrOrOffset].object.lock();
 			proxy.containerList.reset();
-			if (!obj && !obj->writeRefAttributeIndexed(thread, proxy, attrib, index))
+			if (!obj || obj->writeRefAttributeIndexed(thread, proxy, attrib, index) == kMiniscriptInstructionOutcomeFailed)
 				return kMiniscriptInstructionOutcomeFailed;
 
 			return kMiniscriptInstructionOutcomeContinue;
@@ -3377,8 +3377,32 @@ void Structural::setSceneLoadState(SceneLoadState sceneLoadState) {
 }
 
 
+// Converts a 1-based script index for the mTropolis 2.0 child attributes
+static bool childIndexFromScript(MiniscriptThread *thread, const DynamicValue &index, size_t count, const char *attrib, size_t &outIndex) {
+	DynamicValue indexConverted;
+	if (!index.convertToType(DynamicValueTypes::kInteger, indexConverted)) {
+		thread->error(Common::String::format("Invalid index for '%s'", attrib));
+		return false;
+	}
+
+	int32 indexInt = indexConverted.getInt();
+	if (indexInt < 1 || static_cast<uint32>(indexInt) > count) {
+		thread->error(Common::String::format("Index out of range for '%s'", attrib));
+		return false;
+	}
+
+	outIndex = indexInt - 1;
+	return true;
+}
+
 bool Structural::readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) {
-	if (attrib == "name") {
+	if (attrib == "childelemcount") {
+		result.setInt(_children.size());
+		return true;
+	} else if (attrib == "childmodcount") {
+		result.setInt(_modifiers.size());
+		return true;
+	} else if (attrib == "name") {
 		result.setString(_name);
 		return true;
 	} else if (attrib == "paused") {
@@ -3654,9 +3678,38 @@ bool Structural::readAttributeIndexed(MiniscriptThread *thread, DynamicValue &re
 
 		result.setObject(_children[indexInt - 1]->getSelfReference());
 		return true;
+	} else if (attrib == "childelem") {
+		size_t childIndex = 0;
+		if (!childIndexFromScript(thread, index, _children.size(), "childelem", childIndex))
+			return false;
+
+		result.setObject(_children[childIndex]->getSelfReference());
+		return true;
+	} else if (attrib == "childmod") {
+		size_t childIndex = 0;
+		if (!childIndexFromScript(thread, index, _modifiers.size(), "childmod", childIndex))
+			return false;
+
+		result.setObject(_modifiers[childIndex]->getSelfReference());
+		return true;
+	}
+
+	// Indexing a variable by name indexes its value
+	for (const Common::SharedPtr<Modifier> &modifier : _modifiers) {
+		if (caseInsensitiveEqual(modifier->getName(), attrib))
+			return modifier->readAttributeIndexed(thread, result, "value", index);
 	}
 
 	return RuntimeObject::readAttributeIndexed(thread, result, attrib, index);
+}
+
+MiniscriptInstructionOutcome Structural::writeRefAttributeIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &writeProxy, const Common::String &attrib, const DynamicValue &index) {
+	for (const Common::SharedPtr<Modifier> &modifier : _modifiers) {
+		if (caseInsensitiveEqual(modifier->getName(), attrib))
+			return modifier->writeRefAttributeIndexed(thread, writeProxy, "value", index);
+	}
+
+	return RuntimeObject::writeRefAttributeIndexed(thread, writeProxy, attrib, index);
 }
 
 
@@ -9362,6 +9415,9 @@ MiniscriptInstructionOutcome VisualElement::writeRefAttribute(MiniscriptThread *
 	} else if (attrib == "position") {
 		DynamicValueWriteOrRefAttribFuncHelper<VisualElement, &VisualElement::scriptSetPosition, &VisualElement::scriptWriteRefPositionAttribute>::create(this, writeProxy);
 		return kMiniscriptInstructionOutcomeContinue;
+	} else if (attrib == "globalposition") {
+		DynamicValueWriteOrRefAttribFuncHelper<VisualElement, &VisualElement::scriptSetGlobalPosition, &VisualElement::scriptWriteRefGlobalPositionAttribute>::create(this, writeProxy);
+		return kMiniscriptInstructionOutcomeContinue;
 	} else if (attrib == "size") {
 		DynamicValueWriteOrRefAttribFuncHelper<VisualElement, &VisualElement::scriptSetSize, &VisualElement::scriptWriteRefSizeAttribute>::create(this, writeProxy);
 		return kMiniscriptInstructionOutcomeContinue;
@@ -9782,6 +9838,51 @@ MiniscriptInstructionOutcome VisualElement::scriptWriteRefPositionAttribute(Mini
 	return kMiniscriptInstructionOutcomeFailed;
 }
 
+// Global positions are set by converting them to the parent's coordinates
+MiniscriptInstructionOutcome VisualElement::scriptSetGlobalPosition(MiniscriptThread *thread, const DynamicValue &dest) {
+	if (dest.getType() != DynamicValueTypes::kPoint)
+		return scriptSetPosition(thread, dest);
+
+	Common::Point globalPos = getGlobalPosition();
+	Common::Point destPoint = dest.getPoint();
+
+	DynamicValue localDest;
+	localDest.setPoint(Common::Point(destPoint.x - globalPos.x + _rect.left, destPoint.y - globalPos.y + _rect.top));
+	return scriptSetPosition(thread, localDest);
+}
+
+MiniscriptInstructionOutcome VisualElement::scriptSetGlobalPositionX(MiniscriptThread *thread, const DynamicValue &dest) {
+	int32 asInteger = 0;
+	if (!dest.roundToInt(asInteger))
+		return kMiniscriptInstructionOutcomeFailed;
+
+	DynamicValue localDest;
+	localDest.setInt(asInteger - getGlobalPosition().x + _rect.left);
+	return scriptSetPositionX(thread, localDest);
+}
+
+MiniscriptInstructionOutcome VisualElement::scriptSetGlobalPositionY(MiniscriptThread *thread, const DynamicValue &dest) {
+	int32 asInteger = 0;
+	if (!dest.roundToInt(asInteger))
+		return kMiniscriptInstructionOutcomeFailed;
+
+	DynamicValue localDest;
+	localDest.setInt(asInteger - getGlobalPosition().y + _rect.top);
+	return scriptSetPositionY(thread, localDest);
+}
+
+MiniscriptInstructionOutcome VisualElement::scriptWriteRefGlobalPositionAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &writeProxy, const Common::String &attrib) {
+	if (attrib == "x") {
+		DynamicValueWriteFuncHelper<VisualElement, &VisualElement::scriptSetGlobalPositionX, true>::create(this, writeProxy);
+		return kMiniscriptInstructionOutcomeContinue;
+	} else if (attrib == "y") {
+		DynamicValueWriteFuncHelper<VisualElement, &VisualElement::scriptSetGlobalPositionY, true>::create(this, writeProxy);
+		return kMiniscriptInstructionOutcomeContinue;
+	}
+
+	return kMiniscriptInstructionOutcomeFailed;
+}
+
 MiniscriptInstructionOutcome VisualElement::scriptWriteRefCenterPositionAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &writeProxy, const Common::String &attrib) {
 	if (attrib == "x") {
 		DynamicValueWriteFuncHelper<VisualElement, &VisualElement::scriptSetCenterPositionX, true>::create(this, writeProxy);
@@ -10144,7 +10245,11 @@ Modifier::~Modifier() {
 }
 
 bool Modifier::readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) {
-	if (attrib == "parent") {
+	if (attrib == "childmodcount") {
+		IModifierContainer *container = getChildContainer();
+		result.setInt(container ? container->getModifiers().size() : 0);
+		return true;
+	} else if (attrib == "parent") {
 		result.setObject(_parent);
 		return true;
 	} else if (attrib == "subsection") {
@@ -10197,6 +10302,17 @@ bool Modifier::readAttribute(MiniscriptThread *thread, DynamicValue &result, con
 }
 
 bool Modifier::readAttributeIndexed(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib, const DynamicValue &index) {
+	if (attrib == "childmod") {
+		IModifierContainer *container = getChildContainer();
+		size_t count = container ? container->getModifiers().size() : 0;
+		size_t childIndex = 0;
+		if (!childIndexFromScript(thread, index, count, "childmod", childIndex))
+			return false;
+
+		result.setObject(container->getModifiers()[childIndex]->getSelfReference());
+		return true;
+	}
+
 	if (Modifier *child = findChildModifierByName(attrib))
 		return child->readAttributeIndexed(thread, result, "value", index);
 
