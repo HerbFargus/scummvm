@@ -2396,11 +2396,38 @@ void MessengerSendSpec::resolveDestination(Runtime *runtime, Modifier *sender, R
 					}
 				}
 			} break;
-		case kMessageDestChildren:
 		case kMessageDestSubsection:
+			resolveHierarchyStructuralDestination(runtime, sender, outStructuralDest, outModifierDest, isSubsectionFilter);
+			break;
 		case kMessageDestBehavior:
-		case kMessageDestBehaviorsParent:
-			warning("Not-yet-implemented message destination type");
+		case kMessageDestBehaviorsParent: {
+				// The nearest behavior containing the sender
+				Common::SharedPtr<Modifier> behavior;
+				RuntimeObject *obj = sender->getParent().lock().get();
+				while (obj && obj->isModifier()) {
+					Modifier *modifier = static_cast<Modifier *>(obj);
+					if (modifier->isBehavior()) {
+						behavior = modifier->getSelfReference().lock().staticCast<Modifier>();
+						break;
+					}
+					obj = modifier->getParent().lock().get();
+				}
+
+				if (!behavior)
+					break;
+
+				if (destination == kMessageDestBehavior) {
+					outModifierDest = behavior;
+				} else {
+					RuntimeObject *parentObj = behavior->getParent().lock().get();
+					if (parentObj && parentObj->isModifier())
+						outModifierDest = parentObj->getSelfReference().staticCast<Modifier>();
+					else if (parentObj && parentObj->isStructural())
+						outStructuralDest = parentObj->getSelfReference().staticCast<Structural>();
+				}
+			} break;
+		case kMessageDestChildren:
+			warning("Not-yet-implemented message destination type %x", static_cast<uint>(destination));
 			break;
 		default:
 			break;
