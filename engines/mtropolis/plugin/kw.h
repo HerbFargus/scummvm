@@ -804,6 +804,222 @@ private:
 	int32 _grassCelAttr;
 };
 
+// Save the Town mini-game from Magic School Bus Volcano Adventure. Lava flows
+// down a grid of 38-pixel cells one row at a time. The player picks up left
+// and right deflector blocks with a helicopter cursor and drops them to steer
+// the lava away from the houses and cars. The levels are read from the
+// original SvTown.r32 plug-in.
+class SvTownModifier : public Modifier {
+public:
+	SvTownModifier();
+	~SvTownModifier();
+
+	bool load(const PlugInModifierLoaderContext &context, const Data::KW::GameModifier &data);
+
+	bool respondsToEvent(const Event &evt) const override;
+	VThreadState consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) override;
+	void disable(Runtime *runtime) override;
+
+	bool readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) override;
+	MiniscriptInstructionOutcome writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) override;
+
+#ifdef MTROPOLIS_DEBUG_ENABLE
+	const char *debugGetTypeName() const override { return "SvTown Modifier"; }
+	SupportStatus debugGetSupportStatus() const override { return kSupportStatusPartial; }
+#endif
+
+private:
+	static const int kNumRows = 12;
+	static const int kNumLava = 140;
+	static const int kNumBlocks = 60;
+	static const int kNumHomes = 42;
+	static const int kNumTrees = 44;
+	static const int kNumSteam = 20;
+	static const int kNumSmoke = 12;
+	static const int kNumVents = 12;
+	static const int kNumPopups = 16;
+	static const int kNumTypes = 18;
+	static const int kRangeTableSize = 16 * 24 + 24;
+
+	enum State {
+		kStateNewGame = 0,
+		kStateNextLevel = 1,
+		kStatePlaying = 3,
+	};
+
+	enum Carry {
+		kCarryLeft = 0,
+		kCarryRight = 1,
+		kCarryNone = 2,
+	};
+
+	enum Placed {
+		kPlacedNone = -1,
+		kPlacedLeft = 0,
+		kPlacedRight = 1,
+		kPlacedBrokenLeft = 3,
+		kPlacedBrokenRight = 4,
+	};
+
+	struct TableObject {
+		int32 col;
+		int32 row;
+		int32 type;
+	};
+
+	struct Level {
+		int32 bk;
+		int32 numLava;
+		int32 delay;
+		int32 startRow;
+		int32 randMin;
+		int32 randMax;
+		int32 colBase;
+		TableObject homes[kNumHomes];
+		TableObject trees[kNumTrees];
+	};
+
+	// Lava pieces and blocks
+	struct Piece {
+		int32 col;
+		int32 row;
+		int32 x;
+		int32 y;
+		int32 cel;
+	};
+
+	// Homes, cars and trees
+	struct Home {
+		int32 col;
+		int32 row;
+		int32 type;
+		bool active;
+		int32 x;
+		int32 y;
+		int32 cel;
+	};
+
+	// Steam and smoke
+	struct Puff {
+		bool active;
+		int32 x;
+		int32 y;
+		int32 cel;
+	};
+
+	enum WritableAttribute {
+		kAttribPaused,
+		kAttribGameLevel,
+		kAttribHSScreen,
+	};
+
+	struct WriteProxy {
+		static MiniscriptInstructionOutcome write(MiniscriptThread *thread, const DynamicValue &value, void *objectRef, uintptr ptrOrOffset);
+		static MiniscriptInstructionOutcome refAttrib(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib);
+		static MiniscriptInstructionOutcome refAttribIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib, const DynamicValue &index);
+	};
+
+	Common::SharedPtr<Modifier> shallowClone() const override;
+	const char *getDefaultName() const override;
+
+	bool loadLevels();
+	void setupLevel(Runtime *runtime, int32 level);
+	void tick(Runtime *runtime);
+	void stopGame();
+	void mouseDown(Runtime *runtime);
+	void firstPick(Runtime *runtime);
+	void endGame(Runtime *runtime);
+
+	void spawnRow(Runtime *runtime);
+	void addLava(Runtime *runtime, int32 col, int32 row, int32 dir);
+	int32 chooseDir(Runtime *runtime, int n, int32 first, int32 width, int32 &fork);
+	void finalEruption(Runtime *runtime);
+	bool inArea(int32 col, int32 row) const;
+	bool onLava(int32 col, int32 row) const;
+	bool occupied(int32 col, int32 row) const;
+	bool dropCheck(Runtime *runtime, int32 col, int32 row, bool &lavaHit);
+	int dropBlock(Runtime *runtime, int32 &placedRow);
+	void animateChopper(Runtime *runtime, const Common::Point &mouse, bool placed);
+	void updateShadow(Runtime *runtime, const Common::Point &mouse);
+	void hideShadow(Runtime *runtime);
+	void animatePuffs(Runtime *runtime);
+	bool checkCollisions(Runtime *runtime, int32 row);
+	void awardPoints(Runtime *runtime, int32 row);
+	void depthSort(Runtime *runtime, int placed, int32 placedRow);
+	void resetLayers(Runtime *runtime);
+
+	Structural *child(int index) const;
+	Structural *grandchild(int index, int subIndex) const;
+	void place(Runtime *runtime, Structural *element, int32 x, int32 y);
+	void placeTopLeft(Runtime *runtime, Structural *element, int32 x, int32 y);
+	void hide(Runtime *runtime, Structural *element);
+	void setInt(Runtime *runtime, Structural *element, const char *attrib, int32 value);
+	void setBool(Runtime *runtime, Structural *element, const char *attrib, bool value);
+	void sendMessage(Runtime *runtime, const char *messageName);
+	static int32 randomRange(Runtime *runtime, int32 lo, int32 hi);
+
+	Event _startWhen;
+	Event _stopWhen;
+
+	Common::Array<Level> _levels;	// Index 0 is unused
+	int32 _placeRange[kRangeTableSize];	// Start at level * 24 + row, width 12 entries later
+	int32 _spreadRange[kRangeTableSize];
+	int32 _typeOffsets[kNumTypes][2];
+	int32 _dirThresholds[4][4];
+	int32 _forkThresholds[2];
+	int32 _firstBlockCol;
+	int32 _firstBlockRow;
+	bool _levelsLoaded;
+
+	Common::SharedPtr<ScheduledEvent> _scheduledEvent;
+	bool _running;
+	bool _initialized;
+	bool _paused;
+	bool _halted;
+	bool _cursorIn;
+	bool _firstBlockSent;
+
+	int32 _level;
+	int32 _score;
+	int32 _state;
+	int32 _lives;
+	int32 _introCountdown;
+	int32 _lavaRow;
+	int32 _lastRow;
+	int32 _steps;
+	int32 _delay;
+
+	int32 _carry;
+	bool _pendingDrop;
+	Common::Point _dropPoint;
+	int32 _chopState;	// 0 flying left, 1 flying right, 2 carrying left, 3 carrying right
+	int32 _chopCel;
+	int32 _chopLastX;
+	int32 _shadowCol;
+	int32 _shadowRow;
+	int32 _shadowCel;
+	int32 _popupTimer;
+	int32 _popups[kNumPopups];	// Child indexes of the points element, 0 if none
+	int32 _numPopups;
+
+	Piece _lava[kNumLava];
+	int32 _lavaCount;
+	Piece _leftBlocks[kNumBlocks];
+	Piece _rightBlocks[kNumBlocks];
+	Piece _brokenLeft[kNumBlocks];
+	Piece _brokenRight[kNumBlocks];
+	int32 _leftList[kNumBlocks];	// Free lists of block indexes
+	int32 _rightList[kNumBlocks];
+	int32 _leftUsed;
+	int32 _rightUsed;
+	int32 _brokenLeftCount;
+	int32 _brokenRightCount;
+	Home _homes[kNumHomes];
+	Home _trees[kNumTrees];
+	Puff _steam[kNumSteam];
+	Puff _smoke[kNumSmoke];
+};
+
 class DlgMgrClientModifier;
 class KnowWonderPlugIn;
 
@@ -1036,6 +1252,7 @@ private:
 	PlugInModifierFactory<SmkJumpModifier, Data::KW::GameModifier> _smkJumpModifierFactory;
 	PlugInModifierFactory<BalloonModifier, Data::KW::GameModifier> _balloonModifierFactory;
 	PlugInModifierFactory<ArtModifier, Data::KW::GameModifier> _artModifierFactory;
+	PlugInModifierFactory<SvTownModifier, Data::KW::GameModifier> _svTownModifierFactory;
 
 	Common::WeakPtr<RuntimeObject> _dlgMgrServer;
 };

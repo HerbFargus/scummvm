@@ -3923,6 +3923,1570 @@ const char *ArtModifier::getDefaultName() const {
 	return "Art";
 }
 
+// Children of the owner element
+enum SvTownChild {
+	kSvTownVents = 1,
+	kSvTownSteam = 2,
+	kSvTownLava = 3,
+	kSvTownLeftBlocks = 4,
+	kSvTownRightBlocks = 5,
+	kSvTownNav = 6,
+	kSvTownChopper = 7,
+	kSvTownHomes = 8,
+	kSvTownSmoke = 9,
+	kSvTownTrees = 10,
+	kSvTownBackgrounds = 11,
+	kSvTownPoints = 12,
+	kSvTownChances = 13,
+	kSvTownFrame = 14,
+	kSvTownShadow = 15,
+	kSvTownBrokenLeft = 16,
+	kSvTownBrokenRight = 17,
+};
+
+static const int32 kSvTownCell = 38;
+static const int32 kSvTownHidden = -100;
+static const int32 kSvTownChopperLayer = 8560;
+
+// Home types: 1-4 houses, 5, 7, 9, 10 and 11 two cells wide houses, 12-14 cars
+static bool svTownIsCar(int32 type) {
+	return type >= 12 && type <= 14;
+}
+
+static bool svTownIsWide(int32 type) {
+	return type == 5 || type == 7 || type == 9 || type == 10 || type == 11;
+}
+
+// Lava cels 1-12 flow straight down, 13-24 spread left and 25-36 spread right
+static bool svTownIsFinalCel(int32 cel) {
+	return cel == 12 || cel == 24 || cel == 36;
+}
+
+SvTownModifier::SvTownModifier()
+	: _firstBlockCol(0), _firstBlockRow(0), _levelsLoaded(false), _running(false), _initialized(false), _paused(false),
+	  _halted(false), _cursorIn(false), _firstBlockSent(false), _level(1), _score(0), _state(kStateNewGame), _lives(5),
+	  _introCountdown(0), _lavaRow(0), _lastRow(11), _steps(11), _delay(0), _carry(kCarryNone), _pendingDrop(false),
+	  _chopState(0), _chopCel(1), _chopLastX(kSvTownHidden), _shadowCol(kSvTownHidden), _shadowRow(kSvTownHidden),
+	  _shadowCel(1), _popupTimer(0), _numPopups(0), _lavaCount(0), _leftUsed(0), _rightUsed(0), _brokenLeftCount(0),
+	  _brokenRightCount(0) {
+	memset(_placeRange, 0, sizeof(_placeRange));
+	memset(_spreadRange, 0, sizeof(_spreadRange));
+	memset(_typeOffsets, 0, sizeof(_typeOffsets));
+	memset(_dirThresholds, 0, sizeof(_dirThresholds));
+	memset(_forkThresholds, 0, sizeof(_forkThresholds));
+	memset(_popups, 0, sizeof(_popups));
+	memset(_lava, 0, sizeof(_lava));
+	memset(_leftBlocks, 0, sizeof(_leftBlocks));
+	memset(_rightBlocks, 0, sizeof(_rightBlocks));
+	memset(_brokenLeft, 0, sizeof(_brokenLeft));
+	memset(_brokenRight, 0, sizeof(_brokenRight));
+	memset(_leftList, 0, sizeof(_leftList));
+	memset(_rightList, 0, sizeof(_rightList));
+	memset(_homes, 0, sizeof(_homes));
+	memset(_trees, 0, sizeof(_trees));
+	memset(_steam, 0, sizeof(_steam));
+	memset(_smoke, 0, sizeof(_smoke));
+}
+
+SvTownModifier::~SvTownModifier() {
+	stopGame();
+}
+
+bool SvTownModifier::load(const PlugInModifierLoaderContext &context, const Data::KW::GameModifier &data) {
+	return loadDlgMgrEvent(_startWhen, data.enableWhen) && loadDlgMgrEvent(_stopWhen, data.disableWhen);
+}
+
+// The levels are tables in the plug-in's data section
+bool SvTownModifier::loadLevels() {
+	if (_levelsLoaded)
+		return !_levels.empty();
+
+	_levelsLoaded = true;
+
+	Common::File f;
+	if (!f.open(Common::Path("mTrop_Resources/SvTown.r32")) && !f.open(Common::Path("SvTown.r32"))) {
+		warning("SvTown: SvTown.r32 from the installed game is needed for the levels");
+		return false;
+	}
+
+	Common::Array<byte> image;
+	image.resize(f.size());
+	f.read(&image[0], image.size());
+
+	const uint32 kImageBase = 0x10000000;
+	bool failed = false;
+	auto readS32 = [&](uint32 va) -> int32 {
+		uint32 offset = va - kImageBase;
+		if (offset + 4 > image.size()) {
+			failed = true;
+			return 0;
+		}
+		return static_cast<int32>(READ_LE_UINT32(&image[offset]));
+	};
+	auto readS16 = [&](uint32 va) -> int32 {
+		uint32 offset = va - kImageBase;
+		if (offset + 2 > image.size()) {
+			failed = true;
+			return 0;
+		}
+		return static_cast<int16>(READ_LE_UINT16(&image[offset]));
+	};
+
+	// The range tables are indexed with level * 24 + row, past the end of a row's 12 entries for the
+	// bottom row, so they are kept whole
+	for (int i = 0; i < kRangeTableSize; i++) {
+		_placeRange[i] = readS32(0x1000f1b0 + i * 4);
+		_spreadRange[i] = readS32(0x1000f750 + i * 4);
+	}
+
+	for (int type = 0; type < kNumTypes; type++) {
+		_typeOffsets[type][0] = readS32(0x1000f0c0 + type * 8);
+		_typeOffsets[type][1] = readS32(0x1000f0c0 + type * 8 + 4);
+	}
+
+	// Lava direction thresholds for the left edge, right edge, left half and right half
+	for (int table = 0; table < 4; table++) {
+		for (int i = 0; i < 4; i++)
+			_dirThresholds[table][i] = readS32(0x1000f150 + table * 16 + i * 4);
+	}
+	_forkThresholds[0] = readS32(0x1000f190);
+	_forkThresholds[1] = readS32(0x1000f194);
+
+	// Level 1 starts with a right block in place
+	_firstBlockCol = readS32(0x1000f1dc);
+	_firstBlockRow = readS32(0x1000f1e0);
+
+	Common::Array<Level> levels;
+	levels.resize(16);
+	for (uint l = 1; l <= 15; l++) {
+		Level &level = levels[l];
+		level.bk = readS16(0x1000f19a + l * 2);
+		level.numLava = readS16(0x1000f1ba + l * 2);
+		level.delay = readS16(0x1000f1ea + l * 2);
+
+		uint32 base = 0x1000f88c + l * 0x4c4;
+		level.startRow = readS32(base);
+		level.randMin = readS32(base + 4);
+		level.randMax = readS32(base + 8);
+		level.colBase = readS32(base + 12);
+
+		for (uint i = 0; i < kNumHomes; i++) {
+			uint32 va = base + 2 + 14 * (i + 1);
+			level.homes[i].col = readS32(va);
+			level.homes[i].row = readS32(va + 4);
+			level.homes[i].type = readS32(va + 8);
+		}
+		for (uint i = 0; i < kNumTrees; i++) {
+			uint32 va = base + 0x24e + 14 * (i + 1);
+			level.trees[i].col = readS32(va);
+			level.trees[i].row = readS32(va + 4);
+			level.trees[i].type = readS32(va + 8);
+		}
+	}
+
+	// Level 1's third home is a house at (7, 3)
+	const TableObject &check = levels[1].homes[2];
+	if (failed || check.col != 7 || check.row != 3 || check.type != 1 || _firstBlockCol != 8 || _firstBlockRow != 3) {
+		warning("SvTown: SvTown.r32 isn't the expected version");
+		return false;
+	}
+
+	for (const Level &level : levels) {
+		for (const TableObject &obj : level.homes) {
+			if (obj.col != kSvTownHidden && (obj.type < 0 || obj.type >= kNumTypes))
+				failed = true;
+		}
+		for (const TableObject &obj : level.trees) {
+			if (obj.col != kSvTownHidden && (obj.type < 0 || obj.type >= kNumTypes))
+				failed = true;
+		}
+	}
+	if (failed) {
+		warning("SvTown: SvTown.r32 has unexpected object types");
+		return false;
+	}
+
+	_levels.swap(levels);
+	return true;
+}
+
+bool SvTownModifier::respondsToEvent(const Event &evt) const {
+	return _startWhen.respondsTo(evt) || _stopWhen.respondsTo(evt) || evt.eventType == EventIDs::kParentDisabled
+		|| evt.eventType == EventIDs::kMouseDown || evt.eventType == EventIDs::kMouseUp;
+}
+
+VThreadState SvTownModifier::consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) {
+	const Event &evt = msg->getEvent();
+
+	if (_startWhen.respondsTo(evt)) {
+		_state = kStateNewGame;
+		setupLevel(runtime, 1);
+		_firstBlockSent = false;
+
+		if (!_running) {
+			_running = true;
+			// The original ticks every 83 milliseconds
+			_scheduledEvent = runtime->getScheduler().scheduleMethod<SvTownModifier, &SvTownModifier::tick>(runtime->getPlayTime() + 83, this);
+		}
+		return kVThreadReturn;
+	}
+
+	if (_stopWhen.respondsTo(evt) || evt.eventType == EventIDs::kParentDisabled) {
+		stopGame();
+		return kVThreadReturn;
+	}
+
+	if (evt.eventType == EventIDs::kMouseDown)
+		mouseDown(runtime);
+
+	return kVThreadReturn;
+}
+
+void SvTownModifier::disable(Runtime *runtime) {
+	stopGame();
+}
+
+void SvTownModifier::stopGame() {
+	_running = false;
+	if (_scheduledEvent) {
+		_scheduledEvent->cancel();
+		_scheduledEvent.reset();
+	}
+}
+
+bool SvTownModifier::readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) {
+	if (attrib == "paused") {
+		result.setBool(_paused);
+		return true;
+	} else if (attrib == "gamelevel") {
+		result.setInt(_level);
+		return true;
+	} else if (attrib == "points") {
+		result.setInt(_score);
+		return true;
+	}
+
+	return Modifier::readAttribute(thread, result, attrib);
+}
+
+MiniscriptInstructionOutcome SvTownModifier::writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) {
+	WritableAttribute writable;
+	if (attrib == "paused")
+		writable = kAttribPaused;
+	else if (attrib == "gamelevel")
+		writable = kAttribGameLevel;
+	else if (attrib == "hsscreen")
+		writable = kAttribHSScreen;
+	else
+		return Modifier::writeRefAttribute(thread, result, attrib);
+
+	result.pod.ifc = DynamicValueWriteInterfaceGlue<WriteProxy>::getInstance();
+	result.pod.objectRef = this;
+	result.pod.ptrOrOffset = writable;
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
+MiniscriptInstructionOutcome SvTownModifier::WriteProxy::write(MiniscriptThread *thread, const DynamicValue &assigned, void *objectRef, uintptr ptrOrOffset) {
+	SvTownModifier *self = static_cast<SvTownModifier *>(objectRef);
+	Runtime *runtime = thread->getRuntime();
+
+	// Variables are passed by reference
+	DynamicValue value = assigned;
+	if (value.getType() == DynamicValueTypes::kObject) {
+		Common::SharedPtr<RuntimeObject> obj = value.getObject().object.lock();
+		if (obj && obj->isModifier() && static_cast<Modifier *>(obj.get())->isVariable())
+			static_cast<VariableModifier *>(obj.get())->varGetValue(value);
+	}
+
+	if (ptrOrOffset == kAttribGameLevel) {
+		int32 level = 0;
+		if (!value.roundToInt(level))
+			return kMiniscriptInstructionOutcomeFailed;
+
+		// The original has no lower bound
+		if (level < 16) {
+			self->_state = kStateNewGame;
+			self->setupLevel(runtime, MAX<int32>(level, 1));
+			self->_halted = false;
+		}
+		return kMiniscriptInstructionOutcomeContinue;
+	}
+
+	bool flag = false;
+	if (value.getType() == DynamicValueTypes::kBoolean)
+		flag = value.getBool();
+	else if (value.getType() == DynamicValueTypes::kInteger)
+		flag = (value.getInt() != 0);
+	else
+		return kMiniscriptInstructionOutcomeFailed;
+
+	if (ptrOrOffset == kAttribHSScreen) {
+		// The high score screen halts the game
+		self->_halted = flag;
+	} else if (self->_initialized || flag) {
+		// Unpausing only takes effect once a level is set up
+		self->_paused = flag;
+		if (self->_state != kStateNewGame && self->_state != kStateNextLevel)
+			self->_state = kStatePlaying;
+
+		const Common::Point &mouse = runtime->getCachedMousePosition();
+		if (!flag && mouse.x > 9 && mouse.x < 631 && mouse.y > 13 && mouse.y < 431)
+			self->sendMessage(runtime, "choppercursor");
+	}
+
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
+MiniscriptInstructionOutcome SvTownModifier::WriteProxy::refAttrib(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib) {
+	return kMiniscriptInstructionOutcomeFailed;
+}
+
+MiniscriptInstructionOutcome SvTownModifier::WriteProxy::refAttribIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib, const DynamicValue &index) {
+	return kMiniscriptInstructionOutcomeFailed;
+}
+
+Structural *SvTownModifier::child(int index) const {
+	Structural *owner = findStructuralOwner();
+	if (!owner || index < 1 || index > static_cast<int>(owner->getChildren().size()))
+		return nullptr;
+	return owner->getChildren()[index - 1].get();
+}
+
+Structural *SvTownModifier::grandchild(int index, int subIndex) const {
+	Structural *container = child(index);
+	if (!container || subIndex < 1 || subIndex > static_cast<int>(container->getChildren().size()))
+		return nullptr;
+	return container->getChildren()[subIndex - 1].get();
+}
+
+void SvTownModifier::place(Runtime *runtime, Structural *element, int32 x, int32 y) {
+	if (!element || !element->isElement() || !static_cast<Element *>(element)->isVisual())
+		return;
+
+	// Placed centered on the point
+	const Common::Rect &rect = static_cast<VisualElement *>(element)->getRelativeRect();
+	placeTopLeft(runtime, element, x - rect.width() / 2, y - rect.height() / 2);
+}
+
+void SvTownModifier::placeTopLeft(Runtime *runtime, Structural *element, int32 x, int32 y) {
+	if (!element)
+		return;
+
+	DynamicValue pos;
+	pos.setPoint(Common::Point(x, y));
+	dlgMgrWriteAttribute(runtime, this, element, "position", pos);
+}
+
+void SvTownModifier::hide(Runtime *runtime, Structural *element) {
+	placeTopLeft(runtime, element, kSvTownHidden, 600);
+}
+
+void SvTownModifier::setInt(Runtime *runtime, Structural *element, const char *attrib, int32 value) {
+	dlgMgrSetInt(runtime, this, element, attrib, value);
+}
+
+void SvTownModifier::setBool(Runtime *runtime, Structural *element, const char *attrib, bool value) {
+	dlgMgrSetBool(runtime, this, element, attrib, value);
+}
+
+void SvTownModifier::sendMessage(Runtime *runtime, const char *messageName) {
+	uint32 messageID = 0;
+	if (!runtime->getProject()->findAuthorMessageID(messageName, messageID)) {
+		debug(2, "SvTown: No author message '%s'", messageName);
+		return;
+	}
+
+	debug(2, "SvTown: Sending '%s'", messageName);
+
+	Structural *owner = findStructuralOwner();
+	if (!owner)
+		return;
+
+	Common::SharedPtr<MessageProperties> props(new MessageProperties(Event(EventIDs::kAuthorMessage, messageID), DynamicValue(), getSelfReference()));
+	Common::SharedPtr<MessageDispatch> dispatch(new MessageDispatch(props, owner, true, true, false));
+	runtime->queueMessage(dispatch);
+}
+
+int32 SvTownModifier::randomRange(Runtime *runtime, int32 lo, int32 hi) {
+	if (hi <= lo)
+		return lo;
+	return lo + static_cast<int32>(runtime->getRandom()->getRandomNumber(static_cast<uint>(hi - lo)));
+}
+
+void SvTownModifier::setupLevel(Runtime *runtime, int32 levelNum) {
+	if (!loadLevels() || levelNum < 1 || levelNum > 15)
+		return;
+
+	debug(2, "SvTown: Setting up level %i", static_cast<int>(levelNum));
+
+	const Level &level = _levels[levelNum];
+
+	_initialized = false;
+	_paused = true;
+	_level = levelNum;
+	_introCountdown = 24;
+	_steps = 11;
+	_delay = level.delay;
+	_lavaCount = 0;
+	_leftUsed = 0;
+	_rightUsed = 0;
+	_brokenLeftCount = 0;
+	_brokenRightCount = 0;
+	_carry = kCarryNone;
+	_pendingDrop = false;
+	_cursorIn = false;
+	_halted = false;
+
+	if (!_firstBlockSent && levelNum != 1) {
+		sendMessage(runtime, "firstblockpicked");
+		_firstBlockSent = true;
+	}
+
+	for (int i = 0; i < kNumBlocks; i++) {
+		_leftList[i] = i;
+		_rightList[i] = i;
+	}
+
+	_lastRow = (levelNum % 5 == 0) ? 10 : 11;
+
+	if (_state == kStateNewGame) {
+		_score = 0;
+		sendMessage(runtime, "UpdateScore");
+	}
+
+	_lives = 5;
+
+	for (int i = 1; i <= kNumVents; i++) {
+		Structural *vent = grandchild(kSvTownVents, i);
+		place(runtime, vent, kSvTownHidden, 600);
+		setInt(runtime, vent, "layer", 20 + i);
+	}
+
+	for (int i = 0; i < kNumSteam; i++) {
+		Structural *steam = grandchild(kSvTownSteam, i + 1);
+		place(runtime, steam, kSvTownHidden, 600);
+		setInt(runtime, steam, "layer", 8001 + i);
+		_steam[i].active = false;
+		_steam[i].cel = 1;
+		setBool(runtime, steam, "paused", true);
+		setInt(runtime, steam, "cel", 1);
+	}
+
+	for (int i = 0; i < kNumBlocks; i++) {
+		_leftBlocks[i].col = _leftBlocks[i].row = kSvTownHidden;
+		_leftBlocks[i].cel = -1;
+		hide(runtime, grandchild(kSvTownLeftBlocks, i + 1));
+		_rightBlocks[i].col = _rightBlocks[i].row = kSvTownHidden;
+		_rightBlocks[i].cel = -1;
+		hide(runtime, grandchild(kSvTownRightBlocks, i + 1));
+	}
+
+	// The starting lava pieces, with vents and steam on the first level of each tier
+	_lavaRow = level.startRow + 1;
+	int ventsUsed = 0;
+	int steamUsed = 0;
+	for (int i = 0; i < kNumLava; i++) {
+		Piece &lava = _lava[i];
+		Structural *elem = grandchild(kSvTownLava, i + 1);
+		place(runtime, elem, kSvTownHidden, 600);
+		setBool(runtime, elem, "paused", true);
+		setInt(runtime, elem, "cel", 1);
+		lava.cel = -1;
+		lava.col = lava.row = kSvTownHidden;
+
+		if (i >= level.numLava)
+			continue;
+
+		if (levelNum == 1) {
+			lava.cel = 25;
+			setInt(runtime, elem, "cel", lava.cel);
+			lava.row = level.startRow;
+			lava.y = lava.row * kSvTownCell + 2;
+			lava.col = 6;
+			lava.x = lava.col * kSvTownCell + 9;
+
+			int b = _rightList[_rightUsed];
+			Piece &block = _rightBlocks[b];
+			block.col = _firstBlockCol;
+			block.row = _firstBlockRow;
+			block.x = block.col * kSvTownCell - 39;
+			block.y = block.row * kSvTownCell - 45;
+			placeTopLeft(runtime, grandchild(kSvTownRightBlocks, b + 1), block.x, block.y);
+			_rightUsed++;
+		} else {
+			// Pick a column that no other piece starts in, and don't let two pieces spread into each other
+			for (int attempt = 0; attempt < 40; attempt++) {
+				lava.cel = randomRange(runtime, 1, 3) * 12 - 11;
+				setInt(runtime, elem, "cel", lava.cel);
+				lava.row = level.startRow;
+				lava.y = lava.row * kSvTownCell + 2;
+				lava.col = level.colBase + randomRange(runtime, level.randMin, level.randMax);
+				lava.x = lava.col * kSvTownCell + 9;
+
+				bool clash = false;
+				for (int j = 0; j < i && !clash; j++) {
+					const Piece &other = _lava[j];
+					if (other.col == lava.col)
+						clash = true;
+					else if (lava.cel == 13 && other.cel == 25 && lava.col == other.col + 1)
+						clash = true;
+					else if (lava.cel == 25 && other.cel == 13 && lava.col + 1 == other.col)
+						clash = true;
+				}
+				if (!clash)
+					break;
+			}
+		}
+
+		_lavaCount++;
+		placeTopLeft(runtime, elem, lava.x, lava.y);
+
+		if (levelNum % 5 == 1 && ventsUsed < kNumVents)
+			placeTopLeft(runtime, grandchild(kSvTownVents, ++ventsUsed), lava.x + 34, lava.y - 9);
+
+		if (levelNum % 5 == 1 && steamUsed < kNumSteam) {
+			Puff &steam = _steam[steamUsed];
+			Structural *steamElem = grandchild(kSvTownSteam, ++steamUsed);
+			steam.x = lava.x + 44;
+			steam.y = lava.y - 24;
+			steam.cel = randomRange(runtime, 1, 5);
+			setInt(runtime, steamElem, "cel", steam.cel);
+			place(runtime, steamElem, steam.x, steam.y);
+			steam.active = true;
+		}
+	}
+
+	// The level banner. Levels 5, 10 and 15 set cel 0, as in the original.
+	placeTopLeft(runtime, grandchild(kSvTownNav, 1), 151, 160);
+	Structural *levelNumber = grandchild(kSvTownNav, 2);
+	setInt(runtime, levelNumber, "cel", levelNum % 5);
+	placeTopLeft(runtime, levelNumber, 391, 198);
+
+	_chopState = 0;
+	_chopCel = 1;
+	_chopLastX = kSvTownHidden;
+	Structural *chopper = child(kSvTownChopper);
+	place(runtime, chopper, kSvTownHidden, 600);
+	setBool(runtime, chopper, "paused", true);
+	setInt(runtime, chopper, "cel", 1);
+	setInt(runtime, chopper, "layer", kSvTownChopperLayer);
+
+	// Element i of the homes and trees matches table record i
+	for (int i = 0; i < kNumHomes; i++) {
+		Home &home = _homes[i];
+		Structural *elem = grandchild(kSvTownHomes, i + 1);
+		place(runtime, elem, kSvTownHidden, 600);
+		setBool(runtime, elem, "paused", true);
+		setInt(runtime, elem, "cel", 1);
+		home.cel = 1;
+		home.x = kSvTownHidden;
+		home.y = 600;
+		home.col = level.homes[i].col;
+		home.row = level.homes[i].row;
+		home.type = level.homes[i].type;
+		home.active = false;
+		if (home.col != kSvTownHidden) {
+			home.x = home.col * kSvTownCell + 9 + _typeOffsets[home.type][0];
+			home.y = home.row * kSvTownCell + 2 + _typeOffsets[home.type][1];
+			home.active = true;
+			placeTopLeft(runtime, elem, home.x, home.y);
+		}
+	}
+
+	for (int i = 0; i < kNumSmoke; i++) {
+		Structural *elem = grandchild(kSvTownSmoke, i + 1);
+		place(runtime, elem, kSvTownHidden, 600);
+		setInt(runtime, elem, "layer", 3301 + i);
+		_smoke[i].active = false;
+		_smoke[i].cel = 1;
+		_smoke[i].x = kSvTownHidden;
+		_smoke[i].y = 600;
+		setBool(runtime, elem, "paused", true);
+		setInt(runtime, elem, "cel", 1);
+	}
+
+	for (int i = 0; i < kNumTrees; i++) {
+		Home &tree = _trees[i];
+		Structural *elem = grandchild(kSvTownTrees, i + 1);
+		place(runtime, elem, kSvTownHidden, 600);
+		tree.cel = 1;
+		tree.x = kSvTownHidden;
+		tree.y = 600;
+		tree.col = level.trees[i].col;
+		tree.row = level.trees[i].row;
+		tree.type = level.trees[i].type;
+		tree.active = false;
+		setBool(runtime, elem, "paused", true);
+		setInt(runtime, elem, "cel", 1);
+		setInt(runtime, elem, "layer", 121 + i);
+		if (tree.col != kSvTownHidden) {
+			// Trees are scattered a little around their cell
+			tree.x = tree.col * kSvTownCell + 9 + (randomRange(runtime, 1, 20) - 10) + _typeOffsets[tree.type][0];
+			tree.y = tree.row * kSvTownCell + 2 + (randomRange(runtime, 1, 20) - 10) + _typeOffsets[tree.type][1];
+			tree.active = true;
+			placeTopLeft(runtime, elem, tree.x, tree.y);
+		}
+	}
+
+	for (int i = 1; i <= 5; i++) {
+		Structural *bk = grandchild(kSvTownBackgrounds, i);
+		if (i == level.bk) {
+			setInt(runtime, bk, "layer", 4);
+			placeTopLeft(runtime, bk, 0, 0);
+		} else
+			hide(runtime, bk);
+	}
+
+	// Score popups come in three tiers of 16. Level 15 is in a fourth tier and has none, as in the original.
+	_popupTimer = 0;
+	int base = (levelNum / 5) * 16 + 1;
+	_numPopups = 0;
+	memset(_popups, 0, sizeof(_popups));
+	for (int k = 1; k <= 48; k++) {
+		Structural *popup = grandchild(kSvTownPoints, k);
+		place(runtime, popup, kSvTownHidden, 600);
+		setBool(runtime, popup, "paused", true);
+		if (k >= base && k < base + 15 && _numPopups < kNumPopups) {
+			_popups[_numPopups++] = k;
+			setInt(runtime, popup, "layer", 3350 + k);
+			setInt(runtime, popup, "cel", 1);
+		}
+	}
+
+	Structural *chances = child(kSvTownChances);
+	setBool(runtime, chances, "paused", true);
+	setInt(runtime, chances, "cel", _lives + 1);
+
+	setInt(runtime, child(kSvTownFrame), "layer", 6844);
+
+	Structural *shadow = child(kSvTownShadow);
+	setInt(runtime, shadow, "layer", 40);
+	hide(runtime, shadow);
+	_shadowCol = _shadowRow = kSvTownHidden;
+	_shadowCel = 1;
+	setBool(runtime, shadow, "paused", true);
+	setInt(runtime, shadow, "cel", 1);
+
+	for (int i = 0; i < kNumBlocks; i++) {
+		Structural *elem = grandchild(kSvTownBrokenLeft, i + 1);
+		setInt(runtime, elem, "layer", 51 + i);
+		_brokenLeft[i].col = _brokenLeft[i].row = kSvTownHidden;
+		_brokenLeft[i].cel = -1;
+		hide(runtime, elem);
+
+		elem = grandchild(kSvTownBrokenRight, i + 1);
+		setInt(runtime, elem, "layer", 121 + i);
+		_brokenRight[i].col = _brokenRight[i].row = kSvTownHidden;
+		_brokenRight[i].cel = -1;
+		hide(runtime, elem);
+	}
+
+	// Initial depth sort: lower rows are in front, then left to right within a row
+	int32 counters[17];
+	for (int k = 0; k < 17; k++)
+		counters[k] = (k < 16) ? (k + 1) * 10 : 0;
+
+	auto sortLayer = [&](Structural *elem, int32 col, int32 row) {
+		if (col == kSvTownHidden)
+			return;
+		int k = CLIP<int32>(col, 0, 16);
+		setInt(runtime, elem, "layer", counters[k] + (row + 2) * 200);
+		counters[k]++;
+	};
+
+	for (int i = 0; i < kNumTrees; i++)
+		sortLayer(grandchild(kSvTownTrees, i + 1), _trees[i].col, _trees[i].row);
+	for (int i = 0; i < kNumBlocks; i++) {
+		sortLayer(grandchild(kSvTownLeftBlocks, i + 1), _leftBlocks[i].col, _leftBlocks[i].row);
+		sortLayer(grandchild(kSvTownRightBlocks, i + 1), _rightBlocks[i].col, _rightBlocks[i].row);
+	}
+	for (int i = 0; i < kNumHomes; i++)
+		sortLayer(grandchild(kSvTownHomes, i + 1), _homes[i].col, _homes[i].row);
+	for (int i = 0; i < kNumLava; i++)
+		setInt(runtime, grandchild(kSvTownLava, i + 1), "layer", 100 + i);
+
+	_initialized = true;
+
+	const Common::Point &mouse = runtime->getCachedMousePosition();
+	if (mouse.x > 10 && mouse.x < 630 && mouse.y > 14 && mouse.y < 430)
+		sendMessage(runtime, "choppercursor");
+}
+
+void SvTownModifier::firstPick(Runtime *runtime) {
+	if (!_firstBlockSent) {
+		sendMessage(runtime, "firstblockpicked");
+		_firstBlockSent = true;
+	}
+}
+
+void SvTownModifier::mouseDown(Runtime *runtime) {
+	if (_levels.empty())
+		return;
+
+	const Common::Point &mouse = runtime->getCachedMousePosition();
+
+	// A click skips the level banner
+	if (_state == kStateNewGame || _state == kStateNextLevel) {
+		_paused = false;
+		_state = kStatePlaying;
+		place(runtime, grandchild(kSvTownNav, 1), -1, 600);
+		place(runtime, grandchild(kSvTownNav, 2), -1, 600);
+		sendMessage(runtime, "canceldialog");
+		return;
+	}
+
+	if (_paused)
+		return;
+
+	// The left pile
+	if (_carry == kCarryNone && _leftUsed < 59 && mouse.x > 11 && mouse.x < 57 && mouse.y > 264 && mouse.y < 324) {
+		_pendingDrop = false;
+		_carry = kCarryLeft;
+		sendMessage(runtime, "PlaySFX1");
+		firstPick(runtime);
+		return;
+	}
+
+	// Holding a block, so the tick drops it
+	if (_carry != kCarryNone) {
+		_dropPoint = mouse;
+		_pendingDrop = true;
+		return;
+	}
+
+	// The right pile
+	if (_rightUsed <= 58 && mouse.x >= 585 && mouse.x <= 629 && mouse.y >= 267 && mouse.y <= 325) {
+		_pendingDrop = false;
+		_carry = kCarryRight;
+		sendMessage(runtime, "PlaySFX1");
+		firstPick(runtime);
+		return;
+	}
+
+	// Pick up a block from the board. The free list is shifted from list position k rather than from
+	// the block's position in it, and the used count isn't decremented; both are as in the original.
+	int32 col = (mouse.x - 16) / kSvTownCell;
+	int32 row = (mouse.y - 10) / kSvTownCell;
+	for (int k = 0; k < kNumBlocks; k++) {
+		bool left = (_leftBlocks[k].col == col && _leftBlocks[k].row == row);
+		bool right = !left && (_rightBlocks[k].col == col && _rightBlocks[k].row == row);
+		if (!left && !right)
+			continue;
+
+		Piece &block = left ? _leftBlocks[k] : _rightBlocks[k];
+		int32 *list = left ? _leftList : _rightList;
+		int32 &used = left ? _leftUsed : _rightUsed;
+
+		block.col = block.row = kSvTownHidden;
+		_pendingDrop = false;
+		_carry = left ? kCarryLeft : kCarryRight;
+		sendMessage(runtime, "PlaySFX1");
+		hide(runtime, grandchild(left ? kSvTownLeftBlocks : kSvTownRightBlocks, k + 1));
+		for (int i = k; i < kNumBlocks - 1; i++)
+			list[i] = list[i + 1];
+		list[kNumBlocks - 1] = k;
+		if (used == 59)
+			used = 58;
+		return;
+	}
+}
+
+void SvTownModifier::tick(Runtime *runtime) {
+	_scheduledEvent.reset();
+	if (!_running)
+		return;
+
+	_scheduledEvent = runtime->getScheduler().scheduleMethod<SvTownModifier, &SvTownModifier::tick>(runtime->getPlayTime() + 83, this);
+
+	if (_halted || _levels.empty())
+		return;
+
+	// The cursor is the helicopter only inside the play area
+	const Common::Point mouse = runtime->getCachedMousePosition();
+	if (mouse.y > 430 || mouse.y < 14 || mouse.x > 630 || mouse.x < 10) {
+		if (_cursorIn) {
+			sendMessage(runtime, "resetcursor");
+			_cursorIn = false;
+		}
+		return;
+	}
+
+	if (!_cursorIn)
+		sendMessage(runtime, "choppercursor");
+	_cursorIn = true;
+
+	if (_paused)
+		return;
+
+	// The level banner shows for 2 seconds
+	if (_state == kStateNewGame || _state == kStateNextLevel) {
+		if (_introCountdown < 1) {
+			_paused = false;
+			_state = kStatePlaying;
+			place(runtime, grandchild(kSvTownNav, 1), -1, 600);
+			place(runtime, grandchild(kSvTownNav, 2), -1, 600);
+		} else
+			_introCountdown--;
+		return;
+	}
+
+	// The lava has reached the bottom
+	if (_lavaRow > 10 && _steps < 7 && _steps > 0) {
+		_paused = true;
+		sendMessage(runtime, "resetcursor");
+		_cursorIn = false;
+
+		if (_level != 5 && _level != 10 && _level != 15) {
+			debug(2, "SvTown: Level %i won", static_cast<int>(_level));
+			_state = kStateNextLevel;
+			sendMessage(runtime, "levelwon");
+			resetLayers(runtime);
+			setupLevel(runtime, _level + 1);
+			_paused = false;
+		} else {
+			debug(2, "SvTown: Game won on level %i", static_cast<int>(_level));
+			_state = kStateNewGame;
+			resetLayers(runtime);
+			_halted = true;
+			hide(runtime, child(kSvTownChopper));
+			sendMessage(runtime, "YouWin");
+		}
+		return;
+	}
+
+	// Each row of lava takes 11 cel advances, the delay apart
+	bool spawned = false;
+	if (_steps < 1) {
+		_steps = 11;
+		_delay = _levels[_level].delay;
+		spawnRow(runtime);
+		spawned = true;
+		if (_level % 5 == 0 && _lavaRow == _lastRow + 1)
+			finalEruption(runtime);
+	} else if (_delay < 1) {
+		_delay = _levels[_level].delay;
+		_steps--;
+		for (int i = 0; i < kNumLava; i++) {
+			Piece &lava = _lava[i];
+			if (lava.col != kSvTownHidden && !svTownIsFinalCel(lava.cel))
+				setInt(runtime, grandchild(kSvTownLava, i + 1), "cel", ++lava.cel);
+		}
+	} else
+		_delay--;
+
+	int32 placedRow = 0;
+	int placed = dropBlock(runtime, placedRow);
+
+	animateChopper(runtime, mouse, placed != kPlacedNone);
+	updateShadow(runtime, mouse);
+	animatePuffs(runtime);
+
+	if (spawned && checkCollisions(runtime, _lavaRow - 1))
+		return;
+
+	if (_popupTimer < 1) {
+		for (int i = 0; i < kNumPopups; i++) {
+			if (_popups[i])
+				hide(runtime, grandchild(kSvTownPoints, _popups[i]));
+		}
+	} else
+		_popupTimer--;
+
+	if (spawned)
+		awardPoints(runtime, _lavaRow - 1);
+
+	if (placed != kPlacedNone || spawned)
+		depthSort(runtime, placed, placedRow);
+}
+
+void SvTownModifier::spawnRow(Runtime *runtime) {
+	if (_lavaCount >= kNumLava || _lavaRow >= kNumRows)
+		return;
+
+	int idx = _level * 24 + _lavaRow;
+	int32 first = _spreadRange[idx] - 1;
+	int32 width = _spreadRange[idx + 12] + 2;
+
+	// A cell gets lava if a finished piece in the row above flows into it
+	for (int32 col = first; col < first + width && _lavaCount < kNumLava; col++) {
+		for (int i = 0; i < kNumLava; i++) {
+			const Piece &above = _lava[i];
+			if (above.row != _lavaRow - 1)
+				continue;
+			if ((above.col == col && above.cel == 12) || (above.col == col + 1 && above.cel == 24) || (above.col == col - 1 && above.cel == 36)) {
+				int n = _lavaCount;
+				Piece &lava = _lava[n];
+				lava.row = _lavaRow;
+				lava.y = lava.row * kSvTownCell + 2;
+				lava.col = col;
+				lava.x = col * kSvTownCell + 9;
+
+				int32 fork = -3;
+				int32 dir = chooseDir(runtime, n, first, width, fork);
+				addLava(runtime, col, _lavaRow, dir);
+
+				// Some cells split into two directions
+				if (fork >= 1 && fork <= 3 && _lavaCount < kNumLava)
+					addLava(runtime, col, _lavaRow, fork);
+				break;
+			}
+		}
+	}
+
+	_lavaRow++;
+}
+
+void SvTownModifier::addLava(Runtime *runtime, int32 col, int32 row, int32 dir) {
+	Piece &lava = _lava[_lavaCount];
+	Structural *elem = grandchild(kSvTownLava, _lavaCount + 1);
+	lava.col = col;
+	lava.row = row;
+	lava.x = col * kSvTownCell + 9;
+	lava.y = row * kSvTownCell + 2;
+	lava.cel = dir * 12 - 11;
+	setInt(runtime, elem, "cel", lava.cel);
+	placeTopLeft(runtime, elem, lava.x, lava.y);
+	_lavaCount++;
+}
+
+// Picks the direction of new lava piece n from the blocks around it. Returns the direction
+// (1 down, 2 left, 3 right) and sets fork to a second direction, or -3 for none.
+int32 SvTownModifier::chooseDir(Runtime *runtime, int n, int32 first, int32 width, int32 &fork) {
+	const int32 c = _lava[n].col;
+	const int32 r = _lava[n].row;
+
+	bool l0 = false, l1 = false, l1u = false, r0 = false, r1 = false, r0u = false;
+	for (int i = 0; i < kNumBlocks; i++) {
+		const Piece &left = _leftBlocks[i];
+		const Piece &right = _rightBlocks[i];
+		if (left.col == c && left.row == r)
+			l0 = true;
+		if (left.col == c + 1 && left.row == r)
+			l1 = true;
+		if (left.col == c + 1 && left.row == r - 1)
+			l1u = true;
+		if (right.col == c + 1 && right.row == r)
+			r1 = true;
+		if (right.col == c && right.row == r)
+			r0 = true;
+		if (right.col == c && right.row == r - 1)
+			r0u = true;
+	}
+
+	int choice;
+	if (l0) {
+		if (r1)
+			choice = l1u ? (r0u ? 4 : 0) : (r0u ? 1 : 3);
+		else if (r0u)
+			choice = l1 ? (l1u ? 0 : 2) : (l1u ? 0 : 1);
+		else
+			choice = 0;
+	} else if (!r1) {
+		if (l1)
+			choice = (r0 || r0u) ? 2 : 5;
+		else if (r0)
+			choice = l1u ? 2 : 6;
+		else if (l1u)
+			choice = 5;
+		else
+			choice = r0u ? 6 : 4;
+	} else if (l1u)
+		choice = r0 ? (r0u ? 1 : 2) : (r0u ? 1 : 0);
+	else
+		choice = 1;
+
+	fork = -3;
+	int32 dir = 1;
+	switch (choice) {
+	case 0:
+		dir = 2;
+		break;
+	case 1:
+		dir = 3;
+		break;
+	case 2:
+		dir = 1;
+		break;
+	case 3:
+		dir = 2;
+		fork = 3;
+		break;
+	case 5:
+		if (randomRange(runtime, 1, 1000) <= 220) {
+			dir = 1;
+			fork = 2;
+		} else
+			dir = randomRange(runtime, 1, 2);
+		break;
+	case 6:
+		if (randomRange(runtime, 1, 1000) <= 220) {
+			dir = 1;
+			fork = 3;
+		} else
+			dir = (randomRange(runtime, 1, 2) == 1) ? 1 : 3;
+		break;
+	default: {
+		// Free choice, weighted towards the middle of the screen, rerolled if it repeats a piece
+		// already in this cell or makes two pieces spread into each other
+		int attempts = 0;
+		bool reroll = true;
+		while (reroll) {
+			reroll = false;
+			fork = -3;
+
+			const int32 *table;
+			if (c == first || c == first + 1)
+				table = _dirThresholds[0];
+			else if (c == first + width || c == first + width - 1)
+				table = _dirThresholds[1];
+			else
+				table = _dirThresholds[_lava[n].x < 318 ? 2 : 3];
+
+			int32 rnd = randomRange(runtime, 1, 1000);
+			int idx = 0;
+			while (idx < 3 && rnd >= table[idx])
+				idx++;
+
+			if (idx < 3)
+				dir = idx + 1;
+			else {
+				int32 r2 = randomRange(runtime, 1, 1000);
+				if (r2 < _forkThresholds[0]) {
+					dir = 2;
+					fork = 3;
+				} else if (r2 < _forkThresholds[1]) {
+					dir = 1;
+					fork = 3;
+				} else {
+					dir = 1;
+					fork = 2;
+				}
+			}
+			attempts++;
+
+			for (int j = 0; j < n && attempts < 16; j++) {
+				const Piece &other = _lava[j];
+				if (other.cel == dir * 12 - 11 && other.col == c && other.row == r) {
+					reroll = true;
+					break;
+				}
+				if (dir == 2 && other.cel == 25 && other.col + 1 == c && other.row == r) {
+					dir = (randomRange(runtime, 1, 2) == 1) ? 1 : 3;
+					fork = -3;
+				} else if (dir == 3 && other.cel == 13 && c + 1 == other.col && other.row == r) {
+					dir = randomRange(runtime, 1, 2);
+					fork = -3;
+				}
+			}
+		}
+
+		if (attempts >= 16)
+			debug(2, "SvTown: Lava direction retries ran out");
+	} break;
+	}
+
+	dir = CLIP<int32>(dir, 1, 3);
+	if (fork >= 0)
+		fork = CLIP<int32>(fork, 1, 3);
+	return dir;
+}
+
+// Steam bursts out of the last row on the final level of a tier
+void SvTownModifier::finalEruption(Runtime *runtime) {
+	int slot = 0;
+	for (int pass = 0; pass < 3 && slot < kNumSteam; pass++) {
+		for (int i = 0; i < kNumLava; i++) {
+			const Piece &lava = _lava[i];
+			if (lava.col == kSvTownHidden || lava.row != _lavaRow - 1 || slot >= kNumSteam || _steam[slot].active)
+				continue;
+
+			Puff &steam = _steam[slot];
+			Structural *elem = grandchild(kSvTownSteam, slot + 1);
+			steam.x = randomRange(runtime, 1, 40) - 20 + lava.x + 44;
+			steam.y = randomRange(runtime, 1, 40) - 20 + lava.y - 18;
+			steam.cel = randomRange(runtime, 1, 3);
+			setInt(runtime, elem, "cel", steam.cel);
+			place(runtime, elem, steam.x, steam.y);
+			steam.active = true;
+			slot++;
+		}
+	}
+
+	sendMessage(runtime, "PlaySFX6");
+}
+
+bool SvTownModifier::inArea(int32 col, int32 row) const {
+	int idx = row + _level * 24;
+	if (idx < 0 || idx + 12 >= kRangeTableSize)
+		return false;
+
+	int32 start = _placeRange[idx];
+	int32 width = _placeRange[idx + 12];
+	if (col < start - 1 || col > start + width || row < _levels[_level].startRow)
+		return false;
+	return !(_level % 5 == 0 && row >= _lastRow);
+}
+
+// Whether lava covers the cell for the block being carried
+bool SvTownModifier::onLava(int32 col, int32 row) const {
+	for (const Piece &lava : _lava) {
+		if (lava.col == kSvTownHidden || lava.row != row)
+			continue;
+
+		if (_carry == kCarryLeft) {
+			if ((lava.col == col && lava.cel <= 12) || (lava.col + 1 == col && lava.cel >= 25))
+				return true;
+		} else if (_carry == kCarryRight) {
+			if ((lava.col + 1 == col && lava.cel <= 12) || (lava.col == col && lava.cel >= 13 && lava.cel <= 24))
+				return true;
+		}
+	}
+	return false;
+}
+
+// Houses (destroyed or not) and blocks occupy their cells; cars don't
+bool SvTownModifier::occupied(int32 col, int32 row) const {
+	for (const Home &home : _homes) {
+		if (!svTownIsCar(home.type) && home.col == col && home.row == row)
+			return true;
+		if (svTownIsWide(home.type) && home.col + 1 == col && home.row == row)
+			return true;
+	}
+
+	for (int i = 0; i < kNumBlocks; i++) {
+		if ((_leftBlocks[i].col == col && _leftBlocks[i].row == row) || (_rightBlocks[i].col == col && _rightBlocks[i].row == row))
+			return true;
+	}
+	return false;
+}
+
+bool SvTownModifier::dropCheck(Runtime *runtime, int32 col, int32 row, bool &lavaHit) {
+	if (!inArea(col, row)) {
+		// The block goes back to its pile
+		_carry = kCarryNone;
+		_chopState = (_chopState == 3) ? 1 : 0;
+		hideShadow(runtime);
+		return false;
+	}
+
+	if (row >= kNumRows)
+		return false;
+
+	lavaHit = onLava(col, row);
+	return !occupied(col, row);
+}
+
+// Drops the carried block where the player clicked. Returns what was placed.
+int SvTownModifier::dropBlock(Runtime *runtime, int32 &placedRow) {
+	if (!_pendingDrop)
+		return kPlacedNone;
+
+	_pendingDrop = false;
+	if (_carry != kCarryLeft && _carry != kCarryRight)
+		return kPlacedNone;
+
+	int32 col = MIN<int32>((_dropPoint.x - 16) / kSvTownCell, 16);
+	int32 row = (_dropPoint.y - 10) / kSvTownCell;
+	bool right = (_carry == kCarryRight);
+	bool lavaHit = false;
+	if (!dropCheck(runtime, col, row, lavaHit))
+		return kPlacedNone;
+
+	int placed = kPlacedNone;
+	if (!lavaHit) {
+		int32 &used = right ? _rightUsed : _leftUsed;
+		if (used < kNumBlocks) {
+			int b = (right ? _rightList : _leftList)[used];
+			Piece &block = right ? _rightBlocks[b] : _leftBlocks[b];
+			block.col = col;
+			block.row = row;
+			block.x = right ? col * kSvTownCell - 39 : col * kSvTownCell + 11;
+			block.y = right ? row * kSvTownCell - 45 : row * kSvTownCell + 5;
+			_carry = kCarryNone;
+			sendMessage(runtime, "PlaySFX2");
+			placeTopLeft(runtime, grandchild(right ? kSvTownRightBlocks : kSvTownLeftBlocks, b + 1), block.x, block.y);
+			used++;
+			placed = right ? kPlacedRight : kPlacedLeft;
+		}
+	} else {
+		// A block dropped on lava breaks
+		int32 &count = right ? _brokenRightCount : _brokenLeftCount;
+		Piece *broken = right ? _brokenRight : _brokenLeft;
+		bool taken = false;
+		for (int i = 0; i < kNumBlocks; i++) {
+			if (broken[i].col == col && broken[i].row == row)
+				taken = true;
+		}
+
+		if (count < kNumBlocks && !taken) {
+			Piece &block = broken[count];
+			block.col = col;
+			block.row = row;
+			block.x = col * kSvTownCell + 11;
+			block.y = row * kSvTownCell + 5;
+			sendMessage(runtime, "PlaySFX2");
+			placeTopLeft(runtime, grandchild(right ? kSvTownBrokenRight : kSvTownBrokenLeft, count + 1), block.x, block.y);
+			_carry = kCarryNone;
+			count++;
+			placed = right ? kPlacedBrokenRight : kPlacedBrokenLeft;
+		}
+	}
+
+	if (placed != kPlacedNone) {
+		hideShadow(runtime);
+		placedRow = row;
+	}
+	return placed;
+}
+
+// The helicopter faces the way the mouse moves and shows the block it carries
+void SvTownModifier::animateChopper(Runtime *runtime, const Common::Point &mouse, bool placed) {
+	bool turned = false;
+	if (placed) {
+		if (_chopState == 2) {
+			_chopState = 0;
+			_chopCel = 1;
+			turned = true;
+		} else if (_chopState == 3) {
+			_chopState = 1;
+			_chopCel = 5;
+			turned = true;
+		}
+	}
+
+	if (!turned) {
+		if (mouse.x < _chopLastX + 32 && _chopState != 0 && _carry == kCarryNone) {
+			_chopState = 0;
+			_chopCel = 1;
+		} else if (mouse.x > _chopLastX + 36 && _chopState != 1 && _carry == kCarryNone) {
+			_chopState = 1;
+			_chopCel = 5;
+		} else if (_chopState != 2 && _carry == kCarryLeft) {
+			_chopState = 2;
+			_chopCel = 3;
+		} else if (_chopState != 3 && _carry == kCarryRight) {
+			_chopState = 3;
+			_chopCel = 7;
+		}
+	}
+
+	// Each state flips between two cels
+	static const int32 kFirstCels[4] = {1, 5, 3, 7};
+	if (_chopState >= 0 && _chopState < 4) {
+		int32 firstCel = kFirstCels[_chopState];
+		_chopCel = (_chopCel < firstCel + 1) ? firstCel + 1 : firstCel;
+	}
+
+	Structural *chopper = child(kSvTownChopper);
+	setInt(runtime, chopper, "cel", _chopCel);
+
+	DynamicValue pos;
+	if (dlgMgrReadAttribute(runtime, this, chopper, "position", pos) && pos.getType() == DynamicValueTypes::kPoint)
+		_chopLastX = pos.getPoint().x;
+}
+
+// Highlights the cell under the cursor when a block can be dropped there
+void SvTownModifier::updateShadow(Runtime *runtime, const Common::Point &mouse) {
+	if (_carry != kCarryLeft && _carry != kCarryRight)
+		return;
+
+	int32 col = (mouse.x - 16) / kSvTownCell;
+	int32 row = (mouse.y - 10) / kSvTownCell;
+	bool valid = inArea(col, row) && row >= _levels[_level].startRow - 1 && row < kNumRows && !onLava(col, row) && !occupied(col, row);
+
+	if (!valid) {
+		if (_shadowCol != kSvTownHidden)
+			hideShadow(runtime);
+		return;
+	}
+
+	if (col == _shadowCol && row == _shadowRow)
+		return;
+
+	Structural *shadow = child(kSvTownShadow);
+	int32 cel = (_carry == kCarryLeft) ? 1 : 2;
+	if (cel != _shadowCel) {
+		_shadowCel = cel;
+		setInt(runtime, shadow, "cel", cel);
+	}
+
+	_shadowCol = col;
+	_shadowRow = row;
+	if (_carry == kCarryLeft)
+		placeTopLeft(runtime, shadow, col * kSvTownCell + 5, row * kSvTownCell + 11);
+	else
+		placeTopLeft(runtime, shadow, col * kSvTownCell + 18, row * kSvTownCell + 14);
+}
+
+void SvTownModifier::hideShadow(Runtime *runtime) {
+	hide(runtime, child(kSvTownShadow));
+	_shadowCol = _shadowRow = kSvTownHidden;
+}
+
+// Steam, smoke and burning trees
+void SvTownModifier::animatePuffs(Runtime *runtime) {
+	for (int i = 0; i < kNumSteam; i++) {
+		Puff &steam = _steam[i];
+		if (!steam.active)
+			continue;
+
+		Structural *elem = grandchild(kSvTownSteam, i + 1);
+		if (++steam.cel < 9)
+			setInt(runtime, elem, "cel", steam.cel);
+		else {
+			steam.active = false;
+			place(runtime, elem, kSvTownHidden, 600);
+		}
+	}
+
+	for (int i = 0; i < kNumSmoke; i++) {
+		Puff &smoke = _smoke[i];
+		if (!smoke.active)
+			continue;
+
+		Structural *elem = grandchild(kSvTownSmoke, i + 1);
+		setInt(runtime, elem, "cel", smoke.cel);
+		if (++smoke.cel > 10) {
+			smoke.active = false;
+			hide(runtime, elem);
+		}
+	}
+
+	// Trees the lava reached burn down. Unused trees run through their cels too, as in the original.
+	for (int i = 0; i < kNumTrees; i++) {
+		Home &tree = _trees[i];
+		if (!tree.active && tree.cel < 8)
+			setInt(runtime, grandchild(kSvTownTrees, i + 1), "cel", ++tree.cel);
+	}
+}
+
+// Lava in the row just spawned destroys homes and sets trees on fire. Returns true if the game is lost.
+bool SvTownModifier::checkCollisions(Runtime *runtime, int32 row) {
+	bool soundPlayed = false;
+
+	for (const Piece &lava : _lava) {
+		if (lava.col == kSvTownHidden)
+			continue;
+
+		bool downOrRight = (lava.cel < 13 || lava.cel > 24);
+		bool downOrLeft = (lava.cel >= 1 && lava.cel <= 24);
+
+		for (int i = 0; i < kNumHomes; i++) {
+			Home &home = _homes[i];
+			if (!home.active || home.row != row)
+				continue;
+
+			// Lava from the cell to the left hits unless it flows left
+			bool hit = (lava.col == home.col - 1 && lava.row == home.row && downOrRight);
+			bool hitCol = false;
+			if (svTownIsWide(home.type)) {
+				if (lava.col == home.col && lava.row == home.row)
+					hit = true;
+				hitCol = (lava.col == home.col + 1);
+			} else if ((home.type >= 1 && home.type <= 4) || home.type == 8 || svTownIsCar(home.type))
+				hitCol = (lava.col == home.col);
+			else
+				debug(2, "SvTown: Invalid home type %i in a collision", static_cast<int>(home.type));
+
+			if (!hit && !(hitCol && lava.row == home.row && downOrLeft))
+				continue;
+
+			home.active = false;
+			if (!soundPlayed) {
+				sendMessage(runtime, "PlaySFX5");
+				soundPlayed = true;
+			}
+
+			for (int s = 0; s < kNumSmoke; s++) {
+				Puff &smoke = _smoke[s];
+				if (smoke.active)
+					continue;
+
+				Structural *elem = grandchild(kSvTownSmoke, s + 1);
+				smoke.active = true;
+				smoke.x = home.x;
+				smoke.y = home.y;
+				smoke.cel = 1;
+				setInt(runtime, elem, "cel", 1);
+				placeTopLeft(runtime, elem, smoke.x, smoke.y);
+				break;
+			}
+
+			// The destroyed home stays where it is
+			home.x = kSvTownHidden;
+			home.y = 600;
+			setInt(runtime, grandchild(kSvTownHomes, i + 1), "cel", 2);
+
+			// Only houses cost a chance
+			if (!svTownIsCar(home.type)) {
+				if (_lives < 2) {
+					endGame(runtime);
+					return true;
+				}
+
+				_lives--;
+				setInt(runtime, child(kSvTownChances), "cel", _lives + 1);
+			}
+		}
+
+		for (Home &tree : _trees) {
+			if (!tree.active || tree.row != row)
+				continue;
+
+			if ((lava.col == tree.col - 1 && lava.row == tree.row && downOrRight) || (lava.col == tree.col && lava.row == tree.row && downOrLeft))
+				tree.active = false;
+		}
+	}
+
+	return false;
+}
+
+void SvTownModifier::endGame(Runtime *runtime) {
+	debug(2, "SvTown: Game lost on level %i", static_cast<int>(_level));
+
+	setInt(runtime, child(kSvTownChances), "cel", 1);
+	sendMessage(runtime, "resetcursor");
+	_state = kStateNewGame;
+	_paused = true;
+	_halted = true;
+	_cursorIn = false;
+	resetLayers(runtime);
+	sendMessage(runtime, "GameOver");
+	hide(runtime, child(kSvTownChopper));
+}
+
+// Homes the lava front passed without hitting earn points
+void SvTownModifier::awardPoints(Runtime *runtime, int32 row) {
+	const int32 tier = _level / 5;
+	bool houseSound = false;
+	bool carSound = false;
+	int popup = 0;
+	int32 cel = 1;
+
+	for (const Home &home : _homes) {
+		if (!home.active || home.row != row)
+			continue;
+
+		bool *sound = nullptr;
+		if (home.type >= 1 && home.type <= 4) {
+			cel = 2;
+			_score += (tier + 1) * 50;
+			sound = &houseSound;
+		} else if (home.type == 5 || home.type == 7 || home.type == 10) {
+			cel = 3;
+			_score += tier * 50 + 75;
+			sound = &houseSound;
+		} else if (home.type == 8 || home.type == 9 || home.type == 11) {
+			cel = 4;
+			_score += (tier + 2) * 50;
+			sound = &houseSound;
+		} else if (svTownIsCar(home.type)) {
+			cel = 1;
+			_score += (tier + 1) * 40;
+			sound = &carSound;
+		} else
+			debug(2, "SvTown: Invalid home type %i when giving points", static_cast<int>(home.type));
+
+		if (sound && !*sound) {
+			sendMessage(runtime, sound == &carSound ? "PlaySFX3" : "PlaySFX4");
+			*sound = true;
+		}
+
+		sendMessage(runtime, "UpdateScore");
+		_popupTimer = 24;
+
+		// The original doesn't check for more than 16 awards in a tick
+		if (popup < kNumPopups) {
+			if (_popups[popup]) {
+				Structural *elem = grandchild(kSvTownPoints, _popups[popup]);
+				setInt(runtime, elem, "cel", cel);
+				placeTopLeft(runtime, elem, home.x + 4, home.y - 36);
+			}
+			popup++;
+		}
+	}
+}
+
+// Lower rows are drawn in front. Only the rows around the lava front and the new block are sorted.
+void SvTownModifier::depthSort(Runtime *runtime, int placed, int32 placedRow) {
+	int32 lo = _lavaRow - 2;
+	int32 hi = _lavaRow + 2;
+	if (placed != kPlacedNone) {
+		// For broken blocks the original reads the row of the next unused slot, so everything above is sorted
+		if (placedRow < lo)
+			lo = (placed == kPlacedLeft || placed == kPlacedRight) ? placedRow - 2 : kSvTownHidden - 2;
+		if (placedRow > hi)
+			hi = placedRow + 2;
+	}
+
+	setInt(runtime, child(kSvTownShadow), "layer", 40);
+
+	int32 counters[17];
+	for (int k = 0; k < 17; k++)
+		counters[k] = (k < 16) ? (k + 1) * 10 : 0;
+
+	auto sortLayer = [&](Structural *elem, int32 col, int32 row, int32 k) {
+		if (col == kSvTownHidden || row < lo || row > hi)
+			return;
+		k = CLIP<int32>(k, 0, 16);
+		setInt(runtime, elem, "layer", counters[k] + (row + 2) * 200);
+		counters[k]++;
+	};
+
+	for (int i = 0; i < kNumHomes; i++) {
+		if (!_homes[i].active)
+			sortLayer(grandchild(kSvTownHomes, i + 1), _homes[i].col, _homes[i].row, _homes[i].col);
+	}
+	for (int i = 0; i < kNumLava; i++)
+		sortLayer(grandchild(kSvTownLava, i + 1), _lava[i].col, _lava[i].row, _lava[i].col + 1);
+	for (int i = 0; i < kNumTrees; i++)
+		sortLayer(grandchild(kSvTownTrees, i + 1), _trees[i].col, _trees[i].row, _trees[i].col + 1);
+	for (int i = 0; i < kNumHomes; i++) {
+		if (_homes[i].active && svTownIsCar(_homes[i].type))
+			sortLayer(grandchild(kSvTownHomes, i + 1), _homes[i].col, _homes[i].row, _homes[i].col);
+	}
+	for (int i = 0; i < kNumBlocks; i++) {
+		sortLayer(grandchild(kSvTownBrokenLeft, i + 1), _brokenLeft[i].col, _brokenLeft[i].row, _brokenLeft[i].col + 1);
+		sortLayer(grandchild(kSvTownBrokenRight, i + 1), _brokenRight[i].col, _brokenRight[i].row, _brokenRight[i].col);
+		sortLayer(grandchild(kSvTownLeftBlocks, i + 1), _leftBlocks[i].col, _leftBlocks[i].row, _leftBlocks[i].col + 1);
+		sortLayer(grandchild(kSvTownRightBlocks, i + 1), _rightBlocks[i].col, _rightBlocks[i].row, _rightBlocks[i].col);
+	}
+	for (int i = 0; i < kNumHomes; i++) {
+		if (_homes[i].active && !svTownIsCar(_homes[i].type))
+			sortLayer(grandchild(kSvTownHomes, i + 1), _homes[i].col, _homes[i].row, _homes[i].col + 1);
+	}
+
+	setInt(runtime, child(kSvTownChopper), "layer", kSvTownChopperLayer);
+}
+
+// Puts everything back in sequence at the end of a level, so the next level's layers don't collide
+void SvTownModifier::resetLayers(Runtime *runtime) {
+	int32 layer = 100;
+	for (int i = 1; i <= kNumLava; i++)
+		setInt(runtime, grandchild(kSvTownLava, i), "layer", layer++);
+	for (int i = 1; i <= kNumTrees; i++)
+		setInt(runtime, grandchild(kSvTownTrees, i), "layer", layer++);
+	for (int i = 1; i <= kNumBlocks; i++) {
+		setInt(runtime, grandchild(kSvTownLeftBlocks, i), "layer", layer++);
+		setInt(runtime, grandchild(kSvTownRightBlocks, i), "layer", layer++);
+		setInt(runtime, grandchild(kSvTownBrokenLeft, i), "layer", layer++);
+		setInt(runtime, grandchild(kSvTownBrokenRight, i), "layer", layer++);
+	}
+	for (int i = 1; i <= kNumHomes; i++)
+		setInt(runtime, grandchild(kSvTownHomes, i), "layer", layer++);
+}
+
+Common::SharedPtr<Modifier> SvTownModifier::shallowClone() const {
+	Common::SharedPtr<SvTownModifier> clone(new SvTownModifier(*this));
+	clone->_scheduledEvent.reset();
+	clone->_running = false;
+	return clone;
+}
+
+const char *SvTownModifier::getDefaultName() const {
+	return "SvTown";
+}
+
 // Cel for an animation track at a timeline frame, or -1 to leave it alone
 static int32 dlgMgrCelForFrame(const DlgMgrClientModifier::Track &track, int32 frame) {
 	if (track.frames.size() > 0) {
@@ -4938,7 +6502,7 @@ const char *DlgMgrClientModifier::getDefaultName() const {
 
 KnowWonderPlugIn::KnowWonderPlugIn()
 	: _strUtilModifierFactory(this), _dlgMgrServerModifierFactory(this), _dlgMgrClientModifierFactory(this),
-	  _kwSmackerModifierFactory(this), _editCtrlModifierFactory(this), _gameModifierFactory(this), _whaleMazeModifierFactory(this), _eyefollowerModifierFactory(this), _smkJumpModifierFactory(this), _balloonModifierFactory(this), _artModifierFactory(this) {
+	  _kwSmackerModifierFactory(this), _editCtrlModifierFactory(this), _gameModifierFactory(this), _whaleMazeModifierFactory(this), _eyefollowerModifierFactory(this), _smkJumpModifierFactory(this), _balloonModifierFactory(this), _artModifierFactory(this), _svTownModifierFactory(this) {
 }
 
 KnowWonderPlugIn::~KnowWonderPlugIn() {
@@ -4962,7 +6526,7 @@ void KnowWonderPlugIn::registerModifiers(IPlugInModifierRegistrar *registrar) co
 
 	// Mini-game modifiers from separate Magic School Bus plug-ins
 	static const char *const gameModifierNames[] = {
-		"AntMaze", "LLava", "Lander", "RoverRace", "Sub", "SvTown"
+		"AntMaze", "LLava", "Lander", "RoverRace", "Sub"
 	};
 	for (const char *name : gameModifierNames)
 		registrar->registerPlugInModifier(name, &_gameModifierFactory);
@@ -4972,6 +6536,7 @@ void KnowWonderPlugIn::registerModifiers(IPlugInModifierRegistrar *registrar) co
 	registrar->registerPlugInModifier("SmkJump", &_smkJumpModifierFactory);
 	registrar->registerPlugInModifier("Balloon", &_balloonModifierFactory);
 	registrar->registerPlugInModifier("Art", &_artModifierFactory);
+	registrar->registerPlugInModifier("SvTown", &_svTownModifierFactory);
 }
 
 } // End of namespace KW
