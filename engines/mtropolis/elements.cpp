@@ -1970,6 +1970,11 @@ MiniscriptInstructionOutcome MToonElement::scriptSetCel(MiniscriptThread *thread
 	//
 	// We also need to loop around to 1 (exactly) if the range is exceeded.  MTI depends on this
 	// in the piano to loop the sound bank display mToon.
+	//
+	// mTropolis 2.0 ignores cel 0: Magic School Bus Mars sets its readout digits to the "0" cel,
+	// then to the digit value, which leaves the "0" showing for a zero.
+	if (newCel < 1 && getRuntime()->getProject()->getRuntimeVersion() >= kRuntimeVersion200)
+		return kMiniscriptInstructionOutcomeContinue;
 	if (newCel < 1 || newCel > maxCel)
 		newCel = 1;
 
