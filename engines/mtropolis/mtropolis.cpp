@@ -348,6 +348,18 @@ Common::Error MTropolisEngine::run() {
 	// Get project boot configuration
 	BootConfiguration bootConfig = bootProject(*_gameDescription);
 
+	// Development aid: "mtropolis_test_title" boots another title of the game
+	// directly, e.g. to test one Magic School Bus activity
+	if (ConfMan.hasKey("mtropolis_test_title")) {
+		Common::String startPath = bootConfig._mainSegmentPath;
+		size_t lastSlash = startPath.findLastOf('/');
+		Common::String titlePath = (lastSlash == Common::String::npos) ? Common::String() : startPath.substr(0, lastSlash + 1);
+		titlePath += ConfMan.get("mtropolis_test_title");
+
+		debug(1, "Test input: Booting title '%s'", titlePath.c_str());
+		bootConfig = bootProject(*_gameDescription, titlePath);
+	}
+
 	_runtime->queueProject(bootConfig._projectDesc);
 	Common::String mainSegmentPath = bootConfig._mainSegmentPath;
 	Common::Array<Common::String> titleStack;	// Titles to return to, for Open Title
