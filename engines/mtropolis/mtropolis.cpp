@@ -68,6 +68,8 @@ namespace MTropolis {
 //   shot <path>      save a PNG of the screen
 //   probe <x> <y>    log the visual elements at a point
 //   clickon <name>   click the center of a visual element
+//   press <x> <y>    hold the mouse button down at game coordinates
+//   release <x> <y>  let go of the mouse button
 //   quit             quit the engine
 class TestInputScript {
 public:
@@ -199,6 +201,16 @@ void TestInputScript::update(OSystem *system, Runtime *runtime, Engine *engine) 
 			int x = 0, y = 0;
 			sscanf(arg.c_str(), "%d %d", &x, &y);
 			pushClick(events, Common::Point(x, y));
+			_waitUntil = now + 100;
+		} else if (cmd == "press" || cmd == "release") {
+			int x = 0, y = 0;
+			sscanf(arg.c_str(), "%d %d", &x, &y);
+			Common::Event evt;
+			evt.mouse = Common::Point(x, y);
+			evt.type = Common::EVENT_MOUSEMOVE;
+			events->pushEvent(evt);
+			evt.type = (cmd == "press") ? Common::EVENT_LBUTTONDOWN : Common::EVENT_LBUTTONUP;
+			events->pushEvent(evt);
 			_waitUntil = now + 100;
 		} else if (cmd == "clickon") {
 			VisualElement *element = nullptr;
