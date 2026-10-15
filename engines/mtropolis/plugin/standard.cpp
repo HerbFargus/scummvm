@@ -1925,7 +1925,8 @@ void FileModifier::disable(Runtime *runtime) {
 }
 
 Common::String FileModifier::getSaveFileName() const {
-	// Files are kept as save files named after the file, without its folder
+	// Files are kept as save files named after the file, without its folder,
+	// the same way as named Save and Restore files, which scripts check for
 	Common::String fileName = _filePath;
 	for (uint i = 0; i < _filePath.size(); i++) {
 		char c = _filePath[i];
@@ -1934,7 +1935,7 @@ Common::String FileModifier::getSaveFileName() const {
 	}
 	fileName.toLowercase();
 
-	return ConfMan.getActiveDomainName() + "-" + fileName;
+	return ConfMan.getActiveDomainName() + "." + fileName;
 }
 
 FileModifier::ErrorCode FileModifier::openFile(Runtime *runtime, int mode) {
