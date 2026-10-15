@@ -23,6 +23,9 @@
 #include "mtropolis/plugins.h"
 #include "mtropolis/miniscript.h"
 
+#include "common/endian.h"
+#include "common/file.h"
+
 #include "graphics/managed_surface.h"
 #include "graphics/fontman.h"
 #include "graphics/font.h"
@@ -642,6 +645,926 @@ static void dlgMgrSetInt(Runtime *runtime, Modifier *sender, RuntimeObject *targ
 	DynamicValue v;
 	v.setInt(value);
 	dlgMgrWriteAttribute(runtime, sender, target, attrib, v);
+}
+
+WhaleMazeModifier::Mover::Mover() : path(0), target(0), dir(1), x(0.0), y(0.0), moving(false) {
+}
+
+WhaleMazeModifier::Orca::Orca() : active(false), visible(false), animTicks(0), diving(false) {
+}
+
+WhaleMazeModifier::Hazard::Hazard() : state(0), countdown(0), frame(-1) {
+}
+
+WhaleMazeModifier::WhaleMazeModifier()
+	: _levelsLoaded(false), _gameLevel(1), _paused(true), _initialized(false), _running(false), _orcasFrozen(true),
+	  _sonarCel(1), _whaleRangeTicks(0), _runtime(nullptr) {
+	for (bool &key : _keyDown)
+		key = false;
+	for (bool &eaten : _foodEaten)
+		eaten = false;
+}
+
+WhaleMazeModifier::WhaleMazeModifier(const WhaleMazeModifier &other)
+	: Modifier(other), _startWhen(other._startWhen), _stopWhen(other._stopWhen), _levels(other._levels), _levelsLoaded(other._levelsLoaded),
+	  _gameLevel(other._gameLevel), _paused(true), _initialized(false), _running(false), _orcasFrozen(true), _sonarCel(1),
+	  _whaleRangeTicks(0), _runtime(nullptr) {
+	for (bool &key : _keyDown)
+		key = false;
+	for (bool &eaten : _foodEaten)
+		eaten = false;
+}
+
+WhaleMazeModifier::~WhaleMazeModifier() {
+	stopGame();
+}
+
+bool WhaleMazeModifier::load(const PlugInModifierLoaderContext &context, const Data::KW::GameModifier &data) {
+	if (!loadDlgMgrEvent(_startWhen, data.enableWhen) || !loadDlgMgrEvent(_stopWhen, data.disableWhen))
+		return false;
+
+	return true;
+}
+
+// The level graphs are tables in the plug-in's data section
+bool WhaleMazeModifier::loadLevels() {
+	if (_levelsLoaded)
+		return !_levels.empty();
+
+	_levelsLoaded = true;
+
+	Common::File f;
+	if (!f.open(Common::Path("mTrop_Resources/WhaleMaze.r32")) && !f.open(Common::Path("WhaleMaze.r32"))) {
+		warning("WhaleMaze: WhaleMaze.r32 from the installed game is needed for the maze levels");
+		return false;
+	}
+
+	Common::Array<byte> image;
+	image.resize(f.size());
+	f.read(&image[0], image.size());
+
+	if (image.size() < 0x40)
+		return false;
+
+	uint32 peOffset = READ_LE_UINT32(&image[0x3c]);
+	if (peOffset + 0xf8 > image.size())
+		return false;
+
+	uint16 numSections = READ_LE_UINT16(&image[peOffset + 6]);
+	uint16 optionalSize = READ_LE_UINT16(&image[peOffset + 20]);
+	uint32 imageBase = READ_LE_UINT32(&image[peOffset + 24 + 28]);
+	uint32 sectionTable = peOffset + 24 + optionalSize;
+
+	// Maps a virtual address to a file offset, or 0 if it isn't in a section
+	auto fileOffset = [&](uint32 va, uint32 size) -> uint32 {
+		uint32 rva = va - imageBase;
+		for (uint i = 0; i < numSections; i++) {
+			const byte *section = &image[sectionTable + i * 40];
+			uint32 virtualSize = READ_LE_UINT32(section + 8);
+			uint32 virtualAddress = READ_LE_UINT32(section + 12);
+			uint32 rawSize = READ_LE_UINT32(section + 16);
+			uint32 rawPointer = READ_LE_UINT32(section + 20);
+			if (rva >= virtualAddress && rva + size <= virtualAddress + MAX(virtualSize, rawSize)) {
+				uint32 offset = rawPointer + (rva - virtualAddress);
+				if (offset + size <= image.size())
+					return offset;
+			}
+		}
+		return 0;
+	};
+
+	bool failed = false;
+	auto readS32 = [&](uint32 va) -> int32 {
+		uint32 offset = fileOffset(va, 4);
+		if (!offset) {
+			failed = true;
+			return 0;
+		}
+		return static_cast<int32>(READ_LE_UINT32(&image[offset]));
+	};
+	auto readS16 = [&](uint32 va) -> int16 {
+		uint32 offset = fileOffset(va, 2);
+		if (!offset) {
+			failed = true;
+			return 0;
+		}
+		return static_cast<int16>(READ_LE_UINT16(&image[offset]));
+	};
+	auto readU8 = [&](uint32 va) -> uint8 {
+		uint32 offset = fileOffset(va, 1);
+		if (!offset) {
+			failed = true;
+			return 0;
+		}
+		return image[offset];
+	};
+
+	auto readPaths = [&](uint32 countBase, uint32 nodeBase, uint maxPaths, Common::Array<Common::Array<Node> > &paths) {
+		for (uint p = 0; p < maxPaths; p++) {
+			int16 count = readS16(countBase + p * 0x98);
+			Common::Array<Node> nodes;
+			for (int n = 0; n < count && n < 15; n++) {
+				uint32 nodeVA = nodeBase + p * 0x98 + n * 10;
+				Node node;
+				node.x = readS32(nodeVA);
+				node.y = readS32(nodeVA + 4);
+				node.type = readS16(nodeVA + 8);
+				nodes.push_back(node);
+			}
+			paths.push_back(nodes);
+		}
+	};
+
+	auto readJunctions = [&](uint32 countVA, uint32 entryBase, Common::Array<Junction> &junctions) {
+		int16 count = readS16(countVA);
+		for (int j = 0; j < count && j < 40; j++) {
+			uint32 entryVA = entryBase + j * 0x1c;
+			Junction junction;
+			junction.x = readS32(entryVA);
+			junction.y = readS32(entryVA + 4);
+			for (uint k = 0; k < 5; k++) {
+				int16 path = readS16(entryVA + 8 + k * 4);
+				if (path < 0)
+					break;
+				JunctionExit exit;
+				exit.path = path;
+				exit.forward = (readU8(entryVA + 10 + k * 4) != 0);
+				junction.exits.push_back(exit);
+			}
+			junctions.push_back(junction);
+		}
+	};
+
+	const uint kNumLevels = 15;
+	Common::Array<Level> levels;
+	levels.resize(kNumLevels + 1);
+
+	for (uint l = 1; l <= kNumLevels; l++) {
+		Level &level = levels[l];
+		uint32 base = imageBase + 0xb76e + l * 0x1952;
+
+		level.whale.start = Common::Point(readS32(base), readS32(base + 4));
+		readPaths(base + 0x10, base + 0x12, 30, level.whale.paths);
+		readJunctions(base + 0x11e0, base + 0x11e2, level.whale.junctions);
+
+		for (uint i = 0; i < 3; i++) {
+			uint32 itemVA = base + 0x1402 + (i + 1) * 0x10;
+			Item &item = level.food[i];
+			item.pos = Common::Point(readS32(itemVA), readS32(itemVA + 4));
+			item.hit = Common::Point(readS32(itemVA + 8), readS32(itemVA + 12));
+			item.type = 0;
+		}
+
+		for (uint i = 0; i < 6; i++) {
+			uint32 itemVA = base + 0x1422 + (i + 1) * 0x20;
+			Item &item = level.hazards[i];
+			item.pos = Common::Point(readS32(itemVA), readS32(itemVA + 4));
+			item.hit = Common::Point(readS32(itemVA + 8), readS32(itemVA + 12));
+			item.type = readS32(itemVA + 16);
+			for (uint d = 0; d < 3; d++)
+				item.durations[d] = readS32(itemVA + 20 + d * 4);
+		}
+
+		for (uint i = 0; i < 2; i++) {
+			uint32 orcaVA = base + 0x12da + (i + 1) * 0x228;
+			Graph &orca = level.orcas[i];
+			orca.start = Common::Point(readS32(orcaVA), readS32(orcaVA + 4));
+			readPaths(orcaVA + 0xa, orcaVA + 0xc, 3, orca.paths);
+			readJunctions(orcaVA + 0x1d2, orcaVA + 0x1d4, orca.junctions);
+		}
+	}
+
+	if (failed) {
+		warning("WhaleMaze: WhaleMaze.r32 isn't the expected version");
+		return false;
+	}
+
+	_levels.swap(levels);
+	return true;
+}
+
+bool WhaleMazeModifier::respondsToEvent(const Event &evt) const {
+	return _startWhen.respondsTo(evt) || _stopWhen.respondsTo(evt) || evt.eventType == EventIDs::kParentDisabled
+		|| evt.eventType == EventIDs::kMouseDown || evt.eventType == EventIDs::kMouseUp;
+}
+
+VThreadState WhaleMazeModifier::consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) {
+	const Event &evt = msg->getEvent();
+
+	if (_stopWhen.respondsTo(evt) || evt.eventType == EventIDs::kParentDisabled) {
+		stopGame();
+		return kVThreadReturn;
+	}
+
+	if (_startWhen.respondsTo(evt)) {
+		_runtime = runtime;
+		_paused = true;
+		if (!_running) {
+			_running = true;
+			_keySignaller = runtime->getProject()->notifyOnKeyboardEvent(this);
+			scheduleTick(runtime);
+		}
+		return kVThreadReturn;
+	}
+
+	if (!_running || !_initialized)
+		return kVThreadReturn;
+
+	if (evt.eventType == EventIDs::kMouseUp) {
+		for (bool &key : _keyDown)
+			key = false;
+		return kVThreadReturn;
+	}
+
+	if (evt.eventType == EventIDs::kMouseDown && !_paused && msg->getValue().getType() == DynamicValueTypes::kPoint) {
+		Common::Point mousePos = msg->getValue().getPoint();
+		double dx = mousePos.x - _whale.x;
+		double dy = mousePos.y - _whale.y;
+		double target = headingTo(_whale.x, _whale.y, mousePos.x, mousePos.y);
+
+		// Clicks only choose a direction near the whale
+		bool axisAligned = (target == 0.0 || target == 90.0 || target == 180.0 || target == 270.0);
+		double distance = sqrt(dx * dx + dy * dy);
+		if (distance < (axisAligned ? 80.0 : 115.0))
+			handleInput(runtime, matchMouse, target);
+		else
+			handleInput(runtime, nullptr, 0.0);
+	}
+
+	return kVThreadReturn;
+}
+
+void WhaleMazeModifier::onKeyboardEvent(Runtime *runtime, const KeyboardInputEvent &keyEvt) {
+	Key key = kKeyCount;
+	double target = 0.0;
+	switch (keyEvt.getKeyState().keycode) {
+	case Common::KEYCODE_UP:
+		key = kKeyUp;
+		target = 0.0;
+		break;
+	case Common::KEYCODE_RIGHT:
+		key = kKeyRight;
+		target = 90.0;
+		break;
+	case Common::KEYCODE_DOWN:
+		key = kKeyDown;
+		target = 180.0;
+		break;
+	case Common::KEYCODE_LEFT:
+		key = kKeyLeft;
+		target = 270.0;
+		break;
+	default:
+		return;
+	}
+
+	if (keyEvt.getKeyEventType() == Common::EVENT_KEYUP) {
+		_keyDown[key] = false;
+		return;
+	}
+
+	if (keyEvt.getKeyEventType() != Common::EVENT_KEYDOWN || keyEvt.isRepeat() || _keyDown[key])
+		return;
+
+	_keyDown[key] = true;
+	if (_running && _initialized && !_paused)
+		handleInput(runtime, matchKey, target);
+}
+
+void WhaleMazeModifier::disable(Runtime *runtime) {
+	stopGame();
+}
+
+void WhaleMazeModifier::stopGame() {
+	_running = false;
+	if (_scheduledEvent) {
+		_scheduledEvent->cancel();
+		_scheduledEvent.reset();
+	}
+	if (_keySignaller) {
+		_keySignaller->removeReceiver(this);
+		_keySignaller.reset();
+	}
+}
+
+void WhaleMazeModifier::scheduleTick(Runtime *runtime) {
+	// The original ticks every 83 milliseconds
+	_scheduledEvent = runtime->getScheduler().scheduleMethod<WhaleMazeModifier, &WhaleMazeModifier::tick>(runtime->getPlayTime() + 83, this);
+}
+
+bool WhaleMazeModifier::readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) {
+	if (attrib == "paused") {
+		result.setBool(_paused);
+		return true;
+	} else if (attrib == "gamelevel") {
+		result.setInt(_gameLevel);
+		return true;
+	} else if (attrib == "points") {
+		result.setInt(0);
+		return true;
+	}
+
+	return Modifier::readAttribute(thread, result, attrib);
+}
+
+MiniscriptInstructionOutcome WhaleMazeModifier::writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) {
+	WritableAttribute writable;
+	if (attrib == "paused")
+		writable = kAttribPaused;
+	else if (attrib == "gamelevel")
+		writable = kAttribGameLevel;
+	else
+		return Modifier::writeRefAttribute(thread, result, attrib);
+
+	result.pod.ifc = DynamicValueWriteInterfaceGlue<WriteProxy>::getInstance();
+	result.pod.objectRef = this;
+	result.pod.ptrOrOffset = writable;
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
+MiniscriptInstructionOutcome WhaleMazeModifier::WriteProxy::write(MiniscriptThread *thread, const DynamicValue &assigned, void *objectRef, uintptr ptrOrOffset) {
+	WhaleMazeModifier *self = static_cast<WhaleMazeModifier *>(objectRef);
+
+	// Variables are passed by reference
+	DynamicValue value = assigned;
+	if (value.getType() == DynamicValueTypes::kObject) {
+		Common::SharedPtr<RuntimeObject> obj = value.getObject().object.lock();
+		if (obj && obj->isModifier() && static_cast<Modifier *>(obj.get())->isVariable())
+			static_cast<VariableModifier *>(obj.get())->varGetValue(value);
+	}
+
+	if (ptrOrOffset == kAttribPaused) {
+		bool paused = false;
+		if (value.getType() == DynamicValueTypes::kBoolean)
+			paused = value.getBool();
+		else if (value.getType() == DynamicValueTypes::kInteger)
+			paused = (value.getInt() != 0);
+		else
+			return kMiniscriptInstructionOutcomeFailed;
+
+		// Unpausing does nothing until a level is set up
+		if (self->_initialized || paused)
+			self->_paused = paused;
+	} else {
+		int32 level = 0;
+		if (!value.roundToInt(level))
+			return kMiniscriptInstructionOutcomeFailed;
+
+		self->_gameLevel = level;
+		self->setupLevel(thread->getRuntime());
+	}
+
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
+MiniscriptInstructionOutcome WhaleMazeModifier::WriteProxy::refAttrib(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib) {
+	return kMiniscriptInstructionOutcomeFailed;
+}
+
+MiniscriptInstructionOutcome WhaleMazeModifier::WriteProxy::refAttribIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib, const DynamicValue &index) {
+	return kMiniscriptInstructionOutcomeFailed;
+}
+
+// Children of the owner element: 1 whale, 2 backgrounds, 3 food, 4 hazards, 5 orcas, 6 sonar
+Structural *WhaleMazeModifier::child(int index) const {
+	Structural *owner = findStructuralOwner();
+	if (!owner || index < 1 || index > static_cast<int>(owner->getChildren().size()))
+		return nullptr;
+	return owner->getChildren()[index - 1].get();
+}
+
+Structural *WhaleMazeModifier::grandchild(int index, int subIndex) const {
+	Structural *container = child(index);
+	if (!container || subIndex < 1 || subIndex > static_cast<int>(container->getChildren().size()))
+		return nullptr;
+	return container->getChildren()[subIndex - 1].get();
+}
+
+void WhaleMazeModifier::setAttribute(Runtime *runtime, Structural *element, const char *attrib, const DynamicValue &value) {
+	dlgMgrWriteAttribute(runtime, this, element, attrib, value);
+}
+
+void WhaleMazeModifier::placeTopLeft(Runtime *runtime, Structural *element, int32 x, int32 y) {
+	DynamicValue pos;
+	pos.setPoint(Common::Point(x, y));
+	setAttribute(runtime, element, "position", pos);
+}
+
+void WhaleMazeModifier::placeCentered(Runtime *runtime, Structural *element, double x, double y) {
+	if (!element || !element->isElement() || !static_cast<Element *>(element)->isVisual())
+		return;
+
+	const Common::Rect &rect = static_cast<VisualElement *>(element)->getRelativeRect();
+	placeTopLeft(runtime, element, static_cast<int32>(round(x)) - rect.width() / 2, static_cast<int32>(round(y)) - rect.height() / 2);
+}
+
+void WhaleMazeModifier::sendMessage(Runtime *runtime, const char *messageName) {
+	uint32 messageID = 0;
+	if (!runtime->getProject()->findAuthorMessageID(messageName, messageID))
+		return;
+
+	Structural *owner = findStructuralOwner();
+	if (!owner)
+		return;
+
+	Common::SharedPtr<MessageProperties> props(new MessageProperties(Event(EventIDs::kAuthorMessage, messageID), DynamicValue(), getSelfReference()));
+	Common::SharedPtr<MessageDispatch> dispatch(new MessageDispatch(props, owner, true, true, false));
+	runtime->queueMessage(dispatch);
+}
+
+const WhaleMazeModifier::Node &WhaleMazeModifier::moverNode(const Graph &graph, const Mover &mover, int index) const {
+	return graph.paths[mover.path][index];
+}
+
+bool WhaleMazeModifier::moverAtNode(const Graph &graph, const Mover &mover) const {
+	const Node &node = moverNode(graph, mover, mover.target);
+	return mover.x == node.x && mover.y == node.y;
+}
+
+const WhaleMazeModifier::Junction *WhaleMazeModifier::findJunction(const Graph &graph, int32 x, int32 y) const {
+	for (const Junction &junction : graph.junctions) {
+		if (junction.x == x && junction.y == y)
+			return &junction;
+	}
+	return nullptr;
+}
+
+// 0 is up, increasing clockwise, truncated to a tenth of a degree like the original
+double WhaleMazeModifier::headingTo(double fromX, double fromY, double toX, double toY) {
+	double degrees = atan2(toX - fromX, -(toY - fromY)) * 57.3248;
+	if (degrees < 0.0)
+		degrees += 360.0;
+	if (degrees >= 360.0)
+		degrees -= 360.0;
+	return floor(degrees * 10.0) / 10.0;
+}
+
+Common::String WhaleMazeModifier::angleLabel(double heading) {
+	static const double kBounds[] = {10, 25, 55, 75, 100, 120, 145, 165, 190, 215, 235, 255, 280, 300, 325, 345};
+	static const char *const kLabels[] = {"0", "22.5", "45", "67.5", "90", "112.5", "135", "157.5", "180", "202.5", "225", "247.5", "270", "292.5", "315", "337.5"};
+
+	for (uint i = 0; i < ARRAYSIZE(kBounds); i++) {
+		if (heading < kBounds[i])
+			return kLabels[i];
+	}
+	return "0";
+}
+
+bool WhaleMazeModifier::matchKey(double candidate, double target) {
+	double delta = fabs(candidate - target);
+	if (delta > 180.0)
+		delta = 360.0 - delta;
+	return delta <= 45.0;
+}
+
+bool WhaleMazeModifier::matchMouse(double candidate, double target) {
+	if (target < 22.5 || target > 337.5)
+		return candidate > 345.0 || candidate < 15.0;
+	return fabs(candidate - target) < 45.0;
+}
+
+void WhaleMazeModifier::setupLevel(Runtime *runtime) {
+	_runtime = runtime;
+	if (!loadLevels() || _gameLevel < 1 || _gameLevel >= static_cast<int32>(_levels.size()))
+		return;
+
+	const Level &level = _levels[_gameLevel];
+
+	_paused = false;
+	for (bool &key : _keyDown)
+		key = false;
+
+	// Show this level's background
+	Structural *backgrounds = child(2);
+	if (backgrounds) {
+		for (uint i = 0; i < backgrounds->getChildren().size(); i++)
+			placeTopLeft(runtime, backgrounds->getChildren()[i].get(), 0, (static_cast<int32>(i + 1) == _gameLevel) ? 0 : 600);
+	}
+
+	for (uint i = 0; i < 3; i++) {
+		_foodEaten[i] = false;
+		placeTopLeft(runtime, grandchild(3, i + 1), level.food[i].pos.x, level.food[i].pos.y);
+	}
+
+	for (uint i = 0; i < 6; i++) {
+		const Item &hazard = level.hazards[i];
+		_hazards[i] = Hazard();
+		_hazards[i].countdown = hazard.durations[0];
+		placeTopLeft(runtime, grandchild(4, i + 1), hazard.pos.x, hazard.pos.y);
+	}
+
+	_orcasFrozen = true;
+	for (uint i = 0; i < 2; i++) {
+		const Graph &graph = level.orcas[i];
+		Orca &orca = _orcas[i];
+		orca = Orca();
+
+		orca.active = (graph.start.y < 480 && !graph.paths.empty() && graph.paths[0].size() >= 2);
+		if (orca.active) {
+			orca.visible = true;
+			orca.mover.x = graph.start.x;
+			orca.mover.y = graph.start.y;
+			for (uint p = 0; p < graph.paths.size(); p++) {
+				for (uint n = 0; n < graph.paths[p].size(); n++) {
+					if (graph.paths[p][n].x == graph.start.x && graph.paths[p][n].y == graph.start.y) {
+						orca.mover.path = p;
+						orca.mover.target = n;
+					}
+				}
+			}
+			orca.mover.dir = (orca.mover.target + 1 < static_cast<int>(graph.paths[orca.mover.path].size())) ? 1 : -1;
+			orca.mover.moving = true;
+			orca.mover.target += orca.mover.dir;
+			placeCentered(runtime, grandchild(5, i + 1), orca.mover.x, orca.mover.y);
+		} else
+			placeTopLeft(runtime, grandchild(5, i + 1), 0, 700);
+	}
+
+	resetWhale(runtime);
+	_initialized = true;
+}
+
+void WhaleMazeModifier::resetWhale(Runtime *runtime) {
+	const Graph &graph = _levels[_gameLevel].whale;
+
+	_whale = Mover();
+	_whale.x = graph.start.x;
+	_whale.y = graph.start.y;
+	for (uint p = 0; p < graph.paths.size(); p++) {
+		for (uint n = 0; n < graph.paths[p].size(); n++) {
+			if (graph.paths[p][n].x == graph.start.x && graph.paths[p][n].y == graph.start.y) {
+				_whale.path = p;
+				_whale.target = n;
+				p = graph.paths.size() - 1;
+				break;
+			}
+		}
+	}
+
+	placeCentered(runtime, child(1), _whale.x, _whale.y);
+	placeCentered(runtime, child(6), _whale.x, _whale.y);
+}
+
+void WhaleMazeModifier::handleInput(Runtime *runtime, bool (*matches)(double candidate, double target), double target) {
+	_whale.moving = false;
+	_orcasFrozen = false;
+	placeTopLeft(runtime, child(6), 0, 700);
+
+	if (matches)
+		chooseDirection(matches, target);
+}
+
+// Picks a way to go from where the whale is, by the heading to the next node
+bool WhaleMazeModifier::chooseDirection(bool (*matches)(double candidate, double target), double target) {
+	const Graph &graph = _levels[_gameLevel].whale;
+	const Common::Array<Node> &path = graph.paths[_whale.path];
+
+	bool found = false;
+	Mover chosen = _whale;
+
+	if (moverAtNode(graph, _whale)) {
+		const Node &node = path[_whale.target];
+		const Junction *junction = (node.type == 0) ? findJunction(graph, node.x, node.y) : nullptr;
+
+		if (junction) {
+			for (const JunctionExit &exit : junction->exits) {
+				if (exit.path < 0 || exit.path >= static_cast<int16>(graph.paths.size()))
+					continue;
+				const Common::Array<Node> &exitPath = graph.paths[exit.path];
+				if (exitPath.size() < 2)
+					continue;
+
+				int nextIndex = exit.forward ? 1 : static_cast<int>(exitPath.size()) - 2;
+				if (matches(headingTo(_whale.x, _whale.y, exitPath[nextIndex].x, exitPath[nextIndex].y), target)) {
+					chosen.path = exit.path;
+					chosen.target = nextIndex;
+					chosen.dir = exit.forward ? 1 : -1;
+					found = true;
+				}
+			}
+		} else {
+			// Continue along the path, or turn back
+			for (int dir : {_whale.dir, -_whale.dir}) {
+				int nextIndex = _whale.target + dir;
+				if (nextIndex < 0 || nextIndex >= static_cast<int>(path.size()))
+					continue;
+				if (matches(headingTo(_whale.x, _whale.y, path[nextIndex].x, path[nextIndex].y), target)) {
+					chosen.target = nextIndex;
+					chosen.dir = dir;
+					found = true;
+					break;
+				}
+			}
+		}
+	} else {
+		// Between nodes: keep going or turn around
+		for (int dir : {_whale.dir, -_whale.dir}) {
+			int nextIndex = (dir == _whale.dir) ? _whale.target : _whale.target - _whale.dir;
+			if (nextIndex < 0 || nextIndex >= static_cast<int>(path.size()))
+				continue;
+			if (matches(headingTo(_whale.x, _whale.y, path[nextIndex].x, path[nextIndex].y), target)) {
+				chosen.target = nextIndex;
+				chosen.dir = dir;
+				found = true;
+				break;
+			}
+		}
+	}
+
+	if (found) {
+		chosen.moving = true;
+		_whale = chosen;
+	}
+
+	return found;
+}
+
+void WhaleMazeModifier::arriveAtNode(Runtime *runtime) {
+	const Level &level = _levels[_gameLevel];
+	const Common::Array<Node> &path = level.whale.paths[_whale.path];
+	const Node &node = path[_whale.target];
+
+	auto continueOn = [&]() {
+		int nextIndex = _whale.target + _whale.dir;
+		if (nextIndex >= 0 && nextIndex < static_cast<int>(path.size()))
+			_whale.target = nextIndex;
+		else
+			_whale.moving = false;
+	};
+
+	switch (node.type) {
+	case 2:
+		// Bounce back the way it came
+		_whale.dir = -_whale.dir;
+		continueOn();
+		break;
+	case 10:
+	case 20:
+	case 50:
+		resetWhale(runtime);
+		sendMessage(runtime, node.type == 10 ? "PlaySFX3" : node.type == 20 ? "PlaySFX4" : "PlaySFX5");
+		break;
+	case 99:
+		_whale.moving = false;
+		_paused = true;
+		sendMessage(runtime, "YouWin");
+		break;
+	case 30:
+		for (uint i = 0; i < 3; i++) {
+			if (!_foodEaten[i] && level.food[i].hit.x == node.x && level.food[i].hit.y == node.y) {
+				_foodEaten[i] = true;
+				placeTopLeft(runtime, grandchild(3, i + 1), level.food[i].pos.x, level.food[i].pos.y + 600);
+				sendMessage(runtime, "ExtraChance");
+				sendMessage(runtime, "PlaySFX6");
+			}
+		}
+		continueOn();
+		break;
+	case 40:
+		continueOn();
+		break;
+	default:
+		// Junctions, corners and path ends stop the whale
+		_whale.moving = false;
+		break;
+	}
+
+	if (!_whale.moving && !_paused) {
+		// A held arrow key keeps the whale going
+		static const double kKeyHeadings[kKeyCount] = {0.0, 180.0, 270.0, 90.0};
+		for (uint k = 0; k < kKeyCount; k++) {
+			if (_keyDown[k] && chooseDirection(matchKey, kKeyHeadings[k]))
+				break;
+		}
+	}
+}
+
+void WhaleMazeModifier::stepWhale(Runtime *runtime) {
+	if (!_whale.moving)
+		return;
+
+	const Graph &graph = _levels[_gameLevel].whale;
+	const Node &node = moverNode(graph, _whale, _whale.target);
+
+	double dx = node.x - _whale.x;
+	double dy = node.y - _whale.y;
+	double heading = headingTo(_whale.x, _whale.y, node.x, node.y);
+
+	// 10 pixels along an axis, or 5 across with the matching distance down
+	double stepX = 0.0;
+	double stepY = 0.0;
+	if (dx == 0.0)
+		stepY = (dy > 0.0) ? 10.0 : -10.0;
+	else if (dy == 0.0)
+		stepX = (dx > 0.0) ? 10.0 : -10.0;
+	else {
+		stepX = (dx > 0.0) ? 5.0 : -5.0;
+		stepY = dy * (5.0 / fabs(dx));
+	}
+
+	if (fabs(stepX) >= fabs(dx) && fabs(stepY) >= fabs(dy)) {
+		_whale.x = node.x;
+		_whale.y = node.y;
+		arriveAtNode(runtime);
+	} else {
+		_whale.x += stepX;
+		_whale.y += stepY;
+	}
+
+	DynamicValue range;
+	range.setString(angleLabel(heading));
+	setAttribute(runtime, child(1), "range", range);
+	placeCentered(runtime, child(1), _whale.x, _whale.y);
+}
+
+void WhaleMazeModifier::updateOrca(Runtime *runtime, int index, int axisStep, int diagonalStep) {
+	Orca &orca = _orcas[index];
+	const Graph &graph = _levels[_gameLevel].orcas[index];
+	Structural *element = grandchild(5, index + 1);
+	if (!orca.active)
+		return;
+
+	Mover &mover = orca.mover;
+	const Common::Array<Node> &path = graph.paths[mover.path];
+	const Node &node = path[mover.target];
+
+	double dx = node.x - mover.x;
+	double dy = node.y - mover.y;
+	double heading = headingTo(mover.x, mover.y, node.x, node.y);
+
+	double stepX = 0.0;
+	double stepY = 0.0;
+	if (dx == 0.0)
+		stepY = (dy > 0.0) ? axisStep : -axisStep;
+	else if (dy == 0.0)
+		stepX = (dx > 0.0) ? axisStep : -axisStep;
+	else {
+		stepX = (dx > 0.0) ? diagonalStep : -diagonalStep;
+		stepY = dy * (diagonalStep / fabs(dx));
+	}
+
+	if (fabs(stepX) >= fabs(dx) && fabs(stepY) >= fabs(dy)) {
+		mover.x = node.x;
+		mover.y = node.y;
+
+		const Junction *junction = (node.type == 0) ? findJunction(graph, node.x, node.y) : nullptr;
+		if (junction) {
+			// Take the exit heading closest to the whale
+			double towardWhale = headingTo(mover.x, mover.y, _whale.x, _whale.y);
+			double bestDelta = 1000.0;
+			for (const JunctionExit &exit : junction->exits) {
+				if (exit.path < 0 || exit.path >= static_cast<int16>(graph.paths.size()) || graph.paths[exit.path].size() < 2)
+					continue;
+				const Common::Array<Node> &exitPath = graph.paths[exit.path];
+				int nextIndex = exit.forward ? 1 : static_cast<int>(exitPath.size()) - 2;
+				double delta = fabs(headingTo(mover.x, mover.y, exitPath[nextIndex].x, exitPath[nextIndex].y) - towardWhale);
+				if (delta < bestDelta) {
+					bestDelta = delta;
+					mover.path = exit.path;
+					mover.target = nextIndex;
+					mover.dir = exit.forward ? 1 : -1;
+				}
+			}
+		} else {
+			if (node.type == 0x37 || node.type == -1 || node.type == -2) {
+				// Surface or dive
+				orca.diving = (node.type == 0x37) ? orca.visible : (node.type == -2);
+				orca.animTicks = 4;
+				if (!orca.diving)
+					orca.visible = true;
+			}
+			if (node.type == -1 || node.type == -2)
+				mover.dir = -mover.dir;
+
+			int nextIndex = mover.target + mover.dir;
+			if (nextIndex < 0 || nextIndex >= static_cast<int>(path.size())) {
+				mover.dir = -mover.dir;
+				nextIndex = mover.target + mover.dir;
+			}
+			if (nextIndex >= 0 && nextIndex < static_cast<int>(path.size()))
+				mover.target = nextIndex;
+		}
+	} else {
+		mover.x += stepX;
+		mover.y += stepY;
+	}
+
+	Common::String label = angleLabel(heading);
+	if (orca.animTicks > 0) {
+		label += orca.diving ? "Down" : "Up";
+		if (--orca.animTicks == 0 && orca.diving)
+			orca.visible = false;
+	}
+
+	DynamicValue range;
+	range.setString(label);
+	setAttribute(runtime, element, "range", range);
+
+	DynamicValue visible;
+	visible.setBool(orca.visible || orca.animTicks > 0);
+	setAttribute(runtime, element, "visible", visible);
+
+	placeCentered(runtime, element, mover.x, mover.y);
+}
+
+void WhaleMazeModifier::updateHazards(Runtime *runtime) {
+	static const int32 kBaseCels[4] = {1, 9, 17, 25};
+	const Level &level = _levels[_gameLevel];
+
+	for (uint i = 0; i < 6; i++) {
+		const Item &item = level.hazards[i];
+		Hazard &hazard = _hazards[i];
+		if (item.type < 1 || item.type > 4 || item.pos.y >= 480)
+			continue;
+
+		if (--hazard.countdown <= 0) {
+			hazard.state = (hazard.state + 1) % 3;
+			hazard.countdown = MAX<int32>(1, item.durations[hazard.state]);
+			hazard.frame = 0;
+		}
+
+		if (hazard.frame >= 0) {
+			DynamicValue cel;
+			cel.setInt(kBaseCels[item.type - 1] + hazard.frame);
+			setAttribute(runtime, grandchild(4, i + 1), "cel", cel);
+			if (++hazard.frame == 8)
+				hazard.frame = -1;
+		}
+	}
+}
+
+void WhaleMazeModifier::checkCollisions(Runtime *runtime) {
+	const Level &level = _levels[_gameLevel];
+
+	for (uint i = 0; i < 2; i++) {
+		const Orca &orca = _orcas[i];
+		if (!orca.active || !orca.visible)
+			continue;
+
+		double dx = orca.mover.x - _whale.x;
+		double dy = orca.mover.y - _whale.y;
+		if (fabs(dx) < 24.0 && dy > -22.0 && dy < 34.0) {
+			resetWhale(runtime);
+			sendMessage(runtime, "LoseChance");
+			sendMessage(runtime, "PlaySFX1");
+			return;
+		}
+	}
+
+	for (uint i = 0; i < 6; i++) {
+		const Item &item = level.hazards[i];
+		if (item.type < 1 || item.type > 4 || _hazards[i].frame < 2)
+			continue;
+
+		double dx = fabs(item.hit.x - _whale.x);
+		double dy = fabs(item.hit.y - _whale.y);
+		bool vertical = (item.type == 1 || item.type == 3);
+		if (vertical ? (dx < 8.0 && dy < 22.0) : (dy <= 7.0 && dx <= 21.0)) {
+			resetWhale(runtime);
+			sendMessage(runtime, "LoseChance");
+			sendMessage(runtime, "PlaySFX2");
+			return;
+		}
+	}
+}
+
+void WhaleMazeModifier::tick(Runtime *runtime) {
+	_scheduledEvent.reset();
+	if (!_running)
+		return;
+
+	scheduleTick(runtime);
+
+	if (_paused || !_initialized || _gameLevel < 1 || _gameLevel >= static_cast<int32>(_levels.size()))
+		return;
+
+	updateHazards(runtime);
+
+	if (!_orcasFrozen) {
+		int axisStep = (_gameLevel < 6) ? 4 : (_gameLevel < 11) ? 6 : 8;
+		for (int i = 0; i < 2; i++)
+			updateOrca(runtime, i, axisStep, axisStep / 2);
+	}
+
+	// The sonar shows where the whale waits
+	if (++_sonarCel > 12)
+		_sonarCel = 1;
+	DynamicValue cel;
+	cel.setInt(_sonarCel);
+	setAttribute(runtime, child(6), "cel", cel);
+
+	stepWhale(runtime);
+
+	if (!_paused)
+		checkCollisions(runtime);
+}
+
+Common::SharedPtr<Modifier> WhaleMazeModifier::shallowClone() const {
+	return Common::SharedPtr<Modifier>(new WhaleMazeModifier(*this));
+}
+
+const char *WhaleMazeModifier::getDefaultName() const {
+	return "WhaleMaze";
 }
 
 // Cel for an animation track at a timeline frame, or -1 to leave it alone
@@ -1598,7 +2521,7 @@ const char *DlgMgrClientModifier::getDefaultName() const {
 
 KnowWonderPlugIn::KnowWonderPlugIn()
 	: _strUtilModifierFactory(this), _dlgMgrServerModifierFactory(this), _dlgMgrClientModifierFactory(this),
-	  _kwSmackerModifierFactory(this), _editCtrlModifierFactory(this), _gameModifierFactory(this) {
+	  _kwSmackerModifierFactory(this), _editCtrlModifierFactory(this), _gameModifierFactory(this), _whaleMazeModifierFactory(this) {
 }
 
 KnowWonderPlugIn::~KnowWonderPlugIn() {
@@ -1622,10 +2545,12 @@ void KnowWonderPlugIn::registerModifiers(IPlugInModifierRegistrar *registrar) co
 
 	// Mini-game modifiers from separate Magic School Bus plug-ins
 	static const char *const gameModifierNames[] = {
-		"AntMaze", "Art", "Balloon", "Eyefollower", "LLava", "Lander", "RoverRace", "SmkJump", "Sub", "SvTown", "WhaleMaze"
+		"AntMaze", "Art", "Balloon", "Eyefollower", "LLava", "Lander", "RoverRace", "SmkJump", "Sub", "SvTown"
 	};
 	for (const char *name : gameModifierNames)
 		registrar->registerPlugInModifier(name, &_gameModifierFactory);
+
+	registrar->registerPlugInModifier("WhaleMaze", &_whaleMazeModifierFactory);
 }
 
 } // End of namespace KW

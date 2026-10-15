@@ -190,6 +190,177 @@ private:
 	Event _event2;
 };
 
+// Whale Maze mini-game from Magic School Bus Whales & Dolphins. The whale
+// moves along a path graph, chased by orcas, past timed hazards. The level
+// graphs are read from the original WhaleMaze.r32 plug-in.
+class WhaleMazeModifier : public Modifier, public IKeyboardEventReceiver {
+public:
+	WhaleMazeModifier();
+	WhaleMazeModifier(const WhaleMazeModifier &other);
+	~WhaleMazeModifier();
+
+	bool load(const PlugInModifierLoaderContext &context, const Data::KW::GameModifier &data);
+
+	bool respondsToEvent(const Event &evt) const override;
+	VThreadState consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) override;
+	void disable(Runtime *runtime) override;
+
+	bool readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) override;
+	MiniscriptInstructionOutcome writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) override;
+
+	void onKeyboardEvent(Runtime *runtime, const KeyboardInputEvent &keyEvt) override;
+
+#ifdef MTROPOLIS_DEBUG_ENABLE
+	const char *debugGetTypeName() const override { return "WhaleMaze Modifier"; }
+	SupportStatus debugGetSupportStatus() const override { return kSupportStatusPartial; }
+#endif
+
+private:
+	struct Node {
+		int32 x;
+		int32 y;
+		int16 type;
+	};
+
+	struct JunctionExit {
+		int16 path;
+		bool forward;	// Leaves along the path from its start
+	};
+
+	struct Junction {
+		int32 x;
+		int32 y;
+		Common::Array<JunctionExit> exits;
+	};
+
+	struct Graph {
+		Common::Point start;
+		Common::Array<Common::Array<Node> > paths;
+		Common::Array<Junction> junctions;
+	};
+
+	struct Item {
+		Common::Point pos;
+		Common::Point hit;
+		int32 type;
+		int32 durations[3];
+	};
+
+	struct Level {
+		Graph whale;
+		Item food[3];
+		Item hazards[6];
+		Graph orcas[2];
+	};
+
+	// An actor moving along a graph
+	struct Mover {
+		Mover();
+
+		int path;
+		int target;		// Node index being moved toward
+		int dir;		// +1 or -1 along the path
+		double x;
+		double y;
+		bool moving;
+	};
+
+	struct Orca {
+		Orca();
+
+		Mover mover;
+		bool active;
+		bool visible;
+		int animTicks;	// Ticks left of a surface or dive animation
+		bool diving;
+	};
+
+	struct Hazard {
+		Hazard();
+
+		int state;
+		int countdown;
+		int frame;
+	};
+
+	enum Key {
+		kKeyUp,
+		kKeyDown,
+		kKeyLeft,
+		kKeyRight,
+
+		kKeyCount,
+	};
+
+	struct WriteProxy {
+		static MiniscriptInstructionOutcome write(MiniscriptThread *thread, const DynamicValue &value, void *objectRef, uintptr ptrOrOffset);
+		static MiniscriptInstructionOutcome refAttrib(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib);
+		static MiniscriptInstructionOutcome refAttribIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib, const DynamicValue &index);
+	};
+
+	enum WritableAttribute {
+		kAttribPaused,
+		kAttribGameLevel,
+	};
+
+	Common::SharedPtr<Modifier> shallowClone() const override;
+	const char *getDefaultName() const override;
+
+	bool loadLevels();
+	void setupLevel(Runtime *runtime);
+	void tick(Runtime *runtime);
+	void scheduleTick(Runtime *runtime);
+	void stopGame();
+
+	void handleInput(Runtime *runtime, bool (*matches)(double candidate, double target), double target);
+	bool chooseDirection(bool (*matches)(double candidate, double target), double target);
+	void arriveAtNode(Runtime *runtime);
+	void resetWhale(Runtime *runtime);
+	void stepWhale(Runtime *runtime);
+	void updateOrca(Runtime *runtime, int index, int axisStep, int diagonalStep);
+	void updateHazards(Runtime *runtime);
+	void checkCollisions(Runtime *runtime);
+
+	const Node &moverNode(const Graph &graph, const Mover &mover, int index) const;
+	bool moverAtNode(const Graph &graph, const Mover &mover) const;
+	const Junction *findJunction(const Graph &graph, int32 x, int32 y) const;
+	static double headingTo(double fromX, double fromY, double toX, double toY);
+	static Common::String angleLabel(double heading);
+	static bool matchKey(double candidate, double target);
+	static bool matchMouse(double candidate, double target);
+
+	Structural *child(int index) const;
+	Structural *grandchild(int index, int subIndex) const;
+	void placeTopLeft(Runtime *runtime, Structural *element, int32 x, int32 y);
+	void placeCentered(Runtime *runtime, Structural *element, double x, double y);
+	void setAttribute(Runtime *runtime, Structural *element, const char *attrib, const DynamicValue &value);
+	void sendMessage(Runtime *runtime, const char *messageName);
+
+	Event _startWhen;
+	Event _stopWhen;
+
+	Common::Array<Level> _levels;	// Index 0 is unused
+	bool _levelsLoaded;
+
+	int32 _gameLevel;
+	bool _paused;
+	bool _initialized;
+	bool _running;
+	bool _keyDown[kKeyCount];
+
+	Mover _whale;
+	bool _orcasFrozen;
+	Orca _orcas[2];
+	Hazard _hazards[6];
+	bool _foodEaten[3];
+	int _sonarCel;
+	int _whaleRangeTicks;
+
+	Runtime *_runtime;
+	Common::SharedPtr<ScheduledEvent> _scheduledEvent;
+	Common::SharedPtr<KeyboardEventSignaller> _keySignaller;
+};
+
 class DlgMgrClientModifier;
 class KnowWonderPlugIn;
 
@@ -414,6 +585,7 @@ private:
 	PlugInModifierFactory<KWSmackerModifier, Data::KW::KWSmackerModifier> _kwSmackerModifierFactory;
 	PlugInModifierFactory<EditCtrlModifier, Data::KW::EditCtrlModifier> _editCtrlModifierFactory;
 	PlugInModifierFactory<GameModifier, Data::KW::GameModifier> _gameModifierFactory;
+	PlugInModifierFactory<WhaleMazeModifier, Data::KW::GameModifier> _whaleMazeModifierFactory;
 
 	Common::WeakPtr<RuntimeObject> _dlgMgrServer;
 };
