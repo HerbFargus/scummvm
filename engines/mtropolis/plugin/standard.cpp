@@ -986,6 +986,17 @@ bool ListVariableModifier::varSetValue(MiniscriptThread *thread, const DynamicVa
 			DynamicValue sourceElement;
 			sourceList->getAtIndex(i, sourceElement);
 
+			// A list of variables assigned to a list of values takes their values, as Magic School Bus
+			// Bugs does for its game show answers (one of which is misspelled, so it is an empty
+			// reference and gets the default value)
+			if (sourceElement.getType() == DynamicValueTypes::kObject && storage->_preferredContentType != DynamicValueTypes::kObject) {
+				Common::SharedPtr<RuntimeObject> obj = sourceElement.getObject().object.lock();
+				if (obj && obj->isModifier() && static_cast<Modifier *>(obj.get())->isVariable())
+					static_cast<VariableModifier *>(obj.get())->varGetValue(sourceElement);
+				else if (!obj && storage->_preferredContentType == DynamicValueTypes::kInteger)
+					sourceElement.setInt(0);
+			}
+
 			DynamicValue convertedElement;
 
 			if (!sourceElement.convertToType(storage->_preferredContentType, convertedElement)) {

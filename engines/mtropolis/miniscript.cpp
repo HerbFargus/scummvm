@@ -2195,14 +2195,25 @@ MiniscriptInstructionOutcome ListCreate::execute(MiniscriptThread *thread) const
 	MiniscriptStackValue &rs = thread->getStackValueFromTop(0);
 	MiniscriptStackValue &lsDest = thread->getStackValueFromTop(1);
 
+	// Lists of variables keep the variables, but a variable listed with numbers goes in as its
+	// value (Magic School Bus Bugs lists a variable then numbers for its eye puzzle facets)
 	Common::SharedPtr<DynamicList> list(new DynamicList());
-	if (!list->setAtIndex(0, lsDest.value)) {
-		thread->error("Failed to set value 1 of list");
-		return kMiniscriptInstructionOutcomeFailed;
-	}
-	if (!list->setAtIndex(1, rs.value)) {
-		thread->error("Failed to set value 2 of list");
-		return kMiniscriptInstructionOutcomeFailed;
+	if (!list->setAtIndex(0, lsDest.value) || !list->setAtIndex(1, rs.value)) {
+		MiniscriptInstructionOutcome outcome = thread->dereferenceRValue(0);
+		if (outcome == kMiniscriptInstructionOutcomeContinue)
+			outcome = thread->dereferenceRValue(1);
+		if (outcome != kMiniscriptInstructionOutcomeContinue)
+			return outcome;
+
+		list.reset(new DynamicList());
+		if (!list->setAtIndex(0, lsDest.value)) {
+			thread->error("Failed to set value 1 of list");
+			return kMiniscriptInstructionOutcomeFailed;
+		}
+		if (!list->setAtIndex(1, rs.value)) {
+			thread->error("Failed to set value 2 of list");
+			return kMiniscriptInstructionOutcomeFailed;
+		}
 	}
 
 	lsDest.value.setList(list);
@@ -2232,8 +2243,15 @@ MiniscriptInstructionOutcome ListAppend::execute(MiniscriptThread *thread) const
 	}
 
 	if (!listRef->setAtIndex(listRef->getSize(), rs.value)) {
-		thread->error("Failed to expand list");
-		return kMiniscriptInstructionOutcomeFailed;
+		// A variable added to a list of values goes in as its value
+		MiniscriptInstructionOutcome outcome = thread->dereferenceRValue(0);
+		if (outcome != kMiniscriptInstructionOutcomeContinue)
+			return outcome;
+
+		if (!listRef->setAtIndex(listRef->getSize(), thread->getStackValueFromTop(0).value)) {
+			thread->error("Failed to expand list");
+			return kMiniscriptInstructionOutcomeFailed;
+		}
 	}
 
 	thread->popValues(1);

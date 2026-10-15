@@ -2963,7 +2963,19 @@ bool CompoundVariableModifier::readAttribute(MiniscriptThread *thread, DynamicVa
 		result.setObject(var->getSelfReference());
 		return true;
 	}
-	return Modifier::readAttribute(thread, result, attrib);
+
+	if (Modifier::readAttribute(thread, result, attrib))
+		return true;
+
+	// mTropolis 2.0 scripts carry on after reading a member that doesn't exist, which Magic School
+	// Bus Bugs does with a misspelled answer in its game show, so it reads as no object
+	if (thread->getRuntime()->getProject()->getRuntimeVersion() >= kRuntimeVersion200) {
+		debug(2, "Compound variable '%s' has no member '%s'", _name.c_str(), attrib.c_str());
+		result.setObject(Common::WeakPtr<RuntimeObject>());
+		return true;
+	}
+
+	return false;
 }
 
 bool CompoundVariableModifier::readAttributeIndexed(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib, const DynamicValue &index) {

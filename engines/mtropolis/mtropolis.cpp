@@ -83,6 +83,8 @@ private:
 	void saveScreenshot(OSystem *system, const Common::String &path);
 	void probe(Structural *structural, const Common::Point &pt);
 	void dumpTree(Structural *structural, int depth);
+	static void findNamed(Structural *structural, const Common::String &name, Structural *&outElement, Modifier *&outModifier);
+	static bool findNamedModifier(IModifierContainer *container, const Common::String &name, Modifier *&outModifier);
 	void dumpModifierTree(Modifier *modifier, int depth);
 	static VisualElement *findVisual(Structural *structural, const Common::String &name);
 	void pushClick(Common::EventManager *events, const Common::Point &pt);
@@ -152,6 +154,33 @@ void TestInputScript::probe(Structural *structural, const Common::Point &pt) {
 
 	for (const Common::SharedPtr<Structural> &child : structural->getChildren())
 		probe(child.get(), pt);
+}
+
+bool TestInputScript::findNamedModifier(IModifierContainer *container, const Common::String &name, Modifier *&outModifier) {
+	for (const Common::SharedPtr<Modifier> &modifier : container->getModifiers()) {
+		if (modifier->getName().equalsIgnoreCase(name)) {
+			outModifier = modifier.get();
+			return true;
+		}
+		IModifierContainer *child = modifier->getChildContainer();
+		if (child && findNamedModifier(child, name, outModifier))
+			return true;
+	}
+	return false;
+}
+
+void TestInputScript::findNamed(Structural *structural, const Common::String &name, Structural *&outElement, Modifier *&outModifier) {
+	if (structural->getName().equalsIgnoreCase(name) && !structural->isProject()) {
+		outElement = structural;
+		return;
+	}
+	if (findNamedModifier(structural, name, outModifier))
+		return;
+	for (const Common::SharedPtr<Structural> &child : structural->getChildren()) {
+		findNamed(child.get(), name, outElement, outModifier);
+		if (outElement || outModifier)
+			return;
+	}
 }
 
 // Log an element's modifiers and children, with their GUIDs
@@ -268,14 +297,19 @@ void TestInputScript::update(OSystem *system, Runtime *runtime, Engine *engine) 
 			}
 			_waitUntil = now + 100;
 		} else if (cmd == "tree") {
-			VisualElement *element = nullptr;
-			if (runtime->getActiveMainScene())
-				element = findVisual(runtime->getActiveMainScene().get(), arg);
-			if (!element && runtime->getActiveSharedScene())
-				element = findVisual(runtime->getActiveSharedScene().get(), arg);
+			// Any element, or a modifier (such as a compound variable), with the name
+			Structural *element = nullptr;
+			Modifier *modifier = nullptr;
+			Structural *roots[3] = {runtime->getActiveMainScene().get(), runtime->getActiveSharedScene().get(), runtime->getProject()};
+			for (Structural *root : roots) {
+				if (root && !element && !modifier)
+					findNamed(root, arg, element, modifier);
+			}
 
 			if (element)
 				dumpTree(element, 0);
+			else if (modifier)
+				dumpModifierTree(modifier, 0);
 			else
 				warning("Test input: No element '%s'", arg.c_str());
 		} else if (cmd == "type") {
