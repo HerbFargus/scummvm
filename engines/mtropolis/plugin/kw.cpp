@@ -20,6 +20,7 @@
  */
 
 #include "mtropolis/plugin/kw.h"
+#include "mtropolis/actions.h"
 #include "mtropolis/plugins.h"
 #include "mtropolis/miniscript.h"
 
@@ -31,6 +32,7 @@
 #include "graphics/fontman.h"
 #include "graphics/font.h"
 
+#include "video/avi_decoder.h"
 #include "video/smk_decoder.h"
 
 namespace MTropolis {
@@ -1053,6 +1055,306 @@ Common::SharedPtr<Modifier> FillModModifier::shallowClone() const {
 
 const char *FillModModifier::getDefaultName() const {
 	return "FillMod";
+}
+
+AVICtrlModifier::VideoWindow::VideoWindow(const WindowParameters &windowParams, AVICtrlModifier *owner) : Window(windowParams), _owner(owner) {
+}
+
+void AVICtrlModifier::VideoWindow::onMouseDown(int32 x, int32 y, int mouseButton) {
+	// The original's video window flags the click and its task sends the
+	// message later, so the message is sent from playMedia here
+	if (_owner && mouseButton == Actions::kMouseButtonLeft)
+		_owner->_clicked = true;
+}
+
+void AVICtrlModifier::VideoWindow::detachOwner() {
+	_owner = nullptr;
+}
+
+AVICtrlModifier::AVICtrlModifier() : _ignorePalette(false), _runtime(nullptr), _isPlaying(false), _clicked(false) {
+}
+
+AVICtrlModifier::AVICtrlModifier(const AVICtrlModifier &other)
+	: Modifier(other), _playWhen(other._playWhen), _stopWhen(other._stopWhen), _sendOnClick(other._sendOnClick),
+	  _sendWhenDone(other._sendWhenDone), _moviePath(other._moviePath), _ignorePalette(other._ignorePalette),
+	  _runtime(nullptr), _isPlaying(false), _clicked(false) {
+}
+
+AVICtrlModifier::~AVICtrlModifier() {
+	stopPlaying();
+}
+
+bool AVICtrlModifier::load(const PlugInModifierLoaderContext &context, const Data::KW::AVICtrlModifier &data) {
+	if (!loadDlgMgrEvent(_playWhen, data.playWhen) || !loadDlgMgrEvent(_stopWhen, data.stopWhen))
+		return false;
+
+	// Destinations are stored as labels, with the destination in the label ID
+	if (data.clickDest.type != Data::PlugInTypeTaggedValue::kLabel || data.doneDest.type != Data::PlugInTypeTaggedValue::kLabel)
+		return false;
+
+	Data::PlugInTypeTaggedValue with;
+	with.type = Data::PlugInTypeTaggedValue::kNull;
+
+	if (!_sendOnClick.load(data.clickEvent, MessageFlags(), with, data.clickDest.value.asLabel.labelID))
+		return false;
+	if (!_sendWhenDone.load(data.doneEvent, MessageFlags(), with, data.doneDest.value.asLabel.labelID))
+		return false;
+
+	_moviePath = dlgMgrString(data.moviePath);
+
+	return true;
+}
+
+bool AVICtrlModifier::respondsToEvent(const Event &evt) const {
+	return _playWhen.respondsTo(evt) || _stopWhen.respondsTo(evt) || evt.eventType == EventIDs::kParentDisabled;
+}
+
+VThreadState AVICtrlModifier::consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) {
+	const Event &evt = msg->getEvent();
+
+	if (_playWhen.respondsTo(evt)) {
+		startPlaying(runtime);
+	} else if (_stopWhen.respondsTo(evt)) {
+		// The original sends the done message on every stop, even when nothing
+		// plays. Bus sends stop to all ten movies when a transition is
+		// cancelled, and moves on by itself, so only a playing movie reports.
+		if (_isPlaying) {
+			stopPlaying();
+			sendMessage(runtime, _sendWhenDone);
+		}
+	} else if (evt.eventType == EventIDs::kParentDisabled) {
+		// Don't send messages into a scene that is going away
+		stopPlaying();
+	}
+
+	return kVThreadReturn;
+}
+
+void AVICtrlModifier::disable(Runtime *runtime) {
+	stopPlaying();
+}
+
+bool AVICtrlModifier::readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) {
+	if (attrib == "moviepath") {
+		result.setString(_moviePath);
+		return true;
+	}
+
+	return Modifier::readAttribute(thread, result, attrib);
+}
+
+MiniscriptInstructionOutcome AVICtrlModifier::writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) {
+	if (attrib == "moviepath") {
+		DynamicValueWriteStringHelper::create(&_moviePath, result);
+		return kMiniscriptInstructionOutcomeContinue;
+	}
+	if (attrib == "ignorepalette") {
+		DynamicValueWriteBoolHelper::create(&_ignorePalette, result);
+		return kMiniscriptInstructionOutcomeContinue;
+	}
+
+	// play and stop are declared but do nothing in the original. init reopens
+	// the movie, which here is opened on each play anyway.
+	if (attrib == "play" || attrib == "stop" || attrib == "init") {
+		DynamicValueWriteDiscardHelper::create(result);
+		return kMiniscriptInstructionOutcomeContinue;
+	}
+
+	return Modifier::writeRefAttribute(thread, result, attrib);
+}
+
+void AVICtrlModifier::startPlaying(Runtime *runtime) {
+	stopPlaying();
+
+	Common::SharedPtr<Window> mainWindow = runtime->getMainWindow().lock();
+	Structural *owner = findStructuralOwner();
+	if (!mainWindow || !owner || !owner->isElement() || !static_cast<Element *>(owner)->isVisual())
+		return;
+
+	Common::SeekableReadStream *stream = runtime->getProject()->createReadStreamForProjectPath(_moviePath);
+	if (!stream) {
+		// The original would never finish, which would leave the title stuck
+		warning("AVICtrl: Couldn't open movie '%s'", _moviePath.c_str());
+		sendMessage(runtime, _sendWhenDone);
+		return;
+	}
+
+	Common::SharedPtr<Video::AVIDecoder> decoder(new Video::AVIDecoder());
+	if (!decoder->loadStream(stream) || decoder->getWidth() == 0 || decoder->getHeight() == 0) {
+		warning("AVICtrl: Couldn't load movie '%s'", _moviePath.c_str());
+		sendMessage(runtime, _sendWhenDone);
+		return;
+	}
+
+	const Graphics::PixelFormat &format = mainWindow->getPixelFormat();
+	if (!format.isCLUT8())
+		decoder->setOutputPixelFormat(format);
+
+	// The movie plays at its own size with its top-left on the element
+	const Common::Point pos = static_cast<VisualElement *>(owner)->getGlobalPosition();
+
+	_runtime = runtime;
+	_decoder = decoder;
+	_window.reset(new VideoWindow(WindowParameters(runtime, mainWindow->getX() + pos.x, mainWindow->getY() + pos.y, decoder->getWidth(), decoder->getHeight(), format), this));
+	_window->setStrata(1);
+	_window->getSurface()->fillRect(Common::Rect(0, 0, decoder->getWidth(), decoder->getHeight()), 0);
+	_isPlaying = true;
+	_clicked = false;
+
+	debug(2, "AVICtrl: Playing '%s' (%ix%i) at (%i,%i)", _moviePath.c_str(), decoder->getWidth(), decoder->getHeight(), pos.x, pos.y);
+
+	decoder->start();
+	runtime->addWindow(_window);
+	_playMediaSignaller = runtime->getProject()->notifyOnPlayMedia(this);
+}
+
+void AVICtrlModifier::stopPlaying() {
+	if (!_isPlaying)
+		return;
+
+	_isPlaying = false;
+	_clicked = false;
+
+	if (_playMediaSignaller) {
+		_playMediaSignaller->removeReceiver(this);
+		_playMediaSignaller.reset();
+	}
+
+	if (_window) {
+		_window->detachOwner();
+		if (_runtime)
+			_runtime->removeWindow(_window.get());
+		_window.reset();
+	}
+
+	_decoder.reset();
+}
+
+void AVICtrlModifier::sendMessage(Runtime *runtime, const MessengerSendSpec &spec) {
+	// Event ID 1 means no message
+	if (static_cast<uint32>(spec.send.eventType) == 1 || spec.send.eventType == EventIDs::kNothing)
+		return;
+
+	spec.sendFromMessenger(runtime, this, nullptr, DynamicValue(), nullptr);
+}
+
+void AVICtrlModifier::drawFrame(const Graphics::Surface &frame) {
+	Graphics::ManagedSurface &dest = *_window->getSurface();
+
+	if (frame.format == dest.format) {
+		dest.blitFrom(frame);
+		return;
+	}
+
+	if (!dest.format.isCLUT8()) {
+		Graphics::Surface *converted = frame.convertTo(dest.format, _decoder->getPalette());
+		dest.blitFrom(*converted);
+		converted->free();
+		delete converted;
+		return;
+	}
+
+	// On an 8-bit display, map the true colour frame to the nearest colours
+	// of the global palette, through a 15-bit lookup filled in as needed
+	const byte *pal = _runtime->getGlobalPalette().getPalette();
+	if (_colorMap.size() != 32768 * 2) {
+		_colorMap.resize(32768 * 2);
+		for (uint i = 0; i < 32768; i++)
+			_colorMap[i * 2 + 1] = 0;
+	}
+
+	const int w = MIN<int>(frame.w, dest.w);
+	const int h = MIN<int>(frame.h, dest.h);
+	for (int y = 0; y < h; y++) {
+		byte *destRow = static_cast<byte *>(dest.getBasePtr(0, y));
+		for (int x = 0; x < w; x++) {
+			uint8 r, g, b;
+			frame.format.colorToRGB(frame.getPixel(x, y), r, g, b);
+
+			uint key = ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3);
+			if (!_colorMap[key * 2 + 1]) {
+				int bestDist = INT_MAX;
+				uint best = 0;
+				for (uint i = 0; i < 256; i++) {
+					int dr = pal[i * 3] - r;
+					int dg = pal[i * 3 + 1] - g;
+					int db = pal[i * 3 + 2] - b;
+					int dist = dr * dr + dg * dg + db * db;
+					if (dist < bestDist) {
+						bestDist = dist;
+						best = i;
+					}
+				}
+				_colorMap[key * 2] = best;
+				_colorMap[key * 2 + 1] = 1;
+			}
+
+			destRow[x] = _colorMap[key * 2];
+		}
+	}
+}
+
+void AVICtrlModifier::playMedia(Runtime *runtime, Project *project) {
+	if (!_isPlaying)
+		return;
+
+	// A child window without a class cursor keeps the stage's cursor, which
+	// Bugs hides during transitions
+	Common::SharedPtr<Window> mainWindow = runtime->getMainWindow().lock();
+	if (mainWindow) {
+		_window->setCursorGraphic(mainWindow->getCursorGraphic());
+		_window->setMouseVisible(mainWindow->getMouseVisible());
+	}
+
+	while (_isPlaying && _decoder->needsUpdate()) {
+		const Graphics::Surface *frame = _decoder->decodeNextFrame();
+		if (!frame)
+			break;
+
+		drawFrame(*frame);
+	}
+
+	// A click doesn't stop the movie, the title decides what to do
+	if (_clicked) {
+		_clicked = false;
+		debug(2, "AVICtrl: '%s' clicked", _moviePath.c_str());
+		sendMessage(runtime, _sendOnClick);
+	}
+
+	if (_isPlaying && _decoder->endOfVideo()) {
+		debug(2, "AVICtrl: '%s' finished", _moviePath.c_str());
+		stopPlaying();
+		sendMessage(runtime, _sendWhenDone);
+	}
+}
+
+#ifdef MTROPOLIS_DEBUG_ENABLE
+void AVICtrlModifier::debugInspect(IDebugInspectionReport *report) const {
+	Modifier::debugInspect(report);
+
+	report->declareDynamic("moviePath", _moviePath);
+	report->declareDynamic("isPlaying", _isPlaying ? "true" : "false");
+}
+#endif
+
+Common::SharedPtr<Modifier> AVICtrlModifier::shallowClone() const {
+	return Common::SharedPtr<Modifier>(new AVICtrlModifier(*this));
+}
+
+const char *AVICtrlModifier::getDefaultName() const {
+	return "AVICtrl";
+}
+
+void AVICtrlModifier::linkInternalReferences(ObjectLinkingScope *scope) {
+	Modifier::linkInternalReferences(scope);
+	_sendOnClick.linkInternalReferences(scope);
+	_sendWhenDone.linkInternalReferences(scope);
+}
+
+void AVICtrlModifier::visitInternalReferences(IStructuralReferenceVisitor *visitor) {
+	Modifier::visitInternalReferences(visitor);
+	_sendOnClick.visitInternalReferences(visitor);
+	_sendWhenDone.visitInternalReferences(visitor);
 }
 
 bool GameModifier::load(const PlugInModifierLoaderContext &context, const Data::KW::GameModifier &data) {
@@ -11288,7 +11590,7 @@ const char *DlgMgrClientModifier::getDefaultName() const {
 
 KnowWonderPlugIn::KnowWonderPlugIn()
 	: _strUtilModifierFactory(this), _dlgMgrServerModifierFactory(this), _dlgMgrClientModifierFactory(this),
-	  _kwSmackerModifierFactory(this), _editCtrlModifierFactory(this), _fillModModifierFactory(this), _gameModifierFactory(this), _whaleMazeModifierFactory(this), _eyefollowerModifierFactory(this), _smkJumpModifierFactory(this), _balloonModifierFactory(this), _artModifierFactory(this), _svTownModifierFactory(this), _lLavaModifierFactory(this), _subModifierFactory(this), _landerModifierFactory(this), _roverRaceModifierFactory(this) {
+	  _kwSmackerModifierFactory(this), _editCtrlModifierFactory(this), _fillModModifierFactory(this), _aviCtrlModifierFactory(this), _gameModifierFactory(this), _whaleMazeModifierFactory(this), _eyefollowerModifierFactory(this), _smkJumpModifierFactory(this), _balloonModifierFactory(this), _artModifierFactory(this), _svTownModifierFactory(this), _lLavaModifierFactory(this), _subModifierFactory(this), _landerModifierFactory(this), _roverRaceModifierFactory(this) {
 }
 
 KnowWonderPlugIn::~KnowWonderPlugIn() {
@@ -11310,6 +11612,7 @@ void KnowWonderPlugIn::registerModifiers(IPlugInModifierRegistrar *registrar) co
 	registrar->registerPlugInModifier("KWSmacker", &_kwSmackerModifierFactory);
 	registrar->registerPlugInModifier("EditCtrl", &_editCtrlModifierFactory);
 	registrar->registerPlugInModifier("FillMod", &_fillModModifierFactory);
+	registrar->registerPlugInModifier("AVICtrl", &_aviCtrlModifierFactory);
 
 	// Mini-game modifiers from separate Magic School Bus plug-ins
 	static const char *const gameModifierNames[] = {

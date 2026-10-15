@@ -77,11 +77,27 @@ protected:
 	DataReadErrorCode load(PlugIn &plugIn, const PlugInModifier &prefix, DataReader &reader) override;
 };
 
-// FillMod starts with its own u16 revision, which the coded size
-// doesn't count, so its data is read value by value without using it.
+// FillMod and AVICtrl start with their own u16 revision, which the coded size
+// doesn't count, so their data is read value by value without using it.
 struct FillModModifier : public PlugInModifierData {
 	PlugInTypeTaggedValue enableWhen;
 	PlugInTypeTaggedValue disableWhen;
+
+protected:
+	DataReadErrorCode load(PlugIn &plugIn, const PlugInModifier &prefix, DataReader &reader) override;
+};
+
+struct AVICtrlModifier : public PlugInModifierData {
+	AVICtrlModifier();
+
+	PlugInTypeTaggedValue playWhen;
+	PlugInTypeTaggedValue stopWhen;
+	PlugInTypeTaggedValue moviePath;
+	PlugInTypeTaggedValue clickEvent;
+	PlugInTypeTaggedValue clickDest;	// Label with the destination in the label ID
+	PlugInTypeTaggedValue doneEvent;
+	PlugInTypeTaggedValue doneDest;		// Label with the destination in the label ID
+	PlugInTypeTaggedValue messageInfo;	// Integer, always 0
 
 protected:
 	DataReadErrorCode load(PlugIn &plugIn, const PlugInModifier &prefix, DataReader &reader) override;

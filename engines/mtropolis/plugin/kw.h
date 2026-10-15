@@ -24,6 +24,7 @@
 
 #include "mtropolis/modifiers.h"
 #include "mtropolis/modifier_factory.h"
+#include "mtropolis/render.h"
 #include "mtropolis/runtime.h"
 #include "mtropolis/plugin/kw_data.h"
 
@@ -241,6 +242,72 @@ private:
 	Runtime *_runtime;
 	bool _isActive;
 	Common::WeakPtr<RuntimeObject> _hookedElement;
+};
+
+// Plays an AVI movie in a window over the stage at the element's position, the
+// way the original plays it with MCI in a child window. The window takes clicks,
+// which send the click message; the end of the movie sends the done message.
+class AVICtrlModifier : public Modifier, public IPlayMediaSignalReceiver {
+public:
+	AVICtrlModifier();
+	AVICtrlModifier(const AVICtrlModifier &other);
+	~AVICtrlModifier();
+
+	bool load(const PlugInModifierLoaderContext &context, const Data::KW::AVICtrlModifier &data);
+
+	bool respondsToEvent(const Event &evt) const override;
+	VThreadState consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) override;
+
+	void disable(Runtime *runtime) override;
+
+	bool readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) override;
+	MiniscriptInstructionOutcome writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) override;
+
+	void playMedia(Runtime *runtime, Project *project) override;
+
+#ifdef MTROPOLIS_DEBUG_ENABLE
+	const char *debugGetTypeName() const override { return "AVICtrl Modifier"; }
+	SupportStatus debugGetSupportStatus() const override { return kSupportStatusDone; }
+	void debugInspect(IDebugInspectionReport *report) const override;
+#endif
+
+private:
+	class VideoWindow : public Window {
+	public:
+		VideoWindow(const WindowParameters &windowParams, AVICtrlModifier *owner);
+
+		void onMouseDown(int32 x, int32 y, int mouseButton) override;
+		void detachOwner();
+
+	private:
+		AVICtrlModifier *_owner;
+	};
+
+	Common::SharedPtr<Modifier> shallowClone() const override;
+	const char *getDefaultName() const override;
+
+	void linkInternalReferences(ObjectLinkingScope *scope) override;
+	void visitInternalReferences(IStructuralReferenceVisitor *visitor) override;
+
+	void startPlaying(Runtime *runtime);
+	void stopPlaying();
+	void sendMessage(Runtime *runtime, const MessengerSendSpec &spec);
+	void drawFrame(const Graphics::Surface &frame);
+
+	Event _playWhen;
+	Event _stopWhen;
+	MessengerSendSpec _sendOnClick;
+	MessengerSendSpec _sendWhenDone;
+	Common::String _moviePath;
+	bool _ignorePalette;
+
+	Runtime *_runtime;
+	Common::SharedPtr<Video::VideoDecoder> _decoder;
+	Common::SharedPtr<PlayMediaSignaller> _playMediaSignaller;
+	Common::SharedPtr<VideoWindow> _window;
+	Common::Array<byte> _colorMap;	// 15-bit RGB to palette index, for 8-bit display
+	bool _isPlaying;
+	bool _clicked;
 };
 
 class GameModifier : public Modifier {
@@ -2038,6 +2105,7 @@ private:
 	PlugInModifierFactory<KWSmackerModifier, Data::KW::KWSmackerModifier> _kwSmackerModifierFactory;
 	PlugInModifierFactory<EditCtrlModifier, Data::KW::EditCtrlModifier> _editCtrlModifierFactory;
 	PlugInModifierFactory<FillModModifier, Data::KW::FillModModifier> _fillModModifierFactory;
+	PlugInModifierFactory<AVICtrlModifier, Data::KW::AVICtrlModifier> _aviCtrlModifierFactory;
 	PlugInModifierFactory<GameModifier, Data::KW::GameModifier> _gameModifierFactory;
 	PlugInModifierFactory<WhaleMazeModifier, Data::KW::GameModifier> _whaleMazeModifierFactory;
 	PlugInModifierFactory<EyefollowerModifier, Data::KW::GameModifier> _eyefollowerModifierFactory;

@@ -82,6 +82,24 @@ DataReadErrorCode FillModModifier::load(PlugIn &plugIn, const PlugInModifier &pr
 	return kDataReadErrorNone;
 }
 
+AVICtrlModifier::AVICtrlModifier() {
+}
+
+DataReadErrorCode AVICtrlModifier::load(PlugIn &plugIn, const PlugInModifier &prefix, DataReader &reader) {
+	if (prefix.plugInRevision != 1)
+		return kDataReadErrorUnsupportedRevision;
+
+	uint16 revision = 0;
+	if (!reader.readU16(revision) || revision != 1)
+		return kDataReadErrorReadFailed;
+
+	if (!playWhen.load(reader) || !stopWhen.load(reader) || !moviePath.load(reader) || !clickEvent.load(reader)
+		|| !clickDest.load(reader) || !doneEvent.load(reader) || !doneDest.load(reader) || !messageInfo.load(reader))
+		return kDataReadErrorReadFailed;
+
+	return kDataReadErrorNone;
+}
+
 DataReadErrorCode GameModifier::load(PlugIn &plugIn, const PlugInModifier &prefix, DataReader &reader) {
 	if (prefix.plugInRevision != 1)
 		return kDataReadErrorUnsupportedRevision;
