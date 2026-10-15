@@ -169,6 +169,80 @@ private:
 	Common::SharedPtr<KeyboardEventSignaller> _keySignaller;
 };
 
+// Paint-bucket fill on the line-art poster in Magic School Bus Bugs' EcoPost.
+// Each click on the element adds a fill record, and the records are replayed
+// as flood fills right after the element draws, like the original post-draw funk.
+class FillModModifier : public Modifier, public IElementPostRenderHook {
+public:
+	FillModModifier();
+	FillModModifier(const FillModModifier &other);
+	~FillModModifier();
+
+	bool load(const PlugInModifierLoaderContext &context, const Data::KW::FillModModifier &data);
+
+	bool respondsToEvent(const Event &evt) const override;
+	VThreadState consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) override;
+
+	void disable(Runtime *runtime) override;
+
+	bool readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) override;
+	MiniscriptInstructionOutcome writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) override;
+
+	void renderElementPostEffect(VisualElement *element, Window *window) override;
+
+#ifdef MTROPOLIS_DEBUG_ENABLE
+	const char *debugGetTypeName() const override { return "FillMod Modifier"; }
+	SupportStatus debugGetSupportStatus() const override { return kSupportStatusDone; }
+	void debugInspect(IDebugInspectionReport *report) const override;
+#endif
+
+private:
+	enum WritableAttribute {
+		kAttribColor,
+		kAttribUndo,
+		kAttribClear,
+		kAttribSave,
+		kAttribRestore,
+	};
+
+	struct WriteProxy {
+		static MiniscriptInstructionOutcome write(MiniscriptThread *thread, const DynamicValue &value, void *objectRef, uintptr ptrOrOffset);
+		static MiniscriptInstructionOutcome refAttrib(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib);
+		static MiniscriptInstructionOutcome refAttribIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib, const DynamicValue &index);
+	};
+
+	struct Fill {
+		Fill();
+
+		Common::Point point;
+		uint8 r;
+		uint8 g;
+		uint8 b;
+	};
+
+	Common::SharedPtr<Modifier> shallowClone() const override;
+	const char *getDefaultName() const override;
+
+	MiniscriptInstructionOutcome writeAttribute(MiniscriptThread *thread, WritableAttribute attrib, const DynamicValue &value);
+	void activate(Runtime *runtime);
+	void deactivate();
+	void saveFills(MiniscriptThread *thread, Modifier *fileMod) const;
+	void restoreFills(MiniscriptThread *thread, Modifier *fileMod);
+	void floodFill(Graphics::ManagedSurface &surface, const Common::Rect &clipRect, const Fill &fill) const;
+
+	static Modifier *resolveFileModifier(const DynamicValue &value);
+
+	Event _enableWhen;
+	Event _disableWhen;
+
+	Common::Array<Fill> _fills;
+	uint32 _color;	// 0xRRGGBB
+
+	Runtime *_runtime;
+	bool _isActive;
+	Common::WeakPtr<RuntimeObject> _hookedElement;
+};
+
 class GameModifier : public Modifier {
 public:
 	bool load(const PlugInModifierLoaderContext &context, const Data::KW::GameModifier &data);
@@ -1963,6 +2037,7 @@ private:
 	PlugInModifierFactory<DlgMgrClientModifier, Data::KW::DlgMgrClientModifier> _dlgMgrClientModifierFactory;
 	PlugInModifierFactory<KWSmackerModifier, Data::KW::KWSmackerModifier> _kwSmackerModifierFactory;
 	PlugInModifierFactory<EditCtrlModifier, Data::KW::EditCtrlModifier> _editCtrlModifierFactory;
+	PlugInModifierFactory<FillModModifier, Data::KW::FillModModifier> _fillModModifierFactory;
 	PlugInModifierFactory<GameModifier, Data::KW::GameModifier> _gameModifierFactory;
 	PlugInModifierFactory<WhaleMazeModifier, Data::KW::GameModifier> _whaleMazeModifierFactory;
 	PlugInModifierFactory<EyefollowerModifier, Data::KW::GameModifier> _eyefollowerModifierFactory;

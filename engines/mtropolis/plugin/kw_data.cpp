@@ -68,6 +68,20 @@ DataReadErrorCode EditCtrlModifier::load(PlugIn &plugIn, const PlugInModifier &p
 	return kDataReadErrorNone;
 }
 
+DataReadErrorCode FillModModifier::load(PlugIn &plugIn, const PlugInModifier &prefix, DataReader &reader) {
+	if (prefix.plugInRevision != 1)
+		return kDataReadErrorUnsupportedRevision;
+
+	uint16 revision = 0;
+	if (!reader.readU16(revision) || revision != 1)
+		return kDataReadErrorReadFailed;
+
+	if (!enableWhen.load(reader) || !disableWhen.load(reader))
+		return kDataReadErrorReadFailed;
+
+	return kDataReadErrorNone;
+}
+
 DataReadErrorCode GameModifier::load(PlugIn &plugIn, const PlugInModifier &prefix, DataReader &reader) {
 	if (prefix.plugInRevision != 1)
 		return kDataReadErrorUnsupportedRevision;

@@ -583,6 +583,478 @@ const char *EditCtrlModifier::getDefaultName() const {
 	return "EditCtrl";
 }
 
+FillModModifier::Fill::Fill() : r(0), g(0), b(0) {
+}
+
+FillModModifier::FillModModifier() : _color(0xffffff), _runtime(nullptr), _isActive(false) {
+}
+
+FillModModifier::FillModModifier(const FillModModifier &other)
+	: Modifier(other), _enableWhen(other._enableWhen), _disableWhen(other._disableWhen), _fills(other._fills),
+	  _color(other._color), _runtime(nullptr), _isActive(false) {
+}
+
+FillModModifier::~FillModModifier() {
+	deactivate();
+}
+
+bool FillModModifier::load(const PlugInModifierLoaderContext &context, const Data::KW::FillModModifier &data) {
+	return loadDlgMgrEvent(_enableWhen, data.enableWhen) && loadDlgMgrEvent(_disableWhen, data.disableWhen);
+}
+
+bool FillModModifier::respondsToEvent(const Event &evt) const {
+	return _enableWhen.respondsTo(evt) || _disableWhen.respondsTo(evt) || evt.eventType == EventIDs::kParentDisabled
+		|| evt.eventType == EventIDs::kMouseDown;
+}
+
+VThreadState FillModModifier::consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) {
+	const Event &evt = msg->getEvent();
+
+	if (_enableWhen.respondsTo(evt)) {
+		activate(runtime);
+		return kVThreadReturn;
+	}
+
+	if (_disableWhen.respondsTo(evt) || evt.eventType == EventIDs::kParentDisabled) {
+		deactivate();
+		return kVThreadReturn;
+	}
+
+	// Clicks are recorded even while inactive, they just aren't drawn
+	if (evt.eventType == EventIDs::kMouseDown && msg->getValue().getType() == DynamicValueTypes::kPoint) {
+		Fill fill;
+		fill.point = msg->getValue().getPoint();
+		fill.r = (_color >> 16) & 0xff;
+		fill.g = (_color >> 8) & 0xff;
+		fill.b = _color & 0xff;
+		_fills.push_back(fill);
+
+		debug(2, "FillMod: Fill %u at (%i,%i) with %06x", _fills.size(), fill.point.x, fill.point.y, _color);
+		runtime->setSceneGraphDirty();
+	}
+
+	return kVThreadReturn;
+}
+
+void FillModModifier::disable(Runtime *runtime) {
+	deactivate();
+}
+
+void FillModModifier::activate(Runtime *runtime) {
+	if (_isActive)
+		return;
+
+	Structural *owner = findStructuralOwner();
+	if (!owner || !owner->isElement() || !static_cast<Element *>(owner)->isVisual())
+		return;
+
+	static_cast<VisualElement *>(owner)->addPostRenderHook(this);
+	_hookedElement = owner->getSelfReference();
+	_runtime = runtime;
+	_isActive = true;
+	runtime->setSceneGraphDirty();
+}
+
+void FillModModifier::deactivate() {
+	if (!_isActive)
+		return;
+
+	_isActive = false;
+
+	Common::SharedPtr<RuntimeObject> element = _hookedElement.lock();
+	if (element)
+		static_cast<VisualElement *>(element.get())->removePostRenderHook(this);
+	_hookedElement.reset();
+
+	if (_runtime)
+		_runtime->setSceneGraphDirty();
+}
+
+bool FillModModifier::readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) {
+	if (attrib == "numfills") {
+		result.setInt(_fills.size());
+		return true;
+	}
+	if (attrib == "color") {
+		result.setInt(_color);
+		return true;
+	}
+
+	return Modifier::readAttribute(thread, result, attrib);
+}
+
+MiniscriptInstructionOutcome FillModModifier::writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) {
+	static const struct {
+		const char *name;
+		WritableAttribute attrib;
+	} kAttribs[] = {
+		{"color", kAttribColor},
+		{"undo", kAttribUndo},
+		{"clear", kAttribClear},
+		{"save", kAttribSave},
+		{"restore", kAttribRestore},
+	};
+
+	for (const auto &entry : kAttribs) {
+		if (attrib == entry.name) {
+			result.pod.ifc = DynamicValueWriteInterfaceGlue<WriteProxy>::getInstance();
+			result.pod.objectRef = this;
+			result.pod.ptrOrOffset = entry.attrib;
+			return kMiniscriptInstructionOutcomeContinue;
+		}
+	}
+
+	return Modifier::writeRefAttribute(thread, result, attrib);
+}
+
+MiniscriptInstructionOutcome FillModModifier::WriteProxy::write(MiniscriptThread *thread, const DynamicValue &value, void *objectRef, uintptr ptrOrOffset) {
+	return static_cast<FillModModifier *>(objectRef)->writeAttribute(thread, static_cast<WritableAttribute>(ptrOrOffset), value);
+}
+
+MiniscriptInstructionOutcome FillModModifier::WriteProxy::refAttrib(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib) {
+	return kMiniscriptInstructionOutcomeFailed;
+}
+
+MiniscriptInstructionOutcome FillModModifier::WriteProxy::refAttribIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib, const DynamicValue &index) {
+	return kMiniscriptInstructionOutcomeFailed;
+}
+
+MiniscriptInstructionOutcome FillModModifier::writeAttribute(MiniscriptThread *thread, WritableAttribute attrib, const DynamicValue &valueIn) {
+	Runtime *runtime = thread->getRuntime();
+
+	switch (attrib) {
+	case kAttribColor: {
+			// mTropolis 2.0 passes variables by reference
+			DynamicValue value = valueIn;
+			if (value.getType() == DynamicValueTypes::kObject) {
+				Common::SharedPtr<RuntimeObject> obj = value.getObject().object.lock();
+				if (obj && obj->isModifier() && static_cast<Modifier *>(obj.get())->isVariable())
+					static_cast<VariableModifier *>(obj.get())->varGetValue(value);
+			}
+
+			int32 color = 0;
+			if (!value.roundToInt(color))
+				return kMiniscriptInstructionOutcomeFailed;
+
+			_color = static_cast<uint32>(color) & 0xffffff;
+		} break;
+	case kAttribUndo:
+	case kAttribClear:
+		// The original fails on an empty list, but EcoPost checks numfills first
+		if (_fills.empty())
+			break;
+
+		if (attrib == kAttribUndo)
+			_fills.pop_back();
+		else
+			_fills.clear();
+		runtime->setSceneGraphDirty();
+		break;
+	case kAttribSave:
+	case kAttribRestore: {
+			Modifier *fileMod = resolveFileModifier(valueIn);
+			if (!fileMod) {
+				warning("FillMod: %s needs a file modifier", attrib == kAttribSave ? "save" : "restore");
+				return kMiniscriptInstructionOutcomeFailed;
+			}
+
+			if (attrib == kAttribSave)
+				saveFills(thread, fileMod);
+			else
+				restoreFills(thread, fileMod);
+		} break;
+	}
+
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
+Modifier *FillModModifier::resolveFileModifier(const DynamicValue &value) {
+	if (value.getType() != DynamicValueTypes::kObject)
+		return nullptr;
+
+	Common::SharedPtr<RuntimeObject> obj = value.getObject().object.lock();
+	if (!obj || !obj->isModifier())
+		return nullptr;
+
+	Modifier *modifier = static_cast<Modifier *>(obj.get());
+	if (modifier->isVariable()) {
+		DynamicValue varValue;
+		static_cast<VariableModifier *>(modifier)->varGetValue(varValue);
+		if (varValue.getType() != DynamicValueTypes::kObject)
+			return nullptr;
+
+		obj = varValue.getObject().object.lock();
+		if (!obj || !obj->isModifier())
+			return nullptr;
+		modifier = static_cast<Modifier *>(obj.get());
+	}
+
+	return modifier;
+}
+
+void FillModModifier::saveFills(MiniscriptThread *thread, Modifier *fileMod) const {
+	// Written through the file modifier's write attribute, like the original.
+	// Lines end in CR LF (the original wrote LF) so that EcoPost's CR chunk
+	// delimiter reads them back one line at a time.
+	Common::String text = Common::String::format("%u\r\n", _fills.size());
+	for (const Fill &fill : _fills)
+		text += Common::String::format("%u %u %u %u %u\r\n", static_cast<uint16>(fill.point.x), static_cast<uint16>(fill.point.y), fill.r, fill.g, fill.b);
+
+	DynamicValueWriteProxy proxy;
+	if (fileMod->writeRefAttribute(thread, proxy, "write") != kMiniscriptInstructionOutcomeContinue) {
+		warning("FillMod: Couldn't write to '%s'", fileMod->getName().c_str());
+		return;
+	}
+
+	DynamicValue str;
+	str.setString(text);
+	proxy.pod.ifc->write(thread, str, proxy.pod.objectRef, proxy.pod.ptrOrOffset);
+
+	debug(2, "FillMod: Saved %u fills", _fills.size());
+}
+
+void FillModModifier::restoreFills(MiniscriptThread *thread, Modifier *fileMod) {
+	// A chunk may hold several lines (files with LF lines read with a CR
+	// delimiter), so chunks are split into lines before parsing
+	Common::Array<Common::String> lines;
+	uint nextLine = 0;
+
+	auto readLine = [&](Common::String &outLine) -> bool {
+		for (;;) {
+			while (nextLine < lines.size()) {
+				outLine = lines[nextLine++];
+				outLine.trim();
+				if (!outLine.empty())
+					return true;
+			}
+
+			DynamicValue chunk;
+			if (!fileMod->readAttribute(thread, chunk, "readchunk") || chunk.getType() != DynamicValueTypes::kString)
+				return false;
+
+			DynamicValue error;
+			if (chunk.getString().empty() && fileMod->readAttribute(thread, error, "error") && error.getType() == DynamicValueTypes::kInteger && error.getInt() != 0)
+				return false;
+
+			lines.clear();
+			nextLine = 0;
+			Common::String line;
+			for (char c : chunk.getString()) {
+				if (c == '\r' || c == '\n') {
+					lines.push_back(line);
+					line.clear();
+				} else
+					line += c;
+			}
+			lines.push_back(line);
+		}
+	};
+
+	Common::String line;
+	if (!readLine(line)) {
+		warning("FillMod: No fill count to restore");
+		return;
+	}
+
+	uint count = strtoul(line.c_str(), nullptr, 10);
+	uint restored = 0;
+
+	// Records are appended without clearing, like the original
+	for (uint i = 0; i < count; i++) {
+		if (!readLine(line))
+			break;
+
+		uint values[5] = {0, 0, 0, 0, 0};
+		uint numValues = 0;
+		const char *p = line.c_str();
+		while (*p && numValues < 5) {
+			while (*p == ' ' || *p == '\t')
+				p++;
+			if (!*p)
+				break;
+			char *end = nullptr;
+			values[numValues++] = strtoul(p, &end, 10);
+			if (end == p)
+				break;
+			p = end;
+		}
+
+		if (numValues < 5)
+			continue;
+
+		Fill fill;
+		fill.point = Common::Point(static_cast<int16>(values[0]), static_cast<int16>(values[1]));
+		fill.r = values[2] & 0xff;
+		fill.g = values[3] & 0xff;
+		fill.b = values[4] & 0xff;
+		_fills.push_back(fill);
+		restored++;
+	}
+
+	debug(2, "FillMod: Restored %u of %u fills", restored, count);
+}
+
+void FillModModifier::renderElementPostEffect(VisualElement *element, Window *window) {
+	if (_fills.empty())
+		return;
+
+	Graphics::ManagedSurface &surface = *window->getSurface();
+	const Common::Point &origin = element->getCachedAbsoluteOrigin();
+	const Common::Rect &relRect = element->getRelativeRect();
+
+	// The original only clips to the frame buffer. Clipping to the element
+	// keeps a fill in an open region from flooding the whole stage.
+	Common::Rect clipRect(origin.x, origin.y, origin.x + relRect.width(), origin.y + relRect.height());
+	clipRect.clip(Common::Rect(0, 0, surface.w, surface.h));
+	if (clipRect.isEmpty())
+		return;
+
+	for (const Fill &fill : _fills)
+		floodFill(surface, clipRect, fill);
+}
+
+void FillModModifier::floodFill(Graphics::ManagedSurface &surface, const Common::Rect &clipRect, const Fill &fill) const {
+	if (!clipRect.contains(fill.point))
+		return;
+
+	const Graphics::PixelFormat &format = surface.format;
+	const uint bpp = format.bytesPerPixel;
+	if (bpp != 1 && bpp != 2 && bpp != 4)
+		return;
+
+	// Like ExtFloodFill with FLOODFILLBORDER: fill until black. On a palette
+	// display, black is the palette entry closest to it, and the brush is the
+	// closest entry to the fill colour.
+	bool isBorderIndex[256];
+	uint32 fillColor = 0;
+	if (format.isCLUT8()) {
+		const byte *pal = _runtime->getGlobalPalette().getPalette();
+		uint bestBlack = 0, bestFill = 0;
+		int bestBlackDist = INT_MAX, bestFillDist = INT_MAX;
+		for (uint i = 0; i < 256; i++) {
+			int blackDist = pal[i * 3] + pal[i * 3 + 1] + pal[i * 3 + 2];
+			if (blackDist < bestBlackDist) {
+				bestBlackDist = blackDist;
+				bestBlack = i;
+			}
+
+			int dr = pal[i * 3] - fill.r;
+			int dg = pal[i * 3 + 1] - fill.g;
+			int db = pal[i * 3 + 2] - fill.b;
+			int fillDist = dr * dr + dg * dg + db * db;
+			if (fillDist < bestFillDist) {
+				bestFillDist = fillDist;
+				bestFill = i;
+			}
+		}
+
+		for (uint i = 0; i < 256; i++)
+			isBorderIndex[i] = (memcmp(pal + i * 3, pal + bestBlack * 3, 3) == 0);
+		fillColor = bestFill;
+	} else
+		fillColor = format.RGBToColor(fill.r, fill.g, fill.b);
+
+	Graphics::Surface &raw = *surface.surfacePtr();
+
+	auto getPixel = [&](int x, int y) -> uint32 {
+		const byte *ptr = static_cast<const byte *>(raw.getBasePtr(x, y));
+		if (bpp == 1)
+			return *ptr;
+		if (bpp == 2)
+			return *reinterpret_cast<const uint16 *>(ptr);
+		return *reinterpret_cast<const uint32 *>(ptr);
+	};
+
+	auto setPixel = [&](int x, int y) {
+		byte *ptr = static_cast<byte *>(raw.getBasePtr(x, y));
+		if (bpp == 1)
+			*ptr = fillColor;
+		else if (bpp == 2)
+			*reinterpret_cast<uint16 *>(ptr) = fillColor;
+		else
+			*reinterpret_cast<uint32 *>(ptr) = fillColor;
+	};
+
+	auto isBorder = [&](uint32 pixel) -> bool {
+		if (bpp == 1)
+			return isBorderIndex[pixel];
+
+		uint8 r, g, b;
+		format.colorToRGB(pixel, r, g, b);
+		return r == 0 && g == 0 && b == 0;
+	};
+
+	const int width = clipRect.width();
+	const int height = clipRect.height();
+
+	// Visited pixels, so that a fill colour that maps to the region's own
+	// colour can't loop forever
+	Common::Array<bool> visited;
+	visited.resize(width * height);
+	for (uint i = 0; i < visited.size(); i++)
+		visited[i] = false;
+
+	auto canFill = [&](int x, int y) -> bool {
+		return !visited[(y - clipRect.top) * width + (x - clipRect.left)] && !isBorder(getPixel(x, y));
+	};
+
+	// 4-connected scanline fill
+	Common::Array<Common::Point> stack;
+	stack.push_back(fill.point);
+
+	while (!stack.empty()) {
+		Common::Point pt = stack.back();
+		stack.pop_back();
+
+		if (!canFill(pt.x, pt.y))
+			continue;
+
+		int left = pt.x;
+		while (left > clipRect.left && canFill(left - 1, pt.y))
+			left--;
+		int right = pt.x;
+		while (right < clipRect.right - 1 && canFill(right + 1, pt.y))
+			right++;
+
+		for (int x = left; x <= right; x++) {
+			visited[(pt.y - clipRect.top) * width + (x - clipRect.left)] = true;
+			setPixel(x, pt.y);
+		}
+
+		for (int dy = -1; dy <= 1; dy += 2) {
+			int y = pt.y + dy;
+			if (y < clipRect.top || y >= clipRect.top + height)
+				continue;
+
+			bool inRun = false;
+			for (int x = left; x <= right; x++) {
+				bool fillable = canFill(x, y);
+				if (fillable && !inRun)
+					stack.push_back(Common::Point(x, y));
+				inRun = fillable;
+			}
+		}
+	}
+}
+
+#ifdef MTROPOLIS_DEBUG_ENABLE
+void FillModModifier::debugInspect(IDebugInspectionReport *report) const {
+	Modifier::debugInspect(report);
+
+	report->declareDynamic("numFills", Common::String::format("%u", _fills.size()));
+	report->declareDynamic("color", Common::String::format("%06x", _color));
+	report->declareDynamic("active", _isActive ? "true" : "false");
+}
+#endif
+
+Common::SharedPtr<Modifier> FillModModifier::shallowClone() const {
+	return Common::SharedPtr<Modifier>(new FillModModifier(*this));
+}
+
+const char *FillModModifier::getDefaultName() const {
+	return "FillMod";
+}
+
 bool GameModifier::load(const PlugInModifierLoaderContext &context, const Data::KW::GameModifier &data) {
 	if (!loadDlgMgrEvent(_event1, data.enableWhen) || !loadDlgMgrEvent(_event2, data.disableWhen))
 		return false;
@@ -10815,7 +11287,7 @@ const char *DlgMgrClientModifier::getDefaultName() const {
 
 KnowWonderPlugIn::KnowWonderPlugIn()
 	: _strUtilModifierFactory(this), _dlgMgrServerModifierFactory(this), _dlgMgrClientModifierFactory(this),
-	  _kwSmackerModifierFactory(this), _editCtrlModifierFactory(this), _gameModifierFactory(this), _whaleMazeModifierFactory(this), _eyefollowerModifierFactory(this), _smkJumpModifierFactory(this), _balloonModifierFactory(this), _artModifierFactory(this), _svTownModifierFactory(this), _lLavaModifierFactory(this), _subModifierFactory(this), _landerModifierFactory(this), _roverRaceModifierFactory(this) {
+	  _kwSmackerModifierFactory(this), _editCtrlModifierFactory(this), _fillModModifierFactory(this), _gameModifierFactory(this), _whaleMazeModifierFactory(this), _eyefollowerModifierFactory(this), _smkJumpModifierFactory(this), _balloonModifierFactory(this), _artModifierFactory(this), _svTownModifierFactory(this), _lLavaModifierFactory(this), _subModifierFactory(this), _landerModifierFactory(this), _roverRaceModifierFactory(this) {
 }
 
 KnowWonderPlugIn::~KnowWonderPlugIn() {
@@ -10836,6 +11308,7 @@ void KnowWonderPlugIn::registerModifiers(IPlugInModifierRegistrar *registrar) co
 	registrar->registerPlugInModifier("DlgMgrClient", &_dlgMgrClientModifierFactory);
 	registrar->registerPlugInModifier("KWSmacker", &_kwSmackerModifierFactory);
 	registrar->registerPlugInModifier("EditCtrl", &_editCtrlModifierFactory);
+	registrar->registerPlugInModifier("FillMod", &_fillModModifierFactory);
 
 	// Mini-game modifiers from separate Magic School Bus plug-ins
 	static const char *const gameModifierNames[] = {

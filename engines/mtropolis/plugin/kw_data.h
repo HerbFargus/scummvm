@@ -77,6 +77,16 @@ protected:
 	DataReadErrorCode load(PlugIn &plugIn, const PlugInModifier &prefix, DataReader &reader) override;
 };
 
+// FillMod starts with its own u16 revision, which the coded size
+// doesn't count, so its data is read value by value without using it.
+struct FillModModifier : public PlugInModifierData {
+	PlugInTypeTaggedValue enableWhen;
+	PlugInTypeTaggedValue disableWhen;
+
+protected:
+	DataReadErrorCode load(PlugIn &plugIn, const PlugInModifier &prefix, DataReader &reader) override;
+};
+
 // Game-specific modifiers from separate plug-ins (mini-games), which only
 // store enable and disable events.
 struct GameModifier : public PlugInModifierData {
