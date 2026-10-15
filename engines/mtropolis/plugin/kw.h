@@ -2331,6 +2331,9 @@ public:
 	void resolveTargets(Runtime *runtime);
 	bool isQueued() const;
 
+	bool readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) override;
+	MiniscriptInstructionOutcome writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &writeProxy, const Common::String &attrib) override;
+
 #ifdef MTROPOLIS_DEBUG_ENABLE
 	const char *debugGetTypeName() const override { return "DlgMgrClient Modifier"; }
 	SupportStatus debugGetSupportStatus() const override { return kSupportStatusPartial; }
@@ -2345,6 +2348,9 @@ private:
 	void visitInternalReferences(IStructuralReferenceVisitor *visitor) override;
 
 	DlgMgrServerModifier *findServer() const;
+	void start();
+	void stop(Runtime *runtime, bool notifyDone);
+	MiniscriptInstructionOutcome scriptSetActive(MiniscriptThread *thread, const DynamicValue &value);
 
 	Event _playWhen;
 	Event _stopWhen;

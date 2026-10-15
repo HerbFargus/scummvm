@@ -12840,21 +12840,62 @@ VThreadState DlgMgrClientModifier::consumeMessage(Runtime *runtime, const Common
 				return kVThreadReturn;
 		}
 
-		if (!_isQueued) {
-			DlgMgrServerModifier *server = findServer();
-			if (server) {
-				_isQueued = true;
-				server->enqueue(this);
-			} else
-				warning("DlgMgrClient '%s': No dialog manager server is running", getName().c_str());
-		}
+		start();
 	} else if (_stopWhen.respondsTo(evt) || evt.eventType == EventIDs::kParentDisabled) {
-		DlgMgrServerModifier *server = findServer();
-		if (server && _isQueued)
-			server->cancelClient(runtime, this, evt.eventType != EventIDs::kParentDisabled);
+		stop(runtime, evt.eventType != EventIDs::kParentDisabled);
 	}
 
 	return kVThreadReturn;
+}
+
+void DlgMgrClientModifier::start() {
+	if (!_isQueued) {
+		DlgMgrServerModifier *server = findServer();
+		if (server) {
+			_isQueued = true;
+			server->enqueue(this);
+		} else
+			warning("DlgMgrClient '%s': No dialog manager server is running", getName().c_str());
+	}
+}
+
+void DlgMgrClientModifier::stop(Runtime *runtime, bool notifyDone) {
+	DlgMgrServerModifier *server = findServer();
+	if (server && _isQueued)
+		server->cancelClient(runtime, this, notifyDone);
+}
+
+bool DlgMgrClientModifier::readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) {
+	if (attrib == "active") {
+		result.setBool(_isQueued);
+		return true;
+	}
+
+	return Modifier::readAttribute(thread, result, attrib);
+}
+
+MiniscriptInstructionOutcome DlgMgrClientModifier::writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &writeProxy, const Common::String &attrib) {
+	if (attrib == "active") {
+		DynamicValueWriteFuncHelper<DlgMgrClientModifier, &DlgMgrClientModifier::scriptSetActive, true>::create(this, writeProxy);
+		return kMiniscriptInstructionOutcomeContinue;
+	}
+
+	return Modifier::writeRefAttribute(thread, writeProxy, attrib);
+}
+
+// Setting active plays the client's lines or stops them, like its play and stop events (Magic
+// School Bus Animals plays the classroom file cabinet's lines with it)
+MiniscriptInstructionOutcome DlgMgrClientModifier::scriptSetActive(MiniscriptThread *thread, const DynamicValue &value) {
+	DynamicValue converted;
+	if (!value.convertToType(DynamicValueTypes::kBoolean, converted))
+		return kMiniscriptInstructionOutcomeFailed;
+
+	if (converted.getBool())
+		start();
+	else
+		stop(thread->getRuntime(), true);
+
+	return kMiniscriptInstructionOutcomeContinue;
 }
 
 void DlgMgrClientModifier::disable(Runtime *runtime) {
