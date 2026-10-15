@@ -1350,16 +1350,19 @@ void WhaleMazeModifier::stepWhale(Runtime *runtime) {
 	double dy = node.y - _whale.y;
 	double heading = headingTo(_whale.x, _whale.y, node.x, node.y);
 
-	// 10 pixels along an axis, or 5 across with the matching distance down
+	// 10 pixels along an axis, or 5 along the longer axis of a diagonal
 	double stepX = 0.0;
 	double stepY = 0.0;
 	if (dx == 0.0)
 		stepY = (dy > 0.0) ? 10.0 : -10.0;
 	else if (dy == 0.0)
 		stepX = (dx > 0.0) ? 10.0 : -10.0;
-	else {
+	else if (fabs(dx) >= fabs(dy)) {
 		stepX = (dx > 0.0) ? 5.0 : -5.0;
 		stepY = dy * (5.0 / fabs(dx));
+	} else {
+		stepY = (dy > 0.0) ? 5.0 : -5.0;
+		stepX = dx * (5.0 / fabs(dy));
 	}
 
 	if (fabs(stepX) >= fabs(dx) && fabs(stepY) >= fabs(dy)) {
@@ -1398,9 +1401,12 @@ void WhaleMazeModifier::updateOrca(Runtime *runtime, int index, int axisStep, in
 		stepY = (dy > 0.0) ? axisStep : -axisStep;
 	else if (dy == 0.0)
 		stepX = (dx > 0.0) ? axisStep : -axisStep;
-	else {
+	else if (fabs(dx) >= fabs(dy)) {
 		stepX = (dx > 0.0) ? diagonalStep : -diagonalStep;
 		stepY = dy * (diagonalStep / fabs(dx));
+	} else {
+		stepY = (dy > 0.0) ? diagonalStep : -diagonalStep;
+		stepX = dx * (diagonalStep / fabs(dy));
 	}
 
 	if (fabs(stepX) >= fabs(dx) && fabs(stepY) >= fabs(dy)) {
@@ -1427,11 +1433,14 @@ void WhaleMazeModifier::updateOrca(Runtime *runtime, int index, int axisStep, in
 			}
 		} else {
 			if (node.type == 0x37 || node.type == -1 || node.type == -2) {
-				// Surface or dive
-				orca.diving = (node.type == 0x37) ? orca.visible : (node.type == -2);
-				orca.animTicks = 4;
-				if (!orca.diving)
-					orca.visible = true;
+				// 0x37 toggles between surfaced and dived, -1 surfaces and -2 dives
+				bool dive = (node.type == 0x37) ? orca.visible : (node.type == -2);
+				if (dive == orca.visible) {
+					orca.diving = dive;
+					orca.animTicks = 4;
+					if (!dive)
+						orca.visible = true;
+				}
 			}
 			if (node.type == -1 || node.type == -2)
 				mover.dir = -mover.dir;
