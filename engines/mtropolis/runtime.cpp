@@ -34,6 +34,8 @@
 #include "graphics/wincursor.h"
 #include "graphics/maccursor.h"
 #include "graphics/macgui/macfontmanager.h"
+#include "graphics/fonts/ttf.h"
+#include "graphics/font.h"
 
 #include "audio/mixer.h"
 
@@ -7393,6 +7395,41 @@ void Runtime::refreshPlayTime() {
 
 void Runtime::queueProject(const Common::SharedPtr<ProjectDescription> &desc) {
 	_queuedProjectDesc = desc;
+}
+
+const Graphics::Font *Runtime::getWindowsFont(const Common::String &familyName, uint pointSize, bool bold, bool italic) {
+#ifdef USE_FREETYPE2
+	Common::String family = "Sans";
+	if (familyName.equalsIgnoreCase("Times New Roman") || familyName.equalsIgnoreCase("Times"))
+		family = "Serif";
+	else if (familyName.equalsIgnoreCase("Courier New") || familyName.equalsIgnoreCase("Courier"))
+		family = "Mono";
+	else if (!familyName.equalsIgnoreCase("Arial") && !familyName.equalsIgnoreCase("Helvetica") && !familyName.equalsIgnoreCase("MS Sans Serif")
+			 && !familyName.equalsIgnoreCase("Tahoma") && !familyName.equalsIgnoreCase("Verdana"))
+		return nullptr;
+
+	Common::String style = "Regular";
+	if (bold && italic)
+		style = "BoldItalic";
+	else if (bold)
+		style = "Bold";
+	else if (italic)
+		style = "Italic";
+
+	Common::String fileName = Common::String::format("Liberation%s-%s.ttf", family.c_str(), style.c_str());
+	Common::String key = Common::String::format("%s/%u", fileName.c_str(), pointSize);
+
+	Common::HashMap<Common::String, Common::SharedPtr<Graphics::Font> >::const_iterator it = _windowsFonts.find(key);
+	if (it != _windowsFonts.end())
+		return it->_value.get();
+
+	// Windows titles size fonts in points at 96 DPI
+	Common::SharedPtr<Graphics::Font> font(Graphics::loadTTFFontFromArchive(fileName, pointSize, Graphics::kTTFSizeModeCharacter, 96, 96, Graphics::kTTFRenderModeMonochrome));
+	_windowsFonts[key] = font;
+	return font.get();
+#else
+	return nullptr;
+#endif
 }
 
 void Runtime::requestOpenTitle(const Common::String &path) {

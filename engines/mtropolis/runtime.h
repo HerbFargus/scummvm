@@ -63,6 +63,7 @@ namespace Graphics {
 struct WinCursorGroup;
 class MacCursor;
 class MacFontManager;
+class Font;
 class ManagedSurface;
 class Cursor;
 struct PixelFormat;
@@ -1584,6 +1585,9 @@ public:
 
 	// Open Title: requests that the engine boots another title file
 	void requestOpenTitle(const Common::String &path);
+
+	// TrueType stand-in for a Windows font, or null if none is available
+	const Graphics::Font *getWindowsFont(const Common::String &familyName, uint pointSize, bool bold, bool italic);
 	bool takeOpenTitleRequest(Common::String &outPath);
 	void setCanReturnToPreviousTitle(bool canReturn);
 	bool takeReturnToPreviousTitleRequest();
@@ -1906,6 +1910,7 @@ private:
 	Common::Array<VolumeState> _volumes;
 	Common::SharedPtr<ProjectDescription> _queuedProjectDesc;
 	Common::String _openTitleRequest;
+	Common::HashMap<Common::String, Common::SharedPtr<Graphics::Font> > _windowsFonts;
 	bool _canReturnToPreviousTitle = false;
 	bool _returnToPreviousTitleRequested = false;
 	Common::SharedPtr<Project> _project;
