@@ -82,6 +82,8 @@ private:
 	void pushKey(Common::EventManager *events, Common::KeyCode keycode, uint16 ascii);
 	void saveScreenshot(OSystem *system, const Common::String &path);
 	void probe(Structural *structural, const Common::Point &pt);
+	void dumpTree(Structural *structural, int depth);
+	void dumpModifierTree(Modifier *modifier, int depth);
 	static VisualElement *findVisual(Structural *structural, const Common::String &name);
 	void pushClick(Common::EventManager *events, const Common::Point &pt);
 
@@ -150,6 +152,30 @@ void TestInputScript::probe(Structural *structural, const Common::Point &pt) {
 
 	for (const Common::SharedPtr<Structural> &child : structural->getChildren())
 		probe(child.get(), pt);
+}
+
+// Log an element's modifiers and children, with their GUIDs
+void TestInputScript::dumpTree(Structural *structural, int depth) {
+	Common::String indent;
+	for (int i = 0; i < depth; i++)
+		indent += "  ";
+	debug(1, "Test input: Tree %s'%s' %x (element)", indent.c_str(), structural->getName().c_str(), structural->getStaticGUID());
+	for (const Common::SharedPtr<Modifier> &modifier : structural->getModifiers())
+		dumpModifierTree(modifier.get(), depth + 1);
+	for (const Common::SharedPtr<Structural> &child : structural->getChildren())
+		dumpTree(child.get(), depth + 1);
+}
+
+void TestInputScript::dumpModifierTree(Modifier *modifier, int depth) {
+	Common::String indent;
+	for (int i = 0; i < depth; i++)
+		indent += "  ";
+	debug(1, "Test input: Tree %s'%s' %x (modifier)", indent.c_str(), modifier->getName().c_str(), modifier->getStaticGUID());
+	IModifierContainer *container = modifier->getChildContainer();
+	if (container) {
+		for (const Common::SharedPtr<Modifier> &child : container->getModifiers())
+			dumpModifierTree(child.get(), depth + 1);
+	}
 }
 
 VisualElement *TestInputScript::findVisual(Structural *structural, const Common::String &name) {
@@ -237,6 +263,17 @@ void TestInputScript::update(OSystem *system, Runtime *runtime, Engine *engine) 
 				warning("Test input: No element '%s'", arg.c_str());
 			}
 			_waitUntil = now + 100;
+		} else if (cmd == "tree") {
+			VisualElement *element = nullptr;
+			if (runtime->getActiveMainScene())
+				element = findVisual(runtime->getActiveMainScene().get(), arg);
+			if (!element && runtime->getActiveSharedScene())
+				element = findVisual(runtime->getActiveSharedScene().get(), arg);
+
+			if (element)
+				dumpTree(element, 0);
+			else
+				warning("Test input: No element '%s'", arg.c_str());
 		} else if (cmd == "type") {
 			for (uint i = 0; i < arg.size(); i++) {
 				char c = arg[i];
