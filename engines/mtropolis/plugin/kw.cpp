@@ -308,11 +308,11 @@ void KWSmackerModifier::visitInternalReferences(IStructuralReferenceVisitor *vis
 	_sendWhenDone.visitInternalReferences(visitor);
 }
 
-EditCtrlModifier::EditCtrlModifier() : _textLimit(16), _runtime(nullptr), _isShown(false) {
+EditCtrlModifier::EditCtrlModifier() : _textLimit(16), _runtime(nullptr), _isShown(false), _isEnabled(true) {
 }
 
 EditCtrlModifier::EditCtrlModifier(const EditCtrlModifier &other)
-	: Modifier(other), _text(other._text), _textLimit(other._textLimit), _runtime(nullptr), _isShown(false) {
+	: Modifier(other), _text(other._text), _textLimit(other._textLimit), _runtime(nullptr), _isShown(false), _isEnabled(true) {
 }
 
 EditCtrlModifier::~EditCtrlModifier() {
@@ -323,11 +323,19 @@ bool EditCtrlModifier::load(const PlugInModifierLoaderContext &context, const Da
 	return true;
 }
 
+// The original's edit window is live from the start of the scene, so scripts only enable it
+// again after disabling it for a dialog
 bool EditCtrlModifier::respondsToEvent(const Event &evt) const {
-	return false;
+	return evt.eventType == EventIDs::kParentEnabled || evt.eventType == EventIDs::kParentDisabled;
 }
 
 VThreadState EditCtrlModifier::consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) {
+	if (msg->getEvent().eventType == EventIDs::kParentEnabled) {
+		_isEnabled = true;
+		show(runtime);
+	} else if (msg->getEvent().eventType == EventIDs::kParentDisabled)
+		hide();
+
 	return kVThreadReturn;
 }
 
@@ -362,9 +370,10 @@ void EditCtrlModifier::hide() {
 }
 
 void EditCtrlModifier::sendNamedMessage(Runtime *runtime, const char *messageName) {
+	// Older versions of the plug-in send none of these, and their titles have no such messages
 	uint32 messageID = 0;
 	if (!runtime->getProject()->findAuthorMessageID(messageName, messageID)) {
-		warning("EditCtrl: No author message named '%s'", messageName);
+		debug(2, "EditCtrl: No author message named '%s'", messageName);
 		return;
 	}
 
@@ -381,7 +390,7 @@ void EditCtrlModifier::sendNamedMessage(Runtime *runtime, const char *messageNam
 }
 
 void EditCtrlModifier::onKeyboardEvent(Runtime *runtime, const KeyboardInputEvent &keyEvt) {
-	if (keyEvt.getKeyEventType() != Common::EVENT_KEYDOWN)
+	if (keyEvt.getKeyEventType() != Common::EVENT_KEYDOWN || !_isEnabled)
 		return;
 
 	const Common::KeyState &key = keyEvt.getKeyState();
@@ -428,27 +437,32 @@ void EditCtrlModifier::renderPostEffect(Graphics::ManagedSurface &surface) const
 	if (rect.isEmpty())
 		return;
 
+	// Windows draws a disabled edit control as grey text on the 3D face colour
+	const ColorRGB8 backRGB = _isEnabled ? ColorRGB8(255, 255, 255) : ColorRGB8(192, 192, 192);
+	const ColorRGB8 textRGB = _isEnabled ? ColorRGB8(0, 0, 0) : ColorRGB8(128, 128, 128);
+
 	uint32 white, black;
 	if (surface.format.isCLUT8()) {
 		const byte *pal = _runtime->getGlobalPalette().getPalette();
-		uint bestWhite = 0, bestBlack = 0;
-		int bestWhiteDist = INT_MAX, bestBlackDist = INT_MAX;
+		uint bestBack = 0, bestText = 0;
+		int bestBackDist = INT_MAX, bestTextDist = INT_MAX;
 		for (uint i = 0; i < 256; i++) {
-			int sum = pal[i * 3] + pal[i * 3 + 1] + pal[i * 3 + 2];
-			if (765 - sum < bestWhiteDist) {
-				bestWhiteDist = 765 - sum;
-				bestWhite = i;
+			int backDist = ABS(pal[i * 3] - backRGB.r) + ABS(pal[i * 3 + 1] - backRGB.g) + ABS(pal[i * 3 + 2] - backRGB.b);
+			int textDist = ABS(pal[i * 3] - textRGB.r) + ABS(pal[i * 3 + 1] - textRGB.g) + ABS(pal[i * 3 + 2] - textRGB.b);
+			if (backDist < bestBackDist) {
+				bestBackDist = backDist;
+				bestBack = i;
 			}
-			if (sum < bestBlackDist) {
-				bestBlackDist = sum;
-				bestBlack = i;
+			if (textDist < bestTextDist) {
+				bestTextDist = textDist;
+				bestText = i;
 			}
 		}
-		white = bestWhite;
-		black = bestBlack;
+		white = bestBack;
+		black = bestText;
 	} else {
-		white = surface.format.RGBToColor(255, 255, 255);
-		black = surface.format.RGBToColor(0, 0, 0);
+		white = surface.format.RGBToColor(backRGB.r, backRGB.g, backRGB.b);
+		black = surface.format.RGBToColor(textRGB.r, textRGB.g, textRGB.b);
 	}
 
 	surface.fillRect(rect, white);
@@ -458,7 +472,7 @@ void EditCtrlModifier::renderPostEffect(Graphics::ManagedSurface &surface) const
 	font->drawString(&surface, _text, rect.left + 2, y, rect.width() - 4, black);
 
 	// Caret
-	if ((_runtime->getRealTime() / 500) % 2 == 0) {
+	if (_isEnabled && (_runtime->getRealTime() / 500) % 2 == 0) {
 		int caretX = rect.left + 2 + font->getStringWidth(_text);
 		if (caretX < rect.right)
 			surface.vLine(caretX, y, y + font->getFontHeight() - 1, black);
@@ -528,20 +542,22 @@ void EditCtrlModifier::writeAttribute(Runtime *runtime, WritableAttribute attrib
 				_text = value.getString();
 			else if (value.convertToType(DynamicValueTypes::kString, converted))
 				_text = converted.getString();
-			if (_text.size() > _textLimit)
-				_text = _text.substr(0, _textLimit);
+			// Only typing is limited, as with a Windows edit control
 			runtime->setSceneGraphDirty();
 		} break;
 	case kAttribTextLimit: {
+			// The original uses the low byte, and 0 is the Windows maximum
 			int32 limit = 0;
-			if (value.roundToInt(limit) && limit > 0)
-				_textLimit = limit;
+			if (value.roundToInt(limit))
+				_textLimit = (limit & 0xff) ? (limit & 0xff) : 0x7ffe;
 		} break;
 	case kAttribEnable:
+		_isEnabled = true;
 		show(runtime);
 		break;
 	case kAttribDisable:
-		hide();
+		_isEnabled = false;
+		runtime->setSceneGraphDirty();
 		break;
 	case kAttribUpdate:
 	case kAttribSetFocus:

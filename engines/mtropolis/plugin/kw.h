@@ -165,6 +165,7 @@ private:
 
 	Runtime *_runtime;
 	bool _isShown;
+	bool _isEnabled;	// Disabled controls stay shown, greyed and without input
 	Common::SharedPtr<KeyboardEventSignaller> _keySignaller;
 };
 
