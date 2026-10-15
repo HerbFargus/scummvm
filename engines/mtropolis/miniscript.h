@@ -301,7 +301,9 @@ namespace MiniscriptInstructions {
 		MiniscriptInstructionOutcome execute(MiniscriptThread *thread) const override;
 	};
 
-	class VectorCreate : public UnimplementedInstruction {
+	class VectorCreate : public MiniscriptInstruction {
+	private:
+		MiniscriptInstructionOutcome execute(MiniscriptThread *thread) const override;
 	};
 
 	class GetChild : public MiniscriptInstruction {
