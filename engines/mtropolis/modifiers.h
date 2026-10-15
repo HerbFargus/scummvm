@@ -141,6 +141,8 @@ public:
 
 	void disable(Runtime *runtime) override {}
 
+	bool isColorTable() const override { return true; }
+
 #ifdef MTROPOLIS_DEBUG_ENABLE
 	const char *debugGetTypeName() const override { return "Color Table Modifier"; }
 	SupportStatus debugGetSupportStatus() const override { return kSupportStatusDone; }

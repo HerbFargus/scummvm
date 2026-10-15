@@ -316,15 +316,14 @@ VThreadState ColorTableModifier::consumeMessage(Runtime *runtime, const Common::
 
 				Palette palette(colors);
 
-				if (runtime->getFakeColorDepth() <= kColorDepthMode8Bit) {
-					runtime->setGlobalPalette(palette);
+				// Above 8-bit, a color table on a visual element only colors that element.  One on a
+				// subsection or section still sets the palette for all 8-bit art (Magic School Bus Bugs'
+				// Build a Bug is a thousands-of-colors title with 8-bit art and a subsection color table)
+				Structural *structural = this->findStructuralOwner();
+				if (runtime->getFakeColorDepth() > kColorDepthMode8Bit && structural != nullptr && structural->isElement() && static_cast<Element *>(structural)->isVisual()) {
+					static_cast<VisualElement *>(structural)->setPalette(Common::SharedPtr<Palette>(new Palette(palette)));
 				} else {
-					Structural *structural = this->findStructuralOwner();
-					if (structural != nullptr && structural->isElement() && static_cast<Element *>(structural)->isVisual()) {
-						static_cast<VisualElement *>(structural)->setPalette(Common::SharedPtr<Palette>(new Palette(palette)));
-					} else {
-						warning("Attempted to apply a color table to a non-element");
-					}
+					runtime->setGlobalPalette(palette);
 				}
 			} else {
 				error("Color table modifier applied an asset that wasn't a color table");

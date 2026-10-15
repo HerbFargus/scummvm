@@ -1870,6 +1870,7 @@ private:
 	static void recursiveFindMouseCollision(Structural *&bestResult, int32 &bestLayer, int32 &bestStackHeight, bool &bestDirect, Structural *candidate, int32 stackHeight, int32 relativeX, int32 relativeY, MouseInteractivityTestType testType, const Structural *excluded);
 
 	void queueEventAsLowLevelSceneStateTransitionAction(const Event &evt, Structural *root, bool cascade, bool relay);
+	void queueAncestorColorTablesAsLowLevelSceneStateTransitionAction(const Event &evt, Structural *scene);
 
 	void loadScene(const Common::SharedPtr<Structural> &scene);
 
@@ -3100,6 +3101,7 @@ public:
 	virtual bool isBehavior() const;
 	virtual bool isCompoundVariable() const;
 	virtual bool isKeyboardMessenger() const;
+	virtual bool isColorTable() const;
 
 	// Runs a script modifier with a value as its incoming data, for list forAllDo
 	virtual bool runWithIncomingData(Runtime *runtime, const DynamicValue &value);

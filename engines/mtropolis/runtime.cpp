@@ -5709,6 +5709,7 @@ void Runtime::executeCompleteTransitionToScene(const Common::SharedPtr<Structura
 	{
 		_pendingLowLevelTransitions.push_back(LowLevelSceneStateTransitionAction(targetScene, LowLevelSceneStateTransitionAction::kLoad));
 		queueEventAsLowLevelSceneStateTransitionAction(Event(EventIDs::kParentEnabled, 0), targetScene.get(), true, true);
+		queueAncestorColorTablesAsLowLevelSceneStateTransitionAction(Event(EventIDs::kSceneStarted, 0), targetScene.get());
 		queueEventAsLowLevelSceneStateTransitionAction(Event(EventIDs::kSceneStarted, 0), targetScene.get(), true, true);
 
 		SceneStackEntry sceneEntry;
@@ -5855,6 +5856,7 @@ void Runtime::executeHighLevelSceneTransition(const HighLevelSceneTransition &tr
 					if (!sceneAlreadyInStack) {
 						_pendingLowLevelTransitions.push_back(LowLevelSceneStateTransitionAction(targetScene, LowLevelSceneStateTransitionAction::kLoad));
 						queueEventAsLowLevelSceneStateTransitionAction(Event(EventIDs::kParentEnabled, 0), targetScene.get(), true, true);
+						queueAncestorColorTablesAsLowLevelSceneStateTransitionAction(Event(EventIDs::kSceneStarted, 0), targetScene.get());
 						queueEventAsLowLevelSceneStateTransitionAction(Event(EventIDs::kSceneStarted, 0), targetScene.get(), true, true);
 
 						SceneStackEntry sceneEntry;
@@ -6091,6 +6093,21 @@ void Runtime::queueEventAsLowLevelSceneStateTransitionAction(const Event &evt, S
 	Common::SharedPtr<MessageProperties> props(new MessageProperties(evt, DynamicValue(), Common::WeakPtr<RuntimeObject>()));
 	Common::SharedPtr<MessageDispatch> msg(new MessageDispatch(props, root, cascade, relay, false));
 	_pendingLowLevelTransitions.push_back(LowLevelSceneStateTransitionAction(msg));
+}
+
+// Scene messages only cascade down from the scene, but a color table on the scene's subsection,
+// section or project still applies when the scene starts (Magic School Bus Bugs' Build a Bug keeps
+// its only color table on the subsection)
+void Runtime::queueAncestorColorTablesAsLowLevelSceneStateTransitionAction(const Event &evt, Structural *scene) {
+	for (Structural *ancestor = scene->getParent(); ancestor != nullptr; ancestor = ancestor->getParent()) {
+		for (const Common::SharedPtr<Modifier> &modifier : ancestor->getModifiers()) {
+			if (modifier->isColorTable() && modifier->respondsToEvent(evt)) {
+				Common::SharedPtr<MessageProperties> props(new MessageProperties(evt, DynamicValue(), Common::WeakPtr<RuntimeObject>()));
+				Common::SharedPtr<MessageDispatch> msg(new MessageDispatch(props, modifier.get(), false, true, false));
+				_pendingLowLevelTransitions.push_back(LowLevelSceneStateTransitionAction(msg));
+			}
+		}
+	}
 }
 
 void Runtime::loadScene(const Common::SharedPtr<Structural> &scene) {
@@ -10735,6 +10752,10 @@ bool Modifier::runWithIncomingData(Runtime *runtime, const DynamicValue &value) 
 }
 
 bool Modifier::isKeyboardMessenger() const {
+	return false;
+}
+
+bool Modifier::isColorTable() const {
 	return false;
 }
 
