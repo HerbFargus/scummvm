@@ -109,6 +109,7 @@ public:
 
 	bool respondsToEvent(const Event &evt) const override;
 	VThreadState consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) override;
+	bool runWithIncomingData(Runtime *runtime, const DynamicValue &value) override;
 
 	void disable(Runtime *runtime) override {}
 

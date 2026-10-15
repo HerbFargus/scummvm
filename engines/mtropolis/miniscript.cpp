@@ -2553,6 +2553,15 @@ MiniscriptInstructionOutcome MiniscriptThread::IncomingDataWriteInterface::write
 }
 
 MiniscriptInstructionOutcome MiniscriptThread::IncomingDataWriteInterface::refAttrib(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib) {
+	// A variable passed by reference in mTropolis 2.0 has its attributes written, such as the
+	// start of a range in Magic School Bus Bugs's random number script
+	const DynamicValue &incoming = thread->_msgProps->getValue();
+	if (thread->getRuntime()->getProject()->getRuntimeVersion() >= kRuntimeVersion200 && incoming.getType() == DynamicValueTypes::kObject) {
+		Common::SharedPtr<RuntimeObject> obj = incoming.getObject().object.lock();
+		if (obj && obj->isModifier() && static_cast<Modifier *>(obj.get())->isVariable())
+			return obj->writeRefAttribute(thread, proxy, attrib);
+	}
+
 	// TODO: Generic refAttrib for dynamic values
 	return kMiniscriptInstructionOutcomeFailed;
 }

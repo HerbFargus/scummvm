@@ -10692,6 +10692,10 @@ bool Modifier::isCompoundVariable() const {
 	return false;
 }
 
+bool Modifier::runWithIncomingData(Runtime *runtime, const DynamicValue &value) {
+	return false;
+}
+
 bool Modifier::isKeyboardMessenger() const {
 	return false;
 }

@@ -259,6 +259,13 @@ VThreadState MiniscriptModifier::consumeMessage(Runtime *runtime, const Common::
 	return kVThreadReturn;
 }
 
+bool MiniscriptModifier::runWithIncomingData(Runtime *runtime, const DynamicValue &value) {
+	Common::SharedPtr<MessageProperties> msg(new MessageProperties(_enableWhen, value, getSelfReference()));
+	Common::SharedPtr<MiniscriptThread> thread(new MiniscriptThread(runtime, msg, _program, _references, this));
+	runtime->getVThread().pushCoroutine<MiniscriptThread::ResumeThreadCoroutine>(thread);
+	return true;
+}
+
 Common::SharedPtr<Modifier> MiniscriptModifier::shallowClone() const {
 	MiniscriptModifier *clonePtr = new MiniscriptModifier(*this);
 	Common::SharedPtr<Modifier> clone(clonePtr);

@@ -3100,6 +3100,9 @@ public:
 	virtual bool isBehavior() const;
 	virtual bool isCompoundVariable() const;
 	virtual bool isKeyboardMessenger() const;
+
+	// Runs a script modifier with a value as its incoming data, for list forAllDo
+	virtual bool runWithIncomingData(Runtime *runtime, const DynamicValue &value);
 	virtual Common::SharedPtr<ModifierSaveLoad> getSaveLoad(Runtime *runtime);
 
 	bool isModifier() const override;

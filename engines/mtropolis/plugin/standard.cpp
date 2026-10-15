@@ -1143,8 +1143,35 @@ MiniscriptInstructionOutcome ListVariableModifier::writeRefAttribute(MiniscriptT
 		DynamicValueWriteFuncHelper<ListVariableModifier, &ListVariableModifier::scriptSetCount, true>::create(this, writeProxy);
 		return kMiniscriptInstructionOutcomeContinue;
 	}
+	if (attrib == "foralldo") {
+		DynamicValueWriteFuncHelper<ListVariableModifier, &ListVariableModifier::scriptForAllDo, true>::create(this, writeProxy);
+		return kMiniscriptInstructionOutcomeContinue;
+	}
 
 	return VariableModifier::writeRefAttribute(thread, writeProxy, attrib);
+}
+
+// mTropolis 2.0: runs a script modifier once for each item, with the item as its incoming data
+MiniscriptInstructionOutcome ListVariableModifier::scriptForAllDo(MiniscriptThread *thread, const DynamicValue &value) {
+	if (value.getType() != DynamicValueTypes::kObject)
+		return kMiniscriptInstructionOutcomeFailed;
+
+	Common::SharedPtr<RuntimeObject> obj = value.getObject().object.lock();
+	if (!obj || !obj->isModifier())
+		return kMiniscriptInstructionOutcomeFailed;
+
+	Modifier *modifier = static_cast<Modifier *>(obj.get());
+	const Common::SharedPtr<DynamicList> list = static_cast<ListVariableStorage *>(_storage.get())->_list;
+
+	// Tasks run last pushed first, so the items are pushed backwards to run in order
+	for (size_t i = list->getSize(); i > 0; i--) {
+		DynamicValue item;
+		list->getAtIndex(i - 1, item);
+		if (!modifier->runWithIncomingData(thread->getRuntime(), item))
+			return kMiniscriptInstructionOutcomeFailed;
+	}
+
+	return kMiniscriptInstructionOutcomeContinue;
 }
 
 MiniscriptInstructionOutcome ListVariableModifier::writeRefAttributeIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &writeProxy, const Common::String &attrib, const DynamicValue &index) {
