@@ -3067,6 +3067,11 @@ Modifier *CompoundVariableModifier::findChildByName(Runtime *runtime, const Comm
 			return modifier;
 	}
 
+	for (const Common::SharedPtr<Modifier> &modifier : _children) {
+		if (scriptNameKeyEqual(modifier->getName(), name))
+			return modifier.get();
+	}
+
 	return nullptr;
 }
 

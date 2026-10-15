@@ -404,6 +404,26 @@ Common::String toCaseInsensitive(const Common::String &str) {
 	return Common::String(&lowered[0], strLen);
 }
 
+// The player looks up the objects that scripts name by a key of the first 16 characters of the
+// name, so longer names match on those alone. Magic School Bus Animals relies on this with
+// names that differ after that (reefEcoBrainSponges for reefEcoBrainSponge, lstoCurrentInsets
+// for lstoCurrentInset, WandaClassroomPose for WandaClassroomPose1). Lookups try an exact
+// match first and this second.
+bool scriptNameKeyEqual(const Common::String &name, const Common::String &scriptName) {
+	const size_t kKeyLength = 16;
+
+	// Names shorter than the key only match exactly
+	if (name.size() < kKeyLength || scriptName.size() < kKeyLength)
+		return false;
+
+	for (size_t i = 0; i < kKeyLength; i++) {
+		if (invariantToLower(name[i]) != invariantToLower(scriptName[i]))
+			return false;
+	}
+
+	return true;
+}
+
 bool caseInsensitiveEqual(const Common::String& str1, const Common::String& str2) {
 	size_t length1 = str1.size();
 	size_t length2 = str2.size();
@@ -3648,21 +3668,45 @@ bool Structural::readAttribute(MiniscriptThread *thread, DynamicValue &result, c
 	}
 
 	// Traverse children (modifiers must be first)
-	for (const Common::SharedPtr<Modifier> &modifier : _modifiers) {
-		if (caseInsensitiveEqual(modifier->getName(), attrib)) {
-			result.setObject(modifier);
-			return true;
-		}
+	if (Modifier *modifier = findChildModifierForScript(attrib)) {
+		result.setObject(modifier->getSelfReference());
+		return true;
 	}
 
-	for (const Common::SharedPtr<Structural> &child : _children) {
-		if (caseInsensitiveEqual(child->getName(), attrib)) {
-			result.setObject(child);
-			return true;
-		}
+	if (Structural *child = findChildForScript(attrib)) {
+		result.setObject(child->getSelfReference());
+		return true;
 	}
 
 	return false;
+}
+
+Modifier *Structural::findChildModifierForScript(const Common::String &name) const {
+	for (const Common::SharedPtr<Modifier> &modifier : _modifiers) {
+		if (caseInsensitiveEqual(modifier->getName(), name))
+			return modifier.get();
+	}
+
+	for (const Common::SharedPtr<Modifier> &modifier : _modifiers) {
+		if (scriptNameKeyEqual(modifier->getName(), name))
+			return modifier.get();
+	}
+
+	return nullptr;
+}
+
+Structural *Structural::findChildForScript(const Common::String &name) const {
+	for (const Common::SharedPtr<Structural> &child : _children) {
+		if (caseInsensitiveEqual(child->getName(), name))
+			return child.get();
+	}
+
+	for (const Common::SharedPtr<Structural> &child : _children) {
+		if (scriptNameKeyEqual(child->getName(), name))
+			return child.get();
+	}
+
+	return nullptr;
 }
 
 MiniscriptInstructionOutcome Structural::writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) {
@@ -3724,18 +3768,14 @@ MiniscriptInstructionOutcome Structural::writeRefAttribute(MiniscriptThread *thr
 
 	// Attempt to resolve as a child object
 	// Modifiers are first, then structural
-	for (const Common::SharedPtr<Modifier> &modifier : _modifiers) {
-		if (caseInsensitiveEqual(modifier->getName(), attrib)) {
-			DynamicValueWriteObjectHelper::create(modifier.get(), result);
-			return kMiniscriptInstructionOutcomeContinue;
-		}
+	if (Modifier *modifier = findChildModifierForScript(attrib)) {
+		DynamicValueWriteObjectHelper::create(modifier, result);
+		return kMiniscriptInstructionOutcomeContinue;
 	}
 
-	for (const Common::SharedPtr<Structural> &child : _children) {
-		if (caseInsensitiveEqual(child->getName(), attrib)) {
-			DynamicValueWriteObjectHelper::create(child.get(), result);
-			return kMiniscriptInstructionOutcomeContinue;
-		}
+	if (Structural *child = findChildForScript(attrib)) {
+		DynamicValueWriteObjectHelper::create(child, result);
+		return kMiniscriptInstructionOutcomeContinue;
 	}
 
 	return RuntimeObject::writeRefAttribute(thread, result, attrib);
@@ -3782,10 +3822,8 @@ bool Structural::readAttributeIndexed(MiniscriptThread *thread, DynamicValue &re
 	}
 
 	// Indexing a variable by name indexes its value
-	for (const Common::SharedPtr<Modifier> &modifier : _modifiers) {
-		if (caseInsensitiveEqual(modifier->getName(), attrib))
-			return modifier->readAttributeIndexed(thread, result, "value", index);
-	}
+	if (Modifier *modifier = findChildModifierForScript(attrib))
+		return modifier->readAttributeIndexed(thread, result, "value", index);
 
 	return RuntimeObject::readAttributeIndexed(thread, result, attrib, index);
 }
@@ -3808,10 +3846,8 @@ MiniscriptInstructionOutcome Structural::writeRefAttributeIndexed(MiniscriptThre
 		return kMiniscriptInstructionOutcomeContinue;
 	}
 
-	for (const Common::SharedPtr<Modifier> &modifier : _modifiers) {
-		if (caseInsensitiveEqual(modifier->getName(), attrib))
-			return modifier->writeRefAttributeIndexed(thread, writeProxy, "value", index);
-	}
+	if (Modifier *modifier = findChildModifierForScript(attrib))
+		return modifier->writeRefAttributeIndexed(thread, writeProxy, "value", index);
 
 	return RuntimeObject::writeRefAttributeIndexed(thread, writeProxy, attrib, index);
 }
@@ -10693,6 +10729,11 @@ Modifier *Modifier::findChildModifierByName(const Common::String &name) {
 
 	for (const Common::SharedPtr<Modifier> &child : container->getModifiers()) {
 		if (caseInsensitiveEqual(child->getName(), name))
+			return child.get();
+	}
+
+	for (const Common::SharedPtr<Modifier> &child : container->getModifiers()) {
+		if (scriptNameKeyEqual(child->getName(), name))
 			return child.get();
 	}
 

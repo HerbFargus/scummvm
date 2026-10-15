@@ -122,6 +122,7 @@ class DebugPrimaryTaskList;
 char invariantToLower(char c);
 Common::String toCaseInsensitive(const Common::String &str);
 bool caseInsensitiveEqual(const Common::String &str1, const Common::String &str2);
+bool scriptNameKeyEqual(const Common::String &name, const Common::String &scriptName);
 size_t caseInsensitiveFind(const Common::String &stringToSearch, const Common::String &stringToFind);
 
 enum ColorDepthMode {
@@ -2253,6 +2254,11 @@ public:
 	Structural *getParent() const;
 	Structural *findNextSibling() const;
 	Structural *findPrevSibling() const;
+
+	// Child lookups by the names in scripts
+	Modifier *findChildModifierForScript(const Common::String &name) const;
+	Structural *findChildForScript(const Common::String &name) const;
+
 	void setParent(Structural *parent);
 
 	// Helper that finds the scene containing the structural object, or itself if it is the scene
