@@ -582,6 +582,14 @@ MiniscriptInstructionOutcome Set::execute(MiniscriptThread *thread) const {
 		uint pushCount = thread->getRuntime()->getVThread().getPushCount();
 		outcome = proxy.pod.ifc->write(thread, srcValue.value, proxy.pod.objectRef, proxy.pod.ptrOrOffset);
 		if (outcome == kMiniscriptInstructionOutcomeFailed) {
+			// mTropolis 2.0 carries on after assigning a list to a variable that can't hold it
+			// (Magic School Bus Bugs initializes an integer with a list), leaving it unchanged
+			if (srcValue.value.getType() == DynamicValueTypes::kList && thread->getRuntime()->getProject()->getRuntimeVersion() >= kRuntimeVersion200) {
+				debug(2, "Miniscript: '%s' assigned a list to a value that can't hold it", thread->getModifier()->getName().c_str());
+				thread->popValues(2);
+				return kMiniscriptInstructionOutcomeContinue;
+			}
+
 			thread->error("Failed to assign value to proxy");
 			return outcome;
 		}
