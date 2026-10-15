@@ -2547,21 +2547,33 @@ void TextLabelElement::visitInternalReferences(IStructuralReferenceVisitor *visi
 	VisualElement::visitInternalReferences(visitor);
 }
 
-MiniscriptInstructionOutcome TextLabelElement::scriptSetText(MiniscriptThread *thread, const DynamicValue &value) {
-	// Numbers are shown as text, as in Magic School Bus Volcano's high scores and Mars's age
-	// on Mars, and nothing (an empty message value) as no text
+// Numbers are shown as text, as in Magic School Bus Volcano's high scores and Mars's age on Mars,
+// and nothing (an empty message value) as no text
+static bool textLabelValueToString(const DynamicValue &value, Common::String &outStr) {
 	DynamicValue derefValue = value.dereference();
-	if (derefValue.getType() == DynamicValueTypes::kInteger) {
-		_text = Common::String::format("%i", static_cast<int>(derefValue.getInt()));
-	} else if (derefValue.getType() == DynamicValueTypes::kFloat) {
-		_text = Common::String::format("%g", derefValue.getFloat());
-	} else if (derefValue.getType() == DynamicValueTypes::kBoolean) {
-		_text = derefValue.getBool() ? "true" : "false";
-	} else if (derefValue.getType() == DynamicValueTypes::kNull) {
-		_text.clear();
-	} else if (derefValue.getType() == DynamicValueTypes::kString) {
-		_text = derefValue.getString();
-	} else {
+	switch (derefValue.getType()) {
+	case DynamicValueTypes::kInteger:
+		outStr = Common::String::format("%i", static_cast<int>(derefValue.getInt()));
+		return true;
+	case DynamicValueTypes::kFloat:
+		outStr = Common::String::format("%g", derefValue.getFloat());
+		return true;
+	case DynamicValueTypes::kBoolean:
+		outStr = derefValue.getBool() ? "true" : "false";
+		return true;
+	case DynamicValueTypes::kNull:
+		outStr.clear();
+		return true;
+	case DynamicValueTypes::kString:
+		outStr = derefValue.getString();
+		return true;
+	default:
+		return false;
+	}
+}
+
+MiniscriptInstructionOutcome TextLabelElement::scriptSetText(MiniscriptThread *thread, const DynamicValue &value) {
+	if (!textLabelValueToString(value, _text)) {
 		thread->error("Tried to set a text label element's text to something that wasn't a string");
 		return kMiniscriptInstructionOutcomeFailed;
 	}
@@ -2576,9 +2588,8 @@ MiniscriptInstructionOutcome TextLabelElement::scriptSetText(MiniscriptThread *t
 
 
 MiniscriptInstructionOutcome TextLabelElement::scriptSetLine(MiniscriptThread *thread, size_t lineIndex, const DynamicValue &value) {
-	DynamicValue derefValue = value.dereference();
-
-	if (derefValue.getType() != DynamicValueTypes::kString) {
+	Common::String lineText;
+	if (!textLabelValueToString(value, lineText)) {
 		thread->error("Tried to set a text label element's text to something that wasn't a string");
 		return kMiniscriptInstructionOutcomeFailed;
 	}
@@ -2586,14 +2597,14 @@ MiniscriptInstructionOutcome TextLabelElement::scriptSetLine(MiniscriptThread *t
 	uint32 startPos;
 	uint32 endPos;
 	if (findLineRange(lineIndex, startPos, endPos))
-		_text = _text.substr(0, startPos) + derefValue.getString() + _text.substr(endPos, _text.size() - endPos);
+		_text = _text.substr(0, startPos) + lineText + _text.substr(endPos, _text.size() - endPos);
 	else {
 		size_t numLines = countLines();
 		while (numLines <= lineIndex) {
 			_text += '\r';
 			numLines++;
 		}
-		_text += derefValue.getString();
+		_text += lineText;
 	}
 
 	_needsRender = true;
