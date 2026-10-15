@@ -2222,13 +2222,13 @@ FileModifier::ErrorCode FileModifier::writeAttribute(Runtime *runtime, WritableA
 	Common::String str;
 	int32 n = 0;
 
+	// Numbers can be written as text, other values only matter as flags
 	if (value.getType() == DynamicValueTypes::kString)
 		str = value.getString();
-	else {
-		DynamicValue converted;
-		if (value.convertToType(DynamicValueTypes::kString, converted))
-			str = converted.getString();
-	}
+	else if (value.getType() == DynamicValueTypes::kInteger)
+		str = Common::String::format("%i", static_cast<int>(value.getInt()));
+	else if (value.getType() == DynamicValueTypes::kFloat)
+		str = Common::String::format("%g", value.getFloat());
 	value.roundToInt(n);
 
 	switch (attrib) {
