@@ -5039,6 +5039,22 @@ bool Runtime::runFrame() {
 		//
 		// If messages are discharged before low-level scene transitions, then the music plays in the lower level of the
 		// statue on disembarking because the nav node variable is set to the wrong value.
+		// User Timeout goes to the shared scene and the active scene when there has been no input
+		// for the project's user timeout, and again after each further timeout
+		if (_userTimeout > 0 && _project && _playTime - _lastUserActivityTime >= static_cast<uint64>(_userTimeout) * 1000u / 60u) {
+			_lastUserActivityTime = _playTime;
+
+			Structural *scenes[2] = {_activeSharedScene.get(), _activeMainScene.get()};
+			for (Structural *scene : scenes) {
+				if (!scene)
+					continue;
+
+				Common::SharedPtr<MessageProperties> msgProps(new MessageProperties(Event(EventIDs::kUserTimeout, 0), DynamicValue(), _project->getSelfReference()));
+				Common::SharedPtr<MessageDispatch> dispatch(new MessageDispatch(msgProps, scene, true, true, false));
+				queueMessage(dispatch);
+			}
+		}
+
 		if (_messageQueue.size() > 0) {
 			Common::SharedPtr<MessageDispatch> msg = _messageQueue[0];
 			_messageQueue.remove_at(0);
@@ -6794,6 +6810,16 @@ void Runtime::queueMessage(const Common::SharedPtr<MessageDispatch>& dispatch) {
 
 void Runtime::queueOSEvent(const Common::SharedPtr<OSEvent> &osEvent) {
 	_osEventQueue.push_back(osEvent);
+	_lastUserActivityTime = _playTime;
+}
+
+int32 Runtime::getUserTimeout() const {
+	return _userTimeout;
+}
+
+void Runtime::setUserTimeout(int32 timeout) {
+	_userTimeout = timeout;
+	_lastUserActivityTime = _playTime;
 }
 
 Scheduler &Runtime::getScheduler() {
@@ -8015,9 +8041,32 @@ VThreadState Project::asyncConsumeCommand(Runtime *runtime, const Common::Shared
 	return Structural::asyncConsumeCommand(runtime, msg);
 }
 
+bool Project::readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) {
+	if (attrib == "usertimeout") {
+		result.setInt(getRuntime()->getUserTimeout());
+		return true;
+	}
+
+	return Structural::readAttribute(thread, result, attrib);
+}
+
+MiniscriptInstructionOutcome Project::scriptSetUserTimeout(MiniscriptThread *thread, const DynamicValue &value) {
+	int32 timeout = 0;
+	if (!value.roundToInt(timeout))
+		return kMiniscriptInstructionOutcomeFailed;
+
+	getRuntime()->setUserTimeout(timeout);
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
 MiniscriptInstructionOutcome Project::writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) {
 	if (attrib == "allowquit" || attrib == "allowquitkey") {
 		DynamicValueWriteDiscardHelper::create(result);
+		return kMiniscriptInstructionOutcomeContinue;
+	}
+
+	if (attrib == "usertimeout") {
+		DynamicValueWriteFuncHelper<Project, &Project::scriptSetUserTimeout, true>::create(this, result);
 		return kMiniscriptInstructionOutcomeContinue;
 	}
 

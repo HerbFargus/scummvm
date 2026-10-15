@@ -1582,6 +1582,8 @@ public:
 	void drawFrame();
 
 	void queueProject(const Common::SharedPtr<ProjectDescription> &desc);
+	int32 getUserTimeout() const;
+	void setUserTimeout(int32 timeout);
 	void setStartSceneName(const Common::String &sceneName);
 
 	// Open Title: requests that the engine boots another title file
@@ -1915,6 +1917,8 @@ private:
 	bool _openTitleAddToReturnList = false;
 	Common::HashMap<Common::String, Common::SharedPtr<Graphics::Font> > _windowsFonts;
 	bool _canReturnToPreviousTitle = false;
+	int32 _userTimeout = 0;	// In 1/60 seconds, 0 for none
+	uint64 _lastUserActivityTime = 0;
 	bool _returnToPreviousTitleRequested = false;
 	Common::String _startSceneName;
 	Common::SharedPtr<Project> _project;
@@ -2495,6 +2499,9 @@ class Project : public Structural {
 public:
 	explicit Project(Runtime *runtime);
 	~Project();
+
+	bool readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) override;
+	MiniscriptInstructionOutcome scriptSetUserTimeout(MiniscriptThread *thread, const DynamicValue &value);
 
 	VThreadState asyncConsumeCommand(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) override;
 
