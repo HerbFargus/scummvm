@@ -1392,6 +1392,11 @@ void ImageElement::render(Window *window) {
 					}
 				}
 
+				// Without an exact match, the nearest entry is keyed, as an 8-bit display would draw the
+				// color (Magic School Bus Animals keys the swamp game's 00ff00 field with 00ff33)
+				if (numKeyed == 0)
+					transColor = nearestPaletteIndex(*palette, transColorRGB8);
+
 				if (numKeyed > 1) {
 					remappedSurface.copyFrom(*optimized);
 					for (int y = 0; y < remappedSurface.h; y++) {
