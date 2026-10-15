@@ -35,15 +35,17 @@ check that behaviour, but nothing from them is copied here.
 
 ## Status
 
-Whales & Dolphins is playable from sign-in through the bus and most of its
-activities (map, periscope, monitor, Crew Pass, game show, Whale-A-Teria,
-rotation puzzle, eco poster), with dialogue, lip sync and closed captions.
-The other five titles are untested past startup.
+Whales & Dolphins, Discovers Flight and Volcano Adventure are playable from
+sign-in through the bus, every activity and minigame, and quitting, with
+dialogue, lip sync and closed captions. Animals, Bugs and Mars are untested
+past startup.
 
 Implemented here: DlgMgrServer/Client (including captions from the .ccd
 files), KWSmacker, EditCtrl, FileMod, PointMotion, Open Title (with return
-to the opening title), and the mTropolis 2.0 data and Miniscript changes the
-games need. Their game-specific minigame modifiers are still stubs.
+to the opening title's scene), the minigame modifiers of Whales (WhaleMaze),
+Flight (Balloon, Eyefollower, SmkJump) and Volcano (Art, LLava, SvTown, Sub),
+and the mTropolis 2.0 data and Miniscript changes the games need. The Animals,
+Bugs and Mars minigame modifiers are still stubs.
 
 ## Notes for implementers
 
@@ -58,6 +60,11 @@ games need. Their game-specific minigame modifiers are still stubs.
   name backwards: `h += c * m; m *= isdigit(c) ? 5 : 13; m <<= 1`, from
   `h = m = 1`. The speaker, two-line pages of text and a clear message are sent
   to the active scene using the events in the DlgMgrServer data.
+- Each player has a file (`pdN.dat`) and `save.dat` holds the current one.
+  Quitting from the bus sets `bquit` and closes back to the sign-in title,
+  whose name screen saves the player file, plays the outro and quits.
+- The minigame plug-ins read their level tables from the original .r32 files,
+  which have to be in the game's `mTrop_Resources` folder.
 - Point Motion: the u32 after the destination is two u16s, ease flags (1 out,
   2 in, over 20% each) and mode (1 = duration, otherwise speed in px/s). The
   int is the update rate in Hz.
