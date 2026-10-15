@@ -1832,6 +1832,11 @@ void MToonElement::playMedia(Runtime *runtime, Project *project) {
 	int32 sanitizeMaxCel = _metadata->frames.size();
 	int32 targetCel = _cel;
 
+	// A looping one-cel range has nothing to animate, so a cel set from elsewhere stays.
+	// Magic School Bus dialogue highlights parts of looping button mToons this way.
+	if (minCel == maxCel && _loop && _cel != minCel && runtime->getProject()->getRuntimeVersion() >= kRuntimeVersion200)
+		return;
+
 	uint64 playTime = runtime->getPlayTime();
 	if (!_isPlaying) {
 		_isPlaying = true;
@@ -2081,6 +2086,13 @@ MiniscriptInstructionOutcome MToonElement::scriptSetRangeByName(MiniscriptThread
 			available += " '" + frameRange.name + "'";
 		thread->error("mToon range '" + name + "' doesn't exist in the mToon data, ranges:" + available);
 	} else if (getRuntime()->getProject()->getRuntimeVersion() >= kRuntimeVersion200) {
+		if (gDebugLevel >= 2) {
+			Common::String available;
+			for (const MToonMetadata::FrameRangeDef &frameRange : _metadata->frameRanges)
+				available += Common::String::format(" '%s' %u-%u", frameRange.name.c_str(), frameRange.startFrame + 1, frameRange.endFrame + 1);
+			debug(2, "mToon '%s' has no range '%s' to play, ranges:%s", _name.c_str(), name.c_str(), available.c_str());
+		}
+
 		// mTropolis 2.0 plays the whole mToon once for a Play with a range it doesn't have.
 		// Magic School Bus relies on this to stop its map buttons on their last cel.
 		scriptSetRangeTyped(nullptr, IntRange(1, _metadata->frames.size()));
