@@ -1720,7 +1720,7 @@ BoundaryDetectionMessengerModifier::BoundaryDetectionMessengerModifier()
 }
 
 DataReadErrorCode BoundaryDetectionMessengerModifier::load(DataReader &reader) {
-	if (_revision != 1002)
+	if (_revision != 1002 && _revision != 2002)
 		return kDataReadErrorUnsupportedRevision;
 
 	if (!modHeader.load(reader, _revision >= 2000))
@@ -1847,7 +1847,7 @@ ImageEffectModifier::ImageEffectModifier() : flags(0), type(0), bevelWidth(0), t
 }
 
 DataReadErrorCode ImageEffectModifier::load(DataReader &reader) {
-	if (_revision != 1000)
+	if (_revision != 1000 && _revision != 2000)
 		return kDataReadErrorUnsupportedRevision;
 
 	if (!modHeader.load(reader, _revision >= 2000) || !reader.readU32(flags) || !reader.readU16(type) || !applyWhen.load(reader) || !removeWhen.load(reader)
