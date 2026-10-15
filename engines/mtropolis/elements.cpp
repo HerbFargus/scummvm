@@ -1357,6 +1357,36 @@ void ImageElement::render(Window *window) {
 	}
 }
 
+// Background matte makes the background color pixels ignore the mouse
+bool ImageElement::isMouseCollisionAtPoint(int32 relativeX, int32 relativeY) const {
+	if (!VisualElement::isMouseCollisionAtPoint(relativeX, relativeY))
+		return false;
+
+	if (_renderProps.getInkMode() != VisualElementRenderProperties::kInkModeBackgroundMatte || !_cachedImage || _cachedImage->getOriginalColorDepth() == kColorDepthMode1Bit)
+		return true;
+
+	const Common::SharedPtr<Graphics::ManagedSurface> &surface = _cachedImage->optimize(getRuntime());
+	int32 x = relativeX - _rect.left;
+	int32 y = relativeY - _rect.top;
+	if (!surface || x < 0 || y < 0 || x >= surface->w || y >= surface->h)
+		return true;
+
+	uint32 pixel = surface->getPixel(x, y);
+	uint8 r = 0, g = 0, b = 0;
+	if (surface->format.isCLUT8()) {
+		const Palette *palette = getPalette().get();
+		if (!palette)
+			palette = &getRuntime()->getGlobalPalette();
+		const byte *paletteData = palette->getPalette();
+		r = paletteData[pixel * 3 + 0];
+		g = paletteData[pixel * 3 + 1];
+		b = paletteData[pixel * 3 + 2];
+	} else
+		surface->format.colorToRGB(pixel, r, g, b);
+
+	return !(_renderProps.getBackColor() == ColorRGB8(r, g, b));
+}
+
 Common::SharedPtr<Structural> ImageElement::shallowClone() const {
 	return Common::SharedPtr<Structural>(new ImageElement(*this));
 }
