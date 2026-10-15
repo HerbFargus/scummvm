@@ -206,10 +206,16 @@ private:
 	Event _saveWhen;
 	Event _restoreWhen;
 
+	Common::String getFileName() const;
+
 	DynamicValueSource _saveOrRestoreValue;
 
 	Common::String _filePath;
 	Common::String _fileName;
+
+	// mTropolis 2.0 can take the file path from a variable instead
+	DynamicValueSource _filePathSource;
+	bool _haveFilePathSource = false;
 };
 
 class MessengerModifier : public Modifier {

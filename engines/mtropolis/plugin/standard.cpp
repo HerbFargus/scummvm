@@ -1976,8 +1976,10 @@ FileModifier::ErrorCode FileModifier::openFile(Runtime *runtime, int mode) {
 	if (_isOpen)
 		return kErrorOpenFailed;
 
-	if (_filePath.empty())
+	if (_filePath.empty()) {
+		debug(2, "FileMod: '%s' has no file path", _name.c_str());
 		return kErrorInvalidPath;
+	}
 
 	_contents.clear();
 	_position = 0;
@@ -1992,9 +1994,13 @@ FileModifier::ErrorCode FileModifier::openFile(Runtime *runtime, int mode) {
 			_contents.resize(stream->size());
 			if (_contents.size() > 0)
 				stream->read(&_contents[0], _contents.size());
-		} else if (mode == kOpenModeRead)
+		} else if (mode == kOpenModeRead) {
+			debug(2, "FileMod: '%s' not found", getSaveFileName().c_str());
 			return kErrorOpenFailed;
+		}
 	}
+
+	debug(2, "FileMod: Opened '%s' in mode %i, %u bytes", getSaveFileName().c_str(), mode, _contents.size());
 
 	_isOpen = true;
 	_isWritable = (mode != kOpenModeRead);
@@ -2218,9 +2224,17 @@ MiniscriptInstructionOutcome FileModifier::WriteProxy::refAttribIndexed(Miniscri
 	return kMiniscriptInstructionOutcomeFailed;
 }
 
-FileModifier::ErrorCode FileModifier::writeAttribute(Runtime *runtime, WritableAttribute attrib, const DynamicValue &value) {
+FileModifier::ErrorCode FileModifier::writeAttribute(Runtime *runtime, WritableAttribute attrib, const DynamicValue &valueIn) {
 	Common::String str;
 	int32 n = 0;
+
+	// mTropolis 2.0 passes variables by reference
+	DynamicValue value = valueIn;
+	if (value.getType() == DynamicValueTypes::kObject) {
+		Common::SharedPtr<RuntimeObject> obj = value.getObject().object.lock();
+		if (obj && obj->isModifier() && static_cast<Modifier *>(obj.get())->isVariable())
+			static_cast<VariableModifier *>(obj.get())->varGetValue(value);
+	}
 
 	// Numbers can be written as text, other values only matter as flags
 	if (value.getType() == DynamicValueTypes::kString)

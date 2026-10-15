@@ -353,7 +353,40 @@ bool SaveAndRestoreModifier::load(ModifierLoaderContext &context, const Data::Sa
 	_filePath = data.filePath;
 	_fileName = data.fileName;
 
+	debug(2, "Save and Restore '%s': file '%s', path value type %x '%s'", _name.c_str(), _fileName.c_str(), static_cast<uint>(data.filePathValue.type), data.filePathVarName.c_str());
+	if (data.version == 2 && data.filePathValue.type == Data::InternalTypeTaggedValue::kVariableReference) {
+		if (!_filePathSource.load(data.filePathValue, data.filePathVarName, data.filePathVarString))
+			return false;
+		_haveFilePathSource = true;
+	}
+
 	return true;
+}
+
+// Saves are named after the file without its folder, so scripts that pick the
+// file at run time (one per player in Magic School Bus) get separate saves
+Common::String SaveAndRestoreModifier::getFileName() const {
+	if (!_haveFilePathSource)
+		return _fileName;
+
+	DynamicValue pathValue = _filePathSource.produceValue(DynamicValue());
+	if (pathValue.getType() == DynamicValueTypes::kObject) {
+		Common::SharedPtr<RuntimeObject> obj = pathValue.getObject().object.lock();
+		if (obj && obj->isModifier() && static_cast<Modifier *>(obj.get())->isVariable())
+			static_cast<VariableModifier *>(obj.get())->varGetValue(pathValue);
+	}
+	if (pathValue.getType() != DynamicValueTypes::kString || pathValue.getString().empty())
+		return _fileName;
+
+	const Common::String &path = pathValue.getString();
+	debug(2, "Save and Restore '%s': path '%s'", _name.c_str(), path.c_str());
+	Common::String fileName = path;
+	for (uint i = 0; i < path.size(); i++) {
+		if (path[i] == ':' || path[i] == '\\' || path[i] == '/')
+			fileName = path.substr(i + 1);
+	}
+
+	return fileName;
 }
 
 
@@ -434,8 +467,10 @@ VThreadState SaveAndRestoreModifier::consumeMessage(Runtime *runtime, const Comm
 		bool succeeded = false;
 		if (isPrompt)
 			succeeded = runtime->getSaveProvider()->promptSave(&saver, screenshotOverride);
-		else
-			succeeded = runtime->getSaveProvider()->namedSave(&saver, screenshotOverride, _fileName);
+		else {
+			debug(1, "Save and Restore '%s': Saving '%s'", getName().c_str(), getFileName().c_str());
+			succeeded = runtime->getSaveProvider()->namedSave(&saver, screenshotOverride, getFileName());
+		}
 
 		if (succeeded) {
 			for (const Common::SharedPtr<SaveLoadHooks> &hooks : runtime->getHacks().saveLoadHooks)
@@ -448,8 +483,10 @@ VThreadState SaveAndRestoreModifier::consumeMessage(Runtime *runtime, const Comm
 		bool succeeded = false;
 		if (isPrompt)
 			succeeded = runtime->getLoadProvider()->promptLoad(&loader);
-		else
-			succeeded = runtime->getLoadProvider()->namedLoad(&loader, _fileName);
+		else {
+			debug(1, "Save and Restore '%s': Restoring '%s'", getName().c_str(), getFileName().c_str());
+			succeeded = runtime->getLoadProvider()->namedLoad(&loader, getFileName());
+		}
 
 		if (succeeded) {
 			for (const Common::SharedPtr<SaveLoadHooks> &hooks : runtime->getHacks().saveLoadHooks)
@@ -465,12 +502,16 @@ void SaveAndRestoreModifier::linkInternalReferences(ObjectLinkingScope *scope) {
 	Modifier::linkInternalReferences(scope);
 
 	_saveOrRestoreValue.linkInternalReferences(scope);
+	if (_haveFilePathSource)
+		_filePathSource.linkInternalReferences(scope);
 }
 
 void SaveAndRestoreModifier::visitInternalReferences(IStructuralReferenceVisitor *visitor) {
 	Modifier::visitInternalReferences(visitor);
 
 	_saveOrRestoreValue.visitInternalReferences(visitor);
+	if (_haveFilePathSource)
+		_filePathSource.visitInternalReferences(visitor);
 }
 
 Common::SharedPtr<Modifier> SaveAndRestoreModifier::shallowClone() const {
