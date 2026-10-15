@@ -35,17 +35,18 @@ check that behaviour, but nothing from them is copied here.
 
 ## Status
 
-Whales & Dolphins, Discovers Flight, Volcano Adventure and Lands on Mars are
-playable from sign-in through the bus, every activity and minigame, and
-quitting, with dialogue, lip sync and closed captions. Animals and Bugs are
-untested past startup.
+Whales & Dolphins, Discovers Flight, Volcano Adventure, Lands on Mars and
+Explores Bugs are playable from sign-in through the bus, every activity and
+minigame, and quitting, with dialogue, lip sync and closed captions. World of
+Animals is untested past startup.
 
 Implemented here: DlgMgrServer/Client (including captions from the .ccd
 files), KWSmacker, EditCtrl, FileMod, PointMotion, Open Title (with return
 to the opening title's scene), the minigame modifiers of Whales (WhaleMaze),
 Flight (Balloon, Eyefollower, SmkJump), Volcano (Art, LLava, SvTown, Sub) and
-Mars (Lander, RoverRace), and the mTropolis 2.0 data and Miniscript changes the
-games need. The Animals and Bugs minigame modifiers are still stubs.
+Mars (Lander, RoverRace) and Bugs (AntMaze, BugEatBug), the 2000 plug-in's
+FillMod and AVICtrl, and the mTropolis 2.0 data and Miniscript changes the
+games need. The Animals modifiers are untested.
 
 ## Notes for implementers
 
