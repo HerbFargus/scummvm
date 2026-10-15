@@ -1009,6 +1009,131 @@ private:
 	int32 _lineCel;
 };
 
+// Lunar Lander clone from Magic School Bus Lands on Mars. The bus-lander falls
+// under gravity and the player fires the main and side thrusters with the
+// arrow keys, or by holding the mouse button on the side to move towards, to
+// set down gently on one of three pads while fuel lasts. Pick-ups give points,
+// fuel or an extra chance. The levels are read from the original Lander.r32
+// plug-in.
+class LanderModifier : public Modifier, public IKeyboardEventReceiver {
+public:
+	LanderModifier();
+	~LanderModifier();
+
+	bool load(const PlugInModifierLoaderContext &context, const Data::KW::GameModifier &data);
+
+	bool respondsToEvent(const Event &evt) const override;
+	VThreadState consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) override;
+	void disable(Runtime *runtime) override;
+
+	bool readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) override;
+	MiniscriptInstructionOutcome writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) override;
+
+	void onKeyboardEvent(Runtime *runtime, const KeyboardInputEvent &keyEvt) override;
+
+#ifdef MTROPOLIS_DEBUG_ENABLE
+	const char *debugGetTypeName() const override { return "Lander Modifier"; }
+	SupportStatus debugGetSupportStatus() const override { return kSupportStatusPartial; }
+#endif
+
+private:
+	static const int kNumLevels = 15;
+	static const int kNumItems = 10;
+	static const int kNumPads = 3;
+
+	enum WritableAttribute {
+		kAttribPaused,
+		kAttribGameLevel,
+	};
+
+	// A pick-up's position and how many ticks it stays shown and hidden
+	struct ItemSpawn {
+		Common::Point pos;
+		int16 visibleTicks;
+		int16 hiddenTicks;
+	};
+
+	struct Level {
+		Common::Point start;
+		Common::Point pads[kNumPads];	// Easy, medium, hard
+		double fuel;
+		double sideCost;
+		double upCost;
+		Common::Array<Common::Point> landscape;
+		ItemSpawn items[kNumItems];	// 3 Bonus1, 3 Bonus2, 2 fuel, 2 chances
+	};
+
+	struct Item {
+		int32 x;
+		int32 y;
+		int32 timer;
+		bool visible;
+		bool active;
+	};
+
+	struct WriteProxy {
+		static MiniscriptInstructionOutcome write(MiniscriptThread *thread, const DynamicValue &value, void *objectRef, uintptr ptrOrOffset);
+		static MiniscriptInstructionOutcome refAttrib(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib);
+		static MiniscriptInstructionOutcome refAttribIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib, const DynamicValue &index);
+	};
+
+	Common::SharedPtr<Modifier> shallowClone() const override;
+	const char *getDefaultName() const override;
+
+	bool loadLevels();
+	void setupLevel(Runtime *runtime, int32 level);
+	void tick(Runtime *runtime);
+	void stopGame();
+
+	void steer(Runtime *runtime, bool &right, bool &left, bool &up);
+	void thrust(Runtime *runtime, bool &right, bool &left, bool &up);
+	void tickItems(Runtime *runtime);
+	bool checkLanding(Runtime *runtime);
+	bool inLandscape(int32 x, int32 y) const;
+
+	Structural *child(int index) const;
+	Structural *grandchild(int index, int subIndex) const;
+	void placeCentered(Runtime *runtime, Structural *element, int32 x, int32 y);
+	void placeTopLeft(Runtime *runtime, Structural *element, int32 x, int32 y);
+	void setCel(Runtime *runtime, Structural *element, int32 cel);
+	void sendMessage(Runtime *runtime, const char *messageName);
+
+	Event _startWhen;
+	Event _stopWhen;
+
+	Common::Array<Level> _levels;	// Index 0 is unused
+	bool _levelsLoaded;
+
+	Common::SharedPtr<ScheduledEvent> _scheduledEvent;
+	Common::SharedPtr<KeyboardEventSignaller> _keySignaller;
+	bool _running;
+	bool _paused;
+	bool _levelReady;
+
+	int32 _level;
+	int32 _points;
+	int32 _frame;
+	double _gravity;
+	double _posX;
+	double _posY;
+	double _vx;
+	double _vy;
+	int32 _landerX;
+	int32 _landerY;
+	double _fuel;
+	int32 _crashAnim;	// -1 idle, else the collision cel still to show
+
+	bool _mouseHeld;
+	bool _mouseMode;
+	bool _thrusting;
+	bool _keyUp;
+	bool _keyLeft;
+	bool _keyRight;
+
+	Common::Rect _padRects[kNumPads];
+	Item _items[kNumItems];
+};
+
 // Lava lake crossing from Magic School Bus Volcano Adventure, a Frogger-style
 // game. The bus hops from the top bank to the bottom one across five lanes of
 // lava, riding junk that drifts along the moving lanes and stepping on stones
@@ -1692,6 +1817,7 @@ private:
 	PlugInModifierFactory<BalloonModifier, Data::KW::GameModifier> _balloonModifierFactory;
 	PlugInModifierFactory<ArtModifier, Data::KW::GameModifier> _artModifierFactory;
 	PlugInModifierFactory<SubModifier, Data::KW::GameModifier> _subModifierFactory;
+	PlugInModifierFactory<LanderModifier, Data::KW::GameModifier> _landerModifierFactory;
 	PlugInModifierFactory<LLavaModifier, Data::KW::GameModifier> _lLavaModifierFactory;
 	PlugInModifierFactory<SvTownModifier, Data::KW::GameModifier> _svTownModifierFactory;
 

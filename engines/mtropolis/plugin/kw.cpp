@@ -5358,6 +5358,692 @@ const char *SubModifier::getDefaultName() const {
 	return "Sub";
 }
 
+// Children of the owner element
+enum LanderChild {
+	kLanderChildLander = 1,
+	kLanderChildLevels,
+	kLanderChildFuel,
+	kLanderChildPadEasy,	// Then medium and hard
+	kLanderChildCollision = 7,
+	kLanderChildGoodies,
+	kLanderChildArrows,
+};
+
+static const int32 kLanderPadHalfWidths[3] = {60, 48, 36};
+static const int32 kLanderPadPoints[3] = {100, 200, 300};
+static const int32 kLanderPadHalfHeight = 7;
+static const int32 kLanderOffScreen = 666;
+static const int32 kLanderHidden = 600;
+static const double kLanderSideThrust = 0.2;
+static const double kLanderMainThrust = 0.25;
+static const double kLanderBrake = 0.05;
+static const double kLanderMaxSpeed = 5.5;
+static const double kLanderMaxFuel = 20.0;
+
+LanderModifier::LanderModifier()
+	: _levelsLoaded(false), _running(false), _paused(false), _levelReady(false), _level(0), _points(0), _frame(0), _gravity(0.1), _posX(0.0), _posY(0.0),
+	  _vx(0.0), _vy(0.0), _landerX(0), _landerY(0), _fuel(0.0), _crashAnim(-1), _mouseHeld(false), _mouseMode(true), _thrusting(false), _keyUp(false),
+	  _keyLeft(false), _keyRight(false) {
+	memset(_items, 0, sizeof(_items));
+}
+
+LanderModifier::~LanderModifier() {
+	stopGame();
+}
+
+bool LanderModifier::load(const PlugInModifierLoaderContext &context, const Data::KW::GameModifier &data) {
+	return loadDlgMgrEvent(_startWhen, data.enableWhen) && loadDlgMgrEvent(_stopWhen, data.disableWhen);
+}
+
+// The levels are records in the plug-in's data section
+bool LanderModifier::loadLevels() {
+	if (_levelsLoaded)
+		return !_levels.empty();
+
+	_levelsLoaded = true;
+
+	Common::File f;
+	if (!f.open(Common::Path("mTrop_Resources/Lander.r32")) && !f.open(Common::Path("Lander.r32"))) {
+		warning("Lander: Lander.r32 from the installed game is needed for the levels");
+		return false;
+	}
+
+	Common::Array<byte> image;
+	image.resize(f.size());
+	f.read(&image[0], image.size());
+
+	bool failed = false;
+	auto readS16 = [&](uint32 va) -> int16 {
+		uint32 offset = va - 0x10000000;
+		if (offset + 2 > image.size()) {
+			failed = true;
+			return 0;
+		}
+		return static_cast<int16>(READ_LE_UINT16(&image[offset]));
+	};
+	auto readPoint = [&](uint32 va) -> Common::Point {
+		return Common::Point(readS16(va), readS16(va + 4));
+	};
+	auto readDouble = [&](uint32 va) -> double {
+		uint32 offset = va - 0x10000000;
+		if (offset + 8 > image.size()) {
+			failed = true;
+			return 0.0;
+		}
+		uint64 bits = READ_LE_UINT64(&image[offset]);
+		double value;
+		memcpy(&value, &bits, sizeof(value));
+		return value;
+	};
+
+	Common::Array<Level> levels;
+	levels.resize(kNumLevels + 1);
+	for (uint l = 1; l <= kNumLevels; l++) {
+		Level &level = levels[l];
+		uint32 base = 0x10036050 + (l - 1) * 0x30a;
+
+		level.start = readPoint(base);
+		for (uint i = 0; i < kNumPads; i++)
+			level.pads[i] = readPoint(base + 0x8 + i * 8);
+		level.fuel = readDouble(base + 0x20);
+		level.sideCost = readDouble(base + 0x28);
+		level.upCost = readDouble(base + 0x30);
+
+		int16 polyCount = readS16(base + 0x38);
+		if (polyCount < 3 || polyCount > 75)
+			failed = true;
+		for (int16 i = 0; i < polyCount && !failed; i++)
+			level.landscape.push_back(readPoint(base + 0x3a + i * 8));
+
+		for (uint i = 0; i < kNumItems; i++) {
+			ItemSpawn &item = level.items[i];
+			item.pos = readPoint(base + 0x292 + i * 12);
+			item.visibleTicks = readS16(base + 0x29a + i * 12);
+			item.hiddenTicks = readS16(base + 0x29c + i * 12);
+		}
+	}
+
+	// Level 1 starts at (450, 100) with 20 fuel and a 20 point landscape
+	if (failed || levels[1].start != Common::Point(450, 100) || levels[1].fuel != 20.0 || levels[1].landscape.size() != 20) {
+		warning("Lander: Lander.r32 isn't the expected version");
+		return false;
+	}
+
+	_levels.swap(levels);
+	return true;
+}
+
+bool LanderModifier::respondsToEvent(const Event &evt) const {
+	return _startWhen.respondsTo(evt) || _stopWhen.respondsTo(evt) || evt.eventType == EventIDs::kParentDisabled
+		|| evt.eventType == EventIDs::kMouseDown || evt.eventType == EventIDs::kMouseUp;
+}
+
+VThreadState LanderModifier::consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) {
+	const Event &evt = msg->getEvent();
+
+	if (_startWhen.respondsTo(evt)) {
+		setupLevel(runtime, 1);
+		_paused = true;
+
+		if (!_running) {
+			_running = true;
+			_keySignaller = runtime->getProject()->notifyOnKeyboardEvent(this);
+			_scheduledEvent = runtime->getScheduler().scheduleMethod<LanderModifier, &LanderModifier::tick>(runtime->getPlayTime() + 83, this);
+		}
+		return kVThreadReturn;
+	}
+
+	if (_stopWhen.respondsTo(evt) || evt.eventType == EventIDs::kParentDisabled) {
+		stopGame();
+		return kVThreadReturn;
+	}
+
+	// While paused a click dismisses the dialog or level box instead
+	if (evt.eventType == EventIDs::kMouseDown) {
+		if (!_paused) {
+			_mouseHeld = true;
+			_mouseMode = true;
+		} else {
+			sendMessage(runtime, "PausedClick");
+		}
+	} else if (evt.eventType == EventIDs::kMouseUp) {
+		_mouseHeld = false;
+	}
+
+	return kVThreadReturn;
+}
+
+void LanderModifier::onKeyboardEvent(Runtime *runtime, const KeyboardInputEvent &keyEvt) {
+	Common::KeyCode keycode = keyEvt.getKeyState().keycode;
+	bool *flag = nullptr;
+	switch (keycode) {
+	case Common::KEYCODE_UP:
+	case Common::KEYCODE_KP8:
+		flag = &_keyUp;
+		break;
+	case Common::KEYCODE_LEFT:
+	case Common::KEYCODE_KP4:
+		flag = &_keyLeft;
+		break;
+	case Common::KEYCODE_RIGHT:
+	case Common::KEYCODE_KP6:
+		flag = &_keyRight;
+		break;
+	default:
+		break;
+	}
+
+	// Releasing down also cuts the main thruster, as in the original
+	if (keyEvt.getKeyEventType() == Common::EVENT_KEYUP) {
+		if (keycode == Common::KEYCODE_DOWN || keycode == Common::KEYCODE_KP2)
+			_keyUp = false;
+		else if (flag)
+			*flag = false;
+		return;
+	}
+
+	// Any key switches to the keys while playing; the flags are set even while paused
+	if (!_paused) {
+		_mouseMode = false;
+		setCel(runtime, child(kLanderChildArrows), 1);
+	}
+	if (flag)
+		*flag = true;
+}
+
+void LanderModifier::disable(Runtime *runtime) {
+	stopGame();
+}
+
+void LanderModifier::stopGame() {
+	_running = false;
+	if (_scheduledEvent) {
+		_scheduledEvent->cancel();
+		_scheduledEvent.reset();
+	}
+	if (_keySignaller) {
+		_keySignaller->removeReceiver(this);
+		_keySignaller.reset();
+	}
+}
+
+bool LanderModifier::readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) {
+	if (attrib == "paused") {
+		result.setBool(_paused);
+		return true;
+	} else if (attrib == "gamelevel") {
+		result.setInt(_level);
+		return true;
+	} else if (attrib == "points") {
+		result.setInt(_points);
+		return true;
+	}
+
+	return Modifier::readAttribute(thread, result, attrib);
+}
+
+MiniscriptInstructionOutcome LanderModifier::writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) {
+	WritableAttribute writable;
+	if (attrib == "paused")
+		writable = kAttribPaused;
+	else if (attrib == "gamelevel")
+		writable = kAttribGameLevel;
+	else
+		return Modifier::writeRefAttribute(thread, result, attrib);
+
+	result.pod.ifc = DynamicValueWriteInterfaceGlue<WriteProxy>::getInstance();
+	result.pod.objectRef = this;
+	result.pod.ptrOrOffset = writable;
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
+MiniscriptInstructionOutcome LanderModifier::WriteProxy::write(MiniscriptThread *thread, const DynamicValue &assigned, void *objectRef, uintptr ptrOrOffset) {
+	LanderModifier *self = static_cast<LanderModifier *>(objectRef);
+
+	// Variables are passed by reference
+	DynamicValue value = assigned;
+	if (value.getType() == DynamicValueTypes::kObject) {
+		Common::SharedPtr<RuntimeObject> obj = value.getObject().object.lock();
+		if (obj && obj->isModifier() && static_cast<Modifier *>(obj.get())->isVariable())
+			static_cast<VariableModifier *>(obj.get())->varGetValue(value);
+	}
+
+	if (ptrOrOffset == kAttribGameLevel) {
+		int32 level = 0;
+		if (!value.roundToInt(level))
+			return kMiniscriptInstructionOutcomeFailed;
+		if (level >= 1 && level <= kNumLevels)
+			self->setupLevel(thread->getRuntime(), level);
+		return kMiniscriptInstructionOutcomeContinue;
+	}
+
+	if (ptrOrOffset == kAttribPaused) {
+		bool flag = false;
+		if (value.getType() == DynamicValueTypes::kBoolean)
+			flag = value.getBool();
+		else if (value.getType() == DynamicValueTypes::kInteger)
+			flag = (value.getInt() != 0);
+		else
+			return kMiniscriptInstructionOutcomeFailed;
+
+		// After a landing, crash or escape only the next level can unpause
+		if (self->_levelReady || flag) {
+			if (self->_paused != flag)
+				debug(2, "Lander: %s level %d", flag ? "Paused" : "Unpaused", self->_level);
+			self->_paused = flag;
+		}
+	}
+
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
+MiniscriptInstructionOutcome LanderModifier::WriteProxy::refAttrib(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib) {
+	return kMiniscriptInstructionOutcomeFailed;
+}
+
+MiniscriptInstructionOutcome LanderModifier::WriteProxy::refAttribIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib, const DynamicValue &index) {
+	return kMiniscriptInstructionOutcomeFailed;
+}
+
+Structural *LanderModifier::child(int index) const {
+	Structural *owner = findStructuralOwner();
+	if (!owner || index < 1 || index > static_cast<int>(owner->getChildren().size()))
+		return nullptr;
+	return owner->getChildren()[index - 1].get();
+}
+
+Structural *LanderModifier::grandchild(int index, int subIndex) const {
+	Structural *container = child(index);
+	if (!container || subIndex < 1 || subIndex > static_cast<int>(container->getChildren().size()))
+		return nullptr;
+	return container->getChildren()[subIndex - 1].get();
+}
+
+void LanderModifier::placeCentered(Runtime *runtime, Structural *element, int32 x, int32 y) {
+	if (!element || !element->isElement() || !static_cast<Element *>(element)->isVisual())
+		return;
+
+	const Common::Rect &rect = static_cast<VisualElement *>(element)->getRelativeRect();
+	placeTopLeft(runtime, element, x - rect.width() / 2, y - rect.height() / 2);
+}
+
+void LanderModifier::placeTopLeft(Runtime *runtime, Structural *element, int32 x, int32 y) {
+	if (!element)
+		return;
+
+	DynamicValue pos;
+	pos.setPoint(Common::Point(x, y));
+	dlgMgrWriteAttribute(runtime, this, element, "position", pos);
+}
+
+void LanderModifier::setCel(Runtime *runtime, Structural *element, int32 cel) {
+	dlgMgrSetInt(runtime, this, element, "cel", cel);
+}
+
+void LanderModifier::sendMessage(Runtime *runtime, const char *messageName) {
+	uint32 messageID = 0;
+	if (!runtime->getProject()->findAuthorMessageID(messageName, messageID))
+		return;
+
+	Structural *owner = findStructuralOwner();
+	if (!owner)
+		return;
+
+	debug(2, "Lander: Sending '%s'", messageName);
+	Common::SharedPtr<MessageProperties> props(new MessageProperties(Event(EventIDs::kAuthorMessage, messageID), DynamicValue(), getSelfReference()));
+	Common::SharedPtr<MessageDispatch> dispatch(new MessageDispatch(props, owner, true, true, false));
+	runtime->queueMessage(dispatch);
+}
+
+// Even-odd test, as the original's polygon region
+bool LanderModifier::inLandscape(int32 x, int32 y) const {
+	const Common::Array<Common::Point> &poly = _levels[_level].landscape;
+	bool inside = false;
+	for (uint i = 0, j = poly.size() - 1; i < poly.size(); j = i++) {
+		const Common::Point &a = poly[i];
+		const Common::Point &b = poly[j];
+		if ((a.y > y) != (b.y > y)) {
+			double crossX = a.x + static_cast<double>(y - a.y) * (b.x - a.x) / (b.y - a.y);
+			if (x < crossX)
+				inside = !inside;
+		}
+	}
+	return inside;
+}
+
+void LanderModifier::setupLevel(Runtime *runtime, int32 levelNum) {
+	if (!loadLevels() || levelNum < 1 || levelNum > kNumLevels)
+		return;
+
+	const Level &level = _levels[levelNum];
+	_level = levelNum;
+	_points = 0;
+	_frame = 0;
+
+	// Gravity is weaker in the first three levels and stronger in the last tier
+	_gravity = 0.1;
+	if (levelNum < 4)
+		_gravity -= 0.02;
+	else if (levelNum > 10)
+		_gravity += 0.01;
+
+	_crashAnim = -1;
+	_keyUp = _keyLeft = _keyRight = false;
+	_thrusting = false;
+
+	if (!findStructuralOwner())
+		return;
+
+	_vx = _vy = 0.0;
+	_posX = level.start.x;
+	_posY = level.start.y;
+	_landerX = level.start.x;
+	_landerY = level.start.y;
+	placeCentered(runtime, child(kLanderChildLander), _landerX, _landerY);
+	setCel(runtime, child(kLanderChildLander), 1);
+
+	for (int i = 1; i <= kNumLevels; i++)
+		placeTopLeft(runtime, grandchild(kLanderChildLevels, i), 0, (i == levelNum) ? 0 : kLanderHidden);
+
+	_fuel = level.fuel;
+	setCel(runtime, child(kLanderChildFuel), static_cast<int32>(_fuel + 1.0));
+
+	for (int i = 0; i < kNumPads; i++) {
+		const Common::Point &pad = level.pads[i];
+		placeCentered(runtime, child(kLanderChildPadEasy + i), pad.x, pad.y);
+		_padRects[i] = Common::Rect(pad.x - kLanderPadHalfWidths[i], pad.y - kLanderPadHalfHeight, pad.x + kLanderPadHalfWidths[i], pad.y + kLanderPadHalfHeight);
+	}
+
+	placeCentered(runtime, child(kLanderChildCollision), kLanderOffScreen, kLanderOffScreen);
+	setCel(runtime, child(kLanderChildCollision), 8);
+
+	// Items start at a random point of their visible time, shown on odd counts
+	for (int i = 0; i < kNumItems; i++) {
+		const ItemSpawn &spawn = level.items[i];
+		Item &item = _items[i];
+		Structural *element = grandchild(kLanderChildGoodies, i + 1);
+		if (spawn.visibleTicks < 1) {
+			item.active = false;
+			placeCentered(runtime, element, item.x, item.y + kLanderHidden);
+			continue;
+		}
+
+		item.x = spawn.pos.x;
+		item.y = spawn.pos.y;
+		item.timer = runtime->getRandom()->getRandomNumberRng(1, spawn.visibleTicks);
+		item.visible = ((item.timer & 1) != 0);
+		item.active = true;
+		placeCentered(runtime, element, item.x, item.visible ? item.y : item.y + kLanderHidden);
+	}
+
+	placeCentered(runtime, child(kLanderChildArrows), kLanderOffScreen, kLanderOffScreen);
+
+	_levelReady = true;
+}
+
+void LanderModifier::tick(Runtime *runtime) {
+	_scheduledEvent.reset();
+	if (!_running)
+		return;
+
+	_scheduledEvent = runtime->getScheduler().scheduleMethod<LanderModifier, &LanderModifier::tick>(runtime->getPlayTime() + 83, this);
+
+	// The collision animation plays while paused, then the chance is lost
+	if (_paused) {
+		if (_crashAnim >= 1) {
+			setCel(runtime, child(kLanderChildCollision), _crashAnim);
+			_crashAnim--;
+		} else if (_crashAnim != -1) {
+			sendMessage(runtime, "GameOver");
+			_crashAnim = -1;
+		}
+		return;
+	}
+
+	if (_levels.empty())
+		return;
+
+	_frame++;
+	bool right = false;
+	bool left = false;
+	bool up = false;
+	bool wasThrusting = _thrusting;
+	_thrusting = false;
+
+	if (_mouseMode)
+		steer(runtime, right, left, up);
+
+	if (_fuel > 0.0)
+		thrust(runtime, right, left, up);
+
+	_vy += _gravity;
+	if (_vx > 2.5)
+		_vx -= 0.07;
+	else if (_vx < -2.5)
+		_vx += 0.07;
+	_posX += _vx;
+	_posY += _vy;
+	_landerX = static_cast<int32>(_posX);
+	_landerY = static_cast<int32>(_posY);
+	placeCentered(runtime, child(kLanderChildLander), _landerX, _landerY);
+	placeCentered(runtime, child(kLanderChildArrows), _landerX, _landerY);
+
+	// Cels in pairs flickering every tick: 1 main jet, 3 main and pushing
+	// right, 5 main and pushing left, 7 idle, 21 pushing right, 23 pushing left
+	int32 cel = 7;
+	if (_fuel > 0.0) {
+		if (up)
+			cel = right ? 3 : left ? 5 : 1;
+		else
+			cel = right ? 21 : left ? 23 : 7;
+	}
+	setCel(runtime, child(kLanderChildLander), cel + (_frame & 1));
+
+	if (_thrusting != wasThrusting)
+		sendMessage(runtime, _thrusting ? "ThrustSFXOn" : "ThrustSFXOff");
+
+	tickItems(runtime);
+
+	// The original also sends GameOver for leaving the screen in the same tick
+	// as a crash, costing two chances; only one is sent here
+	if (checkLanding(runtime))
+		return;
+
+	if (_landerX < 6 || _landerX > 634 || _landerY < 6) {
+		_paused = true;
+		_levelReady = false;
+		sendMessage(runtime, "GameOver");
+		sendMessage(runtime, "ThrustSFXOff");
+	}
+}
+
+// Thrusts towards the mouse while the button is held: straight sideways or up
+// within a 0.6 slope, diagonally otherwise. The arrow over the lander shows
+// the direction, one cel lower while the button is held.
+void LanderModifier::steer(Runtime *runtime, bool &right, bool &left, bool &up) {
+	const Common::Point &mouse = runtime->getCachedMousePosition();
+	double dx = mouse.x - _landerX;
+	double dy = mouse.y - _landerY;
+
+	// Divisions by zero count as steep, as in the original's floating point
+	int32 arrow;
+	if (dx > 0.0) {
+		right = (dy == 0.0 || dx / fabs(dy) > 0.6);
+		arrow = 11;
+	} else {
+		left = (dx < 0.0 && (dy == 0.0 || -dx / fabs(dy) > 0.6));
+		arrow = 3;
+	}
+	if (dy < 0.0 && (dx == 0.0 || fabs(dy / dx) > 0.6)) {
+		up = true;
+		arrow = right ? 9 : left ? 5 : 7;
+	}
+
+	if (_mouseHeld)
+		arrow--;
+	else
+		right = left = up = false;
+	setCel(runtime, child(kLanderChildArrows), arrow);
+}
+
+void LanderModifier::thrust(Runtime *runtime, bool &right, bool &left, bool &up) {
+	const Level &level = _levels[_level];
+
+	if (_mouseHeld) {
+		// The mouse brakes harder against a fast drift
+		if (right) {
+			_vx += kLanderSideThrust;
+			if (_vx < -kLanderMaxSpeed)
+				_vx += kLanderBrake;
+			_fuel -= level.sideCost;
+		} else if (left) {
+			_vx -= kLanderSideThrust;
+			if (_vx > kLanderMaxSpeed)
+				_vx -= kLanderBrake;
+			_fuel -= level.sideCost;
+		}
+		if (up) {
+			_vy -= kLanderMainThrust;
+			if (_vy > kLanderMaxSpeed)
+				_vy -= kLanderBrake;
+			_fuel -= level.upCost;
+		}
+		// Holding the button counts as thrusting even in a neutral direction
+		_thrusting = true;
+	} else {
+		if (_keyLeft) {
+			_vx -= kLanderSideThrust;
+			_fuel -= level.sideCost;
+			left = true;
+			_thrusting = true;
+		} else if (_keyRight) {
+			_vx += kLanderSideThrust;
+			_fuel -= level.sideCost;
+			right = true;
+			_thrusting = true;
+		}
+		if (_keyUp) {
+			_vy -= kLanderMainThrust;
+			_fuel -= level.upCost;
+			up = true;
+			_thrusting = true;
+		}
+	}
+
+	setCel(runtime, child(kLanderChildFuel), (_fuel >= 0.0) ? static_cast<int32>(_fuel + 1.0) : 1);
+	if (_fuel <= 0.0)
+		sendMessage(runtime, "PlaySFX2");
+}
+
+// Items blink on and off on their own timers and are collected by touching
+// them while shown
+void LanderModifier::tickItems(Runtime *runtime) {
+	const Level &level = _levels[_level];
+
+	for (int i = 0; i < kNumItems; i++) {
+		Item &item = _items[i];
+		if (!item.active)
+			continue;
+
+		const ItemSpawn &spawn = level.items[i];
+		Structural *element = grandchild(kLanderChildGoodies, i + 1);
+		item.timer--;
+		if (item.timer < 0) {
+			item.visible = !item.visible;
+			item.timer = item.visible ? spawn.visibleTicks : spawn.hiddenTicks;
+			placeCentered(runtime, element, item.x, item.visible ? item.y : item.y + kLanderHidden);
+			continue;
+		}
+
+		if (!item.visible || ABS(_landerX - item.x) >= 24 || _landerY - item.y >= 34 || item.y - _landerY >= 22)
+			continue;
+
+		item.active = false;
+		item.timer = 0;
+		placeCentered(runtime, element, item.x, item.y + kLanderHidden);
+		if (i < 3) {
+			_points += 100;
+			sendMessage(runtime, "PlaySFX4");
+			sendMessage(runtime, "UpdateScore");
+		} else if (i < 6) {
+			_points += 50;
+			sendMessage(runtime, "PlaySFX3");
+			sendMessage(runtime, "UpdateScore");
+		} else if (i < 8) {
+			_fuel = MIN(_fuel + 4.0, kLanderMaxFuel);
+			sendMessage(runtime, "PlaySFX5");
+		} else {
+			sendMessage(runtime, "ExtraChance");
+		}
+	}
+}
+
+// Ends the level if the lander touched down on a pad or hit the terrain. A pad
+// needs both feet on it and a combined speed under 5.5, and wins over terrain
+// it overlaps.
+bool LanderModifier::checkLanding(Runtime *runtime) {
+	Common::Point top(_landerX, _landerY - 12);
+	Common::Point leftFoot(_landerX - 14, _landerY + 4);
+	Common::Point rightFoot(_landerX + 14, _landerY + 4);
+
+	bool landed = false;
+	bool crashed = false;
+	double speed = fabs(_vy) + fabs(_vx);
+	for (int i = 0; i < kNumPads; i++) {
+		const Common::Rect &pad = _padRects[i];
+		bool leftOn = (leftFoot.x > pad.left && leftFoot.x < pad.right && leftFoot.y > pad.top && leftFoot.y < pad.bottom);
+		bool rightOn = (rightFoot.x > pad.left && rightFoot.x < pad.right && rightFoot.y > pad.top && rightFoot.y < pad.bottom);
+		if (leftOn && rightOn) {
+			if (speed >= kLanderMaxSpeed) {
+				crashed = true;
+			} else {
+				landed = true;
+				_points += kLanderPadPoints[i];
+			}
+			debug(2, "Lander: %s pad %d at (%d, %d), speed %.2f", landed ? "Landed on" : "Too fast for", i + 1, _landerX, _landerY, speed);
+			break;
+		}
+	}
+
+	if (landed) {
+		_paused = true;
+		_levelReady = false;
+		sendMessage(runtime, "YouWin");
+		sendMessage(runtime, "ThrustSFXOff");
+		return true;
+	}
+
+	if (crashed || inLandscape(top.x, top.y) || inLandscape(leftFoot.x, leftFoot.y) || inLandscape(rightFoot.x, rightFoot.y)) {
+		_paused = true;
+		_levelReady = false;
+		placeCentered(runtime, child(kLanderChildCollision), _landerX, _landerY);
+		placeCentered(runtime, child(kLanderChildLander), kLanderOffScreen, kLanderOffScreen);
+		placeCentered(runtime, child(kLanderChildArrows), kLanderOffScreen, kLanderOffScreen);
+		_crashAnim = 8;
+		debug(2, "Lander: Crashed at (%d, %d)", _landerX, _landerY);
+		sendMessage(runtime, "PlaySFX1");
+		sendMessage(runtime, "ThrustSFXOff");
+		return true;
+	}
+
+	return false;
+}
+
+Common::SharedPtr<Modifier> LanderModifier::shallowClone() const {
+	Common::SharedPtr<LanderModifier> clone(new LanderModifier(*this));
+	clone->_scheduledEvent.reset();
+	clone->_keySignaller.reset();
+	clone->_running = false;
+	clone->_levelReady = false;
+	clone->_paused = false;
+	clone->_crashAnim = -1;
+	return clone;
+}
+
+const char *LanderModifier::getDefaultName() const {
+	return "Lander";
+}
+
 // Lane centre lines from the bottom lane up, the level 1 timers of each lane's
 // third geyser, and which of the 3 backgrounds each level shows
 static const int16 kLLavaLaneY[5] = {340, 285, 230, 175, 120};
@@ -9236,7 +9922,7 @@ const char *DlgMgrClientModifier::getDefaultName() const {
 
 KnowWonderPlugIn::KnowWonderPlugIn()
 	: _strUtilModifierFactory(this), _dlgMgrServerModifierFactory(this), _dlgMgrClientModifierFactory(this),
-	  _kwSmackerModifierFactory(this), _editCtrlModifierFactory(this), _gameModifierFactory(this), _whaleMazeModifierFactory(this), _eyefollowerModifierFactory(this), _smkJumpModifierFactory(this), _balloonModifierFactory(this), _artModifierFactory(this), _svTownModifierFactory(this), _lLavaModifierFactory(this), _subModifierFactory(this) {
+	  _kwSmackerModifierFactory(this), _editCtrlModifierFactory(this), _gameModifierFactory(this), _whaleMazeModifierFactory(this), _eyefollowerModifierFactory(this), _smkJumpModifierFactory(this), _balloonModifierFactory(this), _artModifierFactory(this), _svTownModifierFactory(this), _lLavaModifierFactory(this), _subModifierFactory(this), _landerModifierFactory(this) {
 }
 
 KnowWonderPlugIn::~KnowWonderPlugIn() {
@@ -9260,7 +9946,7 @@ void KnowWonderPlugIn::registerModifiers(IPlugInModifierRegistrar *registrar) co
 
 	// Mini-game modifiers from separate Magic School Bus plug-ins
 	static const char *const gameModifierNames[] = {
-		"AntMaze", "Lander", "RoverRace"
+		"AntMaze", "RoverRace"
 	};
 	for (const char *name : gameModifierNames)
 		registrar->registerPlugInModifier(name, &_gameModifierFactory);
@@ -9273,6 +9959,7 @@ void KnowWonderPlugIn::registerModifiers(IPlugInModifierRegistrar *registrar) co
 	registrar->registerPlugInModifier("SvTown", &_svTownModifierFactory);
 	registrar->registerPlugInModifier("LLava", &_lLavaModifierFactory);
 	registrar->registerPlugInModifier("Sub", &_subModifierFactory);
+	registrar->registerPlugInModifier("Lander", &_landerModifierFactory);
 }
 
 } // End of namespace KW
