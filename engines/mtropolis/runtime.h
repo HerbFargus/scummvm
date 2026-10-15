@@ -2511,6 +2511,7 @@ public:
 	Common::String getAssetNameByID(uint32 assetID) const;
 	Common::WeakPtr<Asset> getAssetByID(uint32 assetID) const;
 	bool getAssetIDByName(const Common::String &assetName, uint32 &outAssetID) const;
+	bool isAssetStored(const Common::String &assetName) const;	// The asset exists and has data in this project
 	void forceLoadAsset(uint32 assetID, Common::Array<Common::SharedPtr<Asset> > &outHoldAssets);
 
 	size_t getSegmentForStreamIndex(size_t streamIndex) const;

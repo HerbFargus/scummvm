@@ -8200,7 +8200,12 @@ Common::WeakPtr<Asset> Project::getAssetByID(uint32 assetID) const {
 }
 
 void Project::forceLoadAsset(uint32 assetID, Common::Array<Common::SharedPtr<Asset> > &outHoldAssets) {
-	AssetDesc *assetDesc = _assetsByID[assetID];
+	AssetDesc *assetDesc = (assetID < _assetsByID.size()) ? _assetsByID[assetID] : nullptr;
+	if (!assetDesc || assetDesc->streamID == 0 || assetDesc->streamID > _streams.size()) {
+		warning("Asset %u '%s' isn't stored in this project and couldn't be loaded", assetID, assetDesc ? assetDesc->name.c_str() : "");
+		return;
+	}
+
 	uint32 streamID = assetDesc->streamID;
 
 	size_t streamIndex = streamID - 1;
@@ -8236,6 +8241,15 @@ void Project::forceLoadAsset(uint32 assetID, Common::Array<Common::SharedPtr<Ass
 	assignAssets(assetDefLoader.assets, getRuntime()->getHacks());
 
 	outHoldAssets = Common::move(assetDefLoader.assets);
+}
+
+bool Project::isAssetStored(const Common::String &assetName) const {
+	uint32 assetID = 0;
+	if (!getAssetIDByName(assetName, assetID))
+		return false;
+
+	const AssetDesc *assetDesc = _assetsByID[assetID];
+	return assetDesc->streamID != 0 && assetDesc->streamID <= _streams.size();
 }
 
 bool Project::getAssetIDByName(const Common::String &assetName, uint32 &outAssetID) const {
@@ -8589,7 +8603,8 @@ void Project::loadAssetCatalog(const Data::AssetCatalog &assetCatalog) {
 			else
 				assetDesc.typeCode = 0;
 
-			assetDesc.streamID = assetInfo.streamID;
+			// Some mTropolis 2.0 titles set flags in the high bits, like element stream locators
+			assetDesc.streamID = assetInfo.streamID & 0xffff;
 			assetDesc.filePosition = assetInfo.filePosition;
 
 			_assetsByID[assetDesc.id] = &assetDesc;
