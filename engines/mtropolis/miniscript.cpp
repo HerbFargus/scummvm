@@ -800,6 +800,23 @@ MiniscriptInstructionOutcome Modulo::arithExecute(MiniscriptThread *thread, doub
 	return kMiniscriptInstructionOutcomeContinue;
 }
 
+static bool isNullObjectReference(MiniscriptThread *thread, const DynamicValue &value) {
+	if (value.getType() != DynamicValueTypes::kObject)
+		return false;
+
+	Common::SharedPtr<RuntimeObject> obj = value.getObject().object.lock();
+	if (!obj)
+		return true;
+
+	if (obj->isModifier() && static_cast<Modifier *>(obj.get())->isVariable()) {
+		DynamicValue target;
+		if (obj->readAttribute(thread, target, "object"))
+			return target.getType() == DynamicValueTypes::kNull || (target.getType() == DynamicValueTypes::kObject && target.getObject().object.expired());
+	}
+
+	return false;
+}
+
 MiniscriptInstructionOutcome UnorderedCompareInstruction::execute(MiniscriptThread *thread) const {
 	if (thread->getStackSize() < 2) {
 		thread->error("Stack underflow");
@@ -819,7 +836,20 @@ MiniscriptInstructionOutcome UnorderedCompareInstruction::execute(MiniscriptThre
 
 	bool isEqual = false;
 	bool isUndefined = false;
+
+	// An object reference to nothing equals null, including an object reference variable
+	// (which compares as itself, so that its attributes can be reached) that refers to nothing
+	bool lsIsNullObject = isNullObjectReference(thread, lsDest);
+	bool rsIsNullObject = isNullObjectReference(thread, rs);
+
 	switch (lsDest.getType()) {
+	case DynamicValueTypes::kNull:
+	case DynamicValueTypes::kObject:
+		if ((lsIsNullObject || lsDest.getType() == DynamicValueTypes::kNull) && (rsIsNullObject || rs.getType() == DynamicValueTypes::kNull))
+			isEqual = true;
+		else
+			isEqual = (lsDest == rs);
+		break;
 	case DynamicValueTypes::kString:
 		if (rs.getType() == DynamicValueTypes::kString)
 			isEqual = caseInsensitiveEqual(lsDest.getString(), rs.getString());
