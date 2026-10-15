@@ -104,6 +104,7 @@ struct IMessageConsumer;
 struct IModifierContainer;
 struct IPlugInModifierFactory;
 struct IPlugInModifierFactoryAndDataFactory;
+struct IElementPostRenderHook;
 struct IPostEffect;
 struct ISaveUIProvider;
 struct ISaveWriter;
@@ -2472,6 +2473,12 @@ struct IPostEffect : public IInterfaceBase {
 	virtual void renderPostEffect(Graphics::ManagedSurface &surface) const = 0;
 };
 
+// Draws into the window right after one element renders, before higher layers
+// (plug-in post-draw funks such as KnowWonder's FillMod)
+struct IElementPostRenderHook : public IInterfaceBase {
+	virtual void renderElementPostEffect(VisualElement *element, Window *window) = 0;
+};
+
 struct IMediaCueModifier : public IInterfaceBase {
 	virtual Modifier *getMediaCueModifier() = 0;
 	virtual Common::WeakPtr<Modifier> getMediaCueTriggerSource() const = 0;
@@ -2933,6 +2940,10 @@ public:
 	virtual void render(Window *window) = 0;
 	void finalizeRender();
 
+	void addPostRenderHook(IElementPostRenderHook *hook);
+	void removePostRenderHook(IElementPostRenderHook *hook);
+	void renderPostRenderHooks(Window *window);
+
 	void setPalette(const Common::SharedPtr<Palette> &palette);
 	const Common::SharedPtr<Palette> &getPalette() const;
 
@@ -3028,6 +3039,9 @@ protected:
 
 	Common::Rect _prevRect;
 	bool _contentsDirty;
+
+	// Not copied: hooks belong to the modifier that added them
+	Common::Array<IElementPostRenderHook *> _postRenderHooks;
 };
 
 class NonVisualElement : public Element {

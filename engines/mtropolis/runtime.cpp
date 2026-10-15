@@ -9853,6 +9853,28 @@ void VisualElement::finalizeRender() {
 	_contentsDirty = false;
 }
 
+void VisualElement::addPostRenderHook(IElementPostRenderHook *hook) {
+	for (IElementPostRenderHook *existing : _postRenderHooks)
+		if (existing == hook)
+			return;
+
+	_postRenderHooks.push_back(hook);
+}
+
+void VisualElement::removePostRenderHook(IElementPostRenderHook *hook) {
+	for (uint i = 0; i < _postRenderHooks.size(); i++) {
+		if (_postRenderHooks[i] == hook) {
+			_postRenderHooks.remove_at(i);
+			return;
+		}
+	}
+}
+
+void VisualElement::renderPostRenderHooks(Window *window) {
+	for (IElementPostRenderHook *hook : _postRenderHooks)
+		hook->renderElementPostEffect(this, window);
+}
+
 void VisualElement::setPalette(const Common::SharedPtr<Palette> &palette) {
 	_palette = palette;
 	_contentsDirty = true;
