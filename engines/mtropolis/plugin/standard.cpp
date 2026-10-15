@@ -1088,7 +1088,40 @@ bool ListVariableModifier::readAttributeIndexed(MiniscriptThread *thread, Dynami
 
 	if (attrib == "value") {
 		size_t realIndex = 0;
-		return storage->_list->dynamicValueToIndex(realIndex, index) && storage->_list->getAtIndex(realIndex, result);
+		if (!storage->_list->dynamicValueToIndex(realIndex, index))
+			return false;
+
+		if (storage->_list->getAtIndex(realIndex, result))
+			return true;
+
+		// mTropolis 2.0 reads past the end of a list as an empty value, which
+		// Magic School Bus relies on before its lists are filled
+		if (thread->getRuntime()->getProject()->getRuntimeVersion() < kRuntimeVersion200)
+			return false;
+
+		switch (storage->_list->getType()) {
+		case DynamicValueTypes::kBoolean:
+			result.setBool(false);
+			break;
+		case DynamicValueTypes::kInteger:
+			result.setInt(0);
+			break;
+		case DynamicValueTypes::kFloat:
+			result.setFloat(0.0);
+			break;
+		case DynamicValueTypes::kString:
+			result.setString("");
+			break;
+		default:
+			if (storage->_preferredContentType == DynamicValueTypes::kBoolean)
+				result.setBool(false);
+			else if (storage->_preferredContentType == DynamicValueTypes::kInteger)
+				result.setInt(0);
+			else
+				result.clear();
+			break;
+		}
+		return true;
 	} else if (attrib == "delete") {
 		size_t realIndex = 0;
 		if (!storage->_list->dynamicValueToIndex(realIndex, index))
