@@ -705,6 +705,105 @@ private:
 	Common::Array<double> _midgroundX;
 };
 
+// Landscape picture builder from Magic School Bus Volcano Adventure. The title
+// clones plants, trees and buildings; the plug-in moves each new clone to the
+// click point, grows it, plays its idle animation now and then, and turns the
+// grass greener as items are added.
+class ArtModifier : public Modifier {
+public:
+	ArtModifier();
+	~ArtModifier();
+
+	bool load(const PlugInModifierLoaderContext &context, const Data::KW::GameModifier &data);
+
+	bool respondsToEvent(const Event &evt) const override;
+	VThreadState consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) override;
+	void disable(Runtime *runtime) override;
+
+	MiniscriptInstructionOutcome writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) override;
+
+#ifdef MTROPOLIS_DEBUG_ENABLE
+	const char *debugGetTypeName() const override { return "Art Modifier"; }
+	SupportStatus debugGetSupportStatus() const override { return kSupportStatusPartial; }
+#endif
+
+private:
+	static const uint kNumSlots = 1800;
+	static const int kFirstItem = 2;
+	static const int kLastItem = 21;
+
+	struct Slot {
+		Slot();
+
+		Common::WeakPtr<RuntimeObject> element;
+		bool grown;
+		bool growing;
+		int16 growCel;
+		int16 animCel;
+		int16 growCountdown;
+		int16 animCountdown;
+		int32 idleDelay;
+		int32 maxCel;
+		int32 itemType;
+	};
+
+	enum WritableAttribute {
+		kAttribObjectType,
+		kAttribObjItem,
+		kAttribObjErase,
+		kAttribEruption,
+		kAttribErupting,
+		kAttribClickValid,
+		kAttribObjCloned,
+		kAttribRestore,
+		kAttribGrassCel,
+		kAttribIgnored,
+
+		kAttribItemCount,	// Plus the item number
+	};
+
+	struct WriteProxy {
+		static MiniscriptInstructionOutcome write(MiniscriptThread *thread, const DynamicValue &value, void *objectRef, uintptr ptrOrOffset);
+		static MiniscriptInstructionOutcome refAttrib(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib);
+		static MiniscriptInstructionOutcome refAttribIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib, const DynamicValue &index);
+	};
+
+	Common::SharedPtr<Modifier> shallowClone() const override;
+	const char *getDefaultName() const override;
+
+	void reset(Runtime *runtime);
+	void tick(Runtime *runtime);
+	void stop();
+	void placeItem(Runtime *runtime);
+	void restoreItems(Runtime *runtime);
+	void eraseLast();
+	void setCel(Runtime *runtime, const Common::WeakPtr<RuntimeObject> &element, int32 cel);
+	Structural *child(Structural *parent, int index) const;
+
+	Event _startWhen;
+	Event _stopWhen;
+
+	Common::SharedPtr<ScheduledEvent> _scheduledEvent;
+	bool _running;
+
+	Common::Point _mousePt;
+	int32 _objItem;
+	int32 _objType;
+	int32 _grassThreshold;
+	int32 _objCount;
+	int32 _grassCel;
+	bool _erupting;
+	bool _clickValid;
+	bool _objCloned;
+	Common::Array<Slot> _slots;
+	bool _outhouseGate;
+	int32 _segStart;
+	int32 _segEnd;
+	bool _restoreFlag;
+	int32 _counts[kLastItem + 1];
+	int32 _grassCelAttr;
+};
+
 class DlgMgrClientModifier;
 class KnowWonderPlugIn;
 
@@ -936,6 +1035,7 @@ private:
 	PlugInModifierFactory<EyefollowerModifier, Data::KW::GameModifier> _eyefollowerModifierFactory;
 	PlugInModifierFactory<SmkJumpModifier, Data::KW::GameModifier> _smkJumpModifierFactory;
 	PlugInModifierFactory<BalloonModifier, Data::KW::GameModifier> _balloonModifierFactory;
+	PlugInModifierFactory<ArtModifier, Data::KW::GameModifier> _artModifierFactory;
 
 	Common::WeakPtr<RuntimeObject> _dlgMgrServer;
 };

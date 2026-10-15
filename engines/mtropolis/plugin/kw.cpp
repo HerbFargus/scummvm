@@ -3479,6 +3479,450 @@ const char *BalloonModifier::getDefaultName() const {
 	return "Balloon";
 }
 
+// Item number (the container's index under the background) to the last cel of
+// its idle animation, and the offset from the click point it is placed at
+static const struct ArtItem {
+	const char *countAttrib;
+	int32 maxCel;
+	int16 dx;
+	int16 dy;
+} kArtItems[] = {
+	{"ibamboo", 24, 20, -5},
+	{"iberrybush", 26, 25, 0},
+	{"icrocus", 35, 20, 5},
+	{"iginger", 22, 10, 0},
+	{"iindpaintbrush", 39, -5, -15},
+	{"iiris", 37, -10, -15},
+	{"ilupine", 29, 30, 0},
+	{"imarigold", 21, 10, -5},
+	{"ipampasgrass", 31, -15, 0},
+	{"itulip", 29, 30, 7},
+	{"ibirch", 27, -15, -20},
+	{"icatalpa", 40, 0, 0},
+	{"imagnolia", 25, 0, 0},
+	{"imaple", 50, 15, 0},
+	{"ipine", 27, 15, 0},
+	{"igeneralstore", 28, 15, 5},
+	{"igreenhouse", 56, 0, 0},
+	{"ilogcabin", 39, 0, -12},
+	{"iyellowhouse", 55, -2, -15},
+	{"iouthouse", 64, -5, 0},
+};
+
+static const int32 kArtOutHouse = 21;
+static const int32 kArtGrowCels = 8;
+static const int32 kArtGrowTicks = 22;
+static const int32 kArtIdlePause = 150;
+static const int32 kArtMaxGrassCel = 14;
+
+ArtModifier::Slot::Slot()
+	: grown(false), growing(false), growCel(1), animCel(9), growCountdown(1), animCountdown(1), idleDelay(0), maxCel(0), itemType(0) {
+}
+
+ArtModifier::ArtModifier()
+	: _running(false), _objItem(0), _objType(0), _grassThreshold(4), _objCount(0), _grassCel(1), _erupting(false), _clickValid(false),
+	  _objCloned(false), _outhouseGate(true), _segStart(1), _segEnd(1), _restoreFlag(false), _grassCelAttr(1) {
+	for (int32 &count : _counts)
+		count = 0;
+	_slots.resize(kNumSlots);
+}
+
+ArtModifier::~ArtModifier() {
+	stop();
+}
+
+bool ArtModifier::load(const PlugInModifierLoaderContext &context, const Data::KW::GameModifier &data) {
+	return loadDlgMgrEvent(_startWhen, data.enableWhen) && loadDlgMgrEvent(_stopWhen, data.disableWhen);
+}
+
+bool ArtModifier::respondsToEvent(const Event &evt) const {
+	return _startWhen.respondsTo(evt) || _stopWhen.respondsTo(evt) || evt.eventType == EventIDs::kParentDisabled || evt.eventType == EventIDs::kMouseUp;
+}
+
+VThreadState ArtModifier::consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) {
+	const Event &evt = msg->getEvent();
+
+	if (_startWhen.respondsTo(evt)) {
+		reset(runtime);
+		if (!_running) {
+			_running = true;
+			_scheduledEvent = runtime->getScheduler().scheduleMethod<ArtModifier, &ArtModifier::tick>(runtime->getPlayTime() + 83, this);
+		}
+	} else if (_stopWhen.respondsTo(evt) || evt.eventType == EventIDs::kParentDisabled) {
+		stop();
+	} else if (evt.eventType == EventIDs::kMouseUp) {
+		// Clicks on the background mark where the next item goes
+		if (_clickValid)
+			_mousePt = runtime->getCachedMousePosition();
+	}
+
+	return kVThreadReturn;
+}
+
+void ArtModifier::disable(Runtime *runtime) {
+	stop();
+}
+
+void ArtModifier::stop() {
+	_running = false;
+	if (_scheduledEvent) {
+		_scheduledEvent->cancel();
+		_scheduledEvent.reset();
+	}
+}
+
+void ArtModifier::reset(Runtime *runtime) {
+	_objItem = 0;
+	_objType = 0;
+	_objCount = 0;
+	_grassThreshold = 4;
+	_grassCel = 1;
+	_erupting = false;
+	_clickValid = false;
+	_outhouseGate = true;
+	_segStart = 1;
+	_segEnd = 1;
+	_restoreFlag = false;
+	for (int32 &count : _counts)
+		count = 0;
+	_grassCelAttr = 1;
+
+	for (Slot &slot : _slots) {
+		slot = Slot();
+		slot.idleDelay = runtime->getRandom()->getRandomNumberRng(100, 130);
+	}
+}
+
+Structural *ArtModifier::child(Structural *parent, int index) const {
+	if (!parent || index < 1 || index > static_cast<int>(parent->getChildren().size()))
+		return nullptr;
+	return parent->getChildren()[index - 1].get();
+}
+
+void ArtModifier::setCel(Runtime *runtime, const Common::WeakPtr<RuntimeObject> &element, int32 cel) {
+	Common::SharedPtr<RuntimeObject> obj = element.lock();
+	if (obj)
+		dlgMgrSetInt(runtime, this, obj.get(), "cel", cel);
+}
+
+void ArtModifier::tick(Runtime *runtime) {
+	_scheduledEvent = runtime->getScheduler().scheduleMethod<ArtModifier, &ArtModifier::tick>(runtime->getPlayTime() + 83, this);
+
+	if (_mousePt.x > 15 && _mousePt.x < 620 && _mousePt.y > 15 && _mousePt.y < 422 && _objCloned && _clickValid) {
+		placeItem(runtime);
+		_objCloned = false;
+	}
+
+	if (_restoreFlag) {
+		restoreItems(runtime);
+		_grassCel = _grassCelAttr;
+		_grassThreshold += _objCount;
+	}
+
+	// Items grow through cels 1 to 8, even during an eruption
+	for (Slot &slot : _slots) {
+		if (!slot.growing)
+			continue;
+
+		slot.growCountdown--;
+		if (slot.growCel < kArtGrowCels && slot.growCountdown == 0) {
+			slot.growCel++;
+			setCel(runtime, slot.element, slot.growCel);
+			slot.growCountdown = kArtGrowTicks;
+			if (slot.growCel == kArtGrowCels) {
+				slot.growing = false;
+				slot.grown = true;
+			}
+		}
+	}
+
+	// Grown items play their idle animation every so often
+	if (!_erupting) {
+		for (Slot &slot : _slots) {
+			if (!slot.grown || slot.element.expired())
+				continue;
+
+			if (slot.idleDelay != 0) {
+				slot.idleDelay--;
+				continue;
+			}
+
+			slot.animCountdown--;
+			if (slot.animCel >= slot.maxCel || slot.animCountdown != 0)
+				continue;
+
+			if (slot.itemType == kArtOutHouse) {
+				// The outhouse plays one of four segments
+				if (_outhouseGate) {
+					static const int32 kSegments[4][2] = {{9, 22}, {22, 37}, {37, 50}, {50, 64}};
+					_outhouseGate = false;
+					uint segment = runtime->getRandom()->getRandomNumber(1) * 2 + runtime->getRandom()->getRandomNumber(1);
+					_segStart = kSegments[segment][0];
+					_segEnd = kSegments[segment][1];
+					slot.animCel = _segStart;
+				}
+
+				slot.animCel++;
+				setCel(runtime, slot.element, slot.animCel);
+				slot.animCountdown = 2;
+				if (slot.animCel == _segEnd) {
+					slot.idleDelay = kArtIdlePause;
+					slot.animCel = 9;
+					_outhouseGate = true;
+				}
+			} else {
+				slot.animCel++;
+				setCel(runtime, slot.element, slot.animCel);
+				slot.animCountdown = 1;
+				if (slot.animCel == slot.maxCel) {
+					slot.idleDelay = kArtIdlePause;
+					slot.animCel = 9;
+				}
+			}
+		}
+	}
+
+	// The grass gets greener every 4 items
+	if (_objCount == _grassThreshold && _grassCel < kArtMaxGrassCel && !_restoreFlag) {
+		Structural *grass = child(child(findStructuralOwner(), 1), 1);
+		if (grass)
+			dlgMgrSetInt(runtime, this, grass, "cel", _grassCel);
+		_grassCel++;
+		_grassThreshold += 4;
+	}
+}
+
+void ArtModifier::placeItem(Runtime *runtime) {
+	Slot *slot = nullptr;
+	for (Slot &candidate : _slots) {
+		if (candidate.element.expired()) {
+			slot = &candidate;
+			break;
+		}
+	}
+	if (!slot)
+		return;
+
+	slot->growing = true;
+	slot->grown = false;
+	slot->growCel = 1;
+	slot->growCountdown = 1;
+
+	Structural *container = child(findStructuralOwner(), _objItem);
+	if (!container) {
+		debug(1, "Art: Couldn't get container %i", static_cast<int>(_objItem));
+		return;
+	}
+
+	// The original takes the second child, as mTropolis put each clone right after the
+	// original, but clones are added at the end here, so the newest one is the last child
+	int numChildren = container->getChildren().size();
+	Structural *item = (numChildren >= 2) ? child(container, numChildren) : nullptr;
+	if (!item) {
+		debug(1, "Art: Couldn't get item %i", static_cast<int>(_objItem));
+		return;
+	}
+
+	slot->element = item->getSelfReference();
+	debug(2, "Art: Placing '%s' at (%i,%i)", item->getName().c_str(), _mousePt.x, _mousePt.y);
+
+	int32 x = _mousePt.x;
+	int32 y = (_mousePt.y >= 410) ? 385 : _mousePt.y;
+	const ArtItem *itemDef = (_objItem >= kFirstItem && _objItem <= kLastItem) ? &kArtItems[_objItem - kFirstItem] : nullptr;
+	if (itemDef) {
+		x += itemDef->dx;
+		y += itemDef->dy;
+	}
+
+	// Placed centered on the point
+	if (item->isElement() && static_cast<Element *>(item)->isVisual()) {
+		const Common::Rect &rect = static_cast<VisualElement *>(item)->getRelativeRect();
+		DynamicValue pos;
+		pos.setPoint(Common::Point(x - rect.width() / 2, y - rect.height() / 2));
+		dlgMgrWriteAttribute(runtime, this, item, "position", pos);
+	}
+
+	_objCount++;
+	slot->itemType = _objItem;
+	if (itemDef)
+		slot->maxCel = itemDef->maxCel;
+	else
+		debug(1, "Art: Couldn't get item type %i", static_cast<int>(_objItem));
+}
+
+// After a picture is loaded, every clone is taken on as a grown item
+void ArtModifier::restoreItems(Runtime *runtime) {
+	uint slotIndex = 0;
+
+	for (int32 itemType = 1; itemType <= kLastItem; itemType++) {
+		Structural *container = child(findStructuralOwner(), itemType);
+		if (!container || !child(container, 2))
+			continue;
+
+		int32 count = _counts[itemType];
+		for (int32 i = 2; i <= count + 1 && slotIndex < _slots.size(); i++) {
+			Slot &slot = _slots[slotIndex++];
+			Structural *item = child(container, i);
+			if (!item)
+				continue;
+
+			slot.element = item->getSelfReference();
+			slot.growing = false;
+			slot.grown = true;
+			slot.growCel = kArtGrowCels;
+			slot.growCountdown = 1;
+			slot.idleDelay = runtime->getRandom()->getRandomNumberRng(100, 130);
+			slot.itemType = itemType;
+			slot.maxCel = (itemType >= kFirstItem) ? kArtItems[itemType - kFirstItem].maxCel : 0;
+			_objCount++;
+		}
+	}
+
+	_restoreFlag = false;
+}
+
+// The eraser forgets the newest item; the title kills its clone
+void ArtModifier::eraseLast() {
+	uint firstFree = 0;
+	while (firstFree < _slots.size() && !_slots[firstFree].element.expired())
+		firstFree++;
+
+	if (firstFree == 0 || firstFree == _slots.size())
+		return;
+
+	Slot &slot = _slots[firstFree - 1];
+	slot = Slot();
+	slot.idleDelay = kArtIdlePause;
+	_objCount--;
+}
+
+MiniscriptInstructionOutcome ArtModifier::writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) {
+	static const struct {
+		const char *name;
+		WritableAttribute attrib;
+	} kAttribs[] = {
+		{"objecttype", kAttribObjectType},
+		{"objitem", kAttribObjItem},
+		{"objerase", kAttribObjErase},
+		{"eruption", kAttribEruption},
+		{"erupting", kAttribErupting},
+		{"clickvalid", kAttribClickValid},
+		{"objcloned", kAttribObjCloned},
+		{"restore", kAttribRestore},
+		{"grasscel", kAttribGrassCel},
+		{"paused", kAttribIgnored},
+		{"iobjcount", kAttribIgnored},
+		{"ptrestore", kAttribIgnored},
+	};
+
+	uintptr writable = 0;
+	bool found = false;
+	for (const auto &entry : kAttribs) {
+		if (attrib == entry.name) {
+			writable = entry.attrib;
+			found = true;
+			break;
+		}
+	}
+
+	for (int32 i = kFirstItem; !found && i <= kLastItem; i++) {
+		if (attrib == kArtItems[i - kFirstItem].countAttrib) {
+			writable = kAttribItemCount + i;
+			found = true;
+		}
+	}
+
+	if (!found)
+		return Modifier::writeRefAttribute(thread, result, attrib);
+
+	result.pod.ifc = DynamicValueWriteInterfaceGlue<WriteProxy>::getInstance();
+	result.pod.objectRef = this;
+	result.pod.ptrOrOffset = writable;
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
+MiniscriptInstructionOutcome ArtModifier::WriteProxy::write(MiniscriptThread *thread, const DynamicValue &assigned, void *objectRef, uintptr ptrOrOffset) {
+	ArtModifier *self = static_cast<ArtModifier *>(objectRef);
+
+	// Variables are passed by reference
+	DynamicValue value = assigned;
+	if (value.getType() == DynamicValueTypes::kObject) {
+		Common::SharedPtr<RuntimeObject> obj = value.getObject().object.lock();
+		if (obj && obj->isModifier() && static_cast<Modifier *>(obj.get())->isVariable())
+			static_cast<VariableModifier *>(obj.get())->varGetValue(value);
+	}
+
+	if (ptrOrOffset == kAttribIgnored)
+		return kMiniscriptInstructionOutcomeContinue;
+
+	int32 n = 0;
+	bool flag = false;
+	if (value.getType() == DynamicValueTypes::kBoolean) {
+		flag = value.getBool();
+		n = flag ? 1 : 0;
+	} else if (value.roundToInt(n))
+		flag = (n != 0);
+	else
+		return kMiniscriptInstructionOutcomeFailed;
+
+	switch (ptrOrOffset) {
+	case kAttribObjectType:
+		self->_objType = n;
+		break;
+	case kAttribObjItem:
+		self->_objItem = n;
+		break;
+	case kAttribObjErase:
+		if (flag)
+			self->eraseLast();
+		break;
+	case kAttribEruption:
+		if (flag)
+			self->reset(thread->getRuntime());
+		break;
+	case kAttribErupting:
+		self->_erupting = flag;
+		break;
+	case kAttribClickValid:
+		self->_clickValid = flag;
+		break;
+	case kAttribObjCloned:
+		self->_objCloned = flag;
+		break;
+	case kAttribRestore:
+		self->_restoreFlag = flag;
+		break;
+	case kAttribGrassCel:
+		self->_grassCelAttr = n;
+		break;
+	default:
+		if (ptrOrOffset >= static_cast<uintptr>(kAttribItemCount + kFirstItem) && ptrOrOffset <= static_cast<uintptr>(kAttribItemCount + kLastItem))
+			self->_counts[ptrOrOffset - kAttribItemCount] = n;
+		break;
+	}
+
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
+MiniscriptInstructionOutcome ArtModifier::WriteProxy::refAttrib(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib) {
+	return kMiniscriptInstructionOutcomeFailed;
+}
+
+MiniscriptInstructionOutcome ArtModifier::WriteProxy::refAttribIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib, const DynamicValue &index) {
+	return kMiniscriptInstructionOutcomeFailed;
+}
+
+Common::SharedPtr<Modifier> ArtModifier::shallowClone() const {
+	Common::SharedPtr<ArtModifier> clone(new ArtModifier(*this));
+	clone->_scheduledEvent.reset();
+	clone->_running = false;
+	return clone;
+}
+
+const char *ArtModifier::getDefaultName() const {
+	return "Art";
+}
+
 // Cel for an animation track at a timeline frame, or -1 to leave it alone
 static int32 dlgMgrCelForFrame(const DlgMgrClientModifier::Track &track, int32 frame) {
 	if (track.frames.size() > 0) {
@@ -4494,7 +4938,7 @@ const char *DlgMgrClientModifier::getDefaultName() const {
 
 KnowWonderPlugIn::KnowWonderPlugIn()
 	: _strUtilModifierFactory(this), _dlgMgrServerModifierFactory(this), _dlgMgrClientModifierFactory(this),
-	  _kwSmackerModifierFactory(this), _editCtrlModifierFactory(this), _gameModifierFactory(this), _whaleMazeModifierFactory(this), _eyefollowerModifierFactory(this), _smkJumpModifierFactory(this), _balloonModifierFactory(this) {
+	  _kwSmackerModifierFactory(this), _editCtrlModifierFactory(this), _gameModifierFactory(this), _whaleMazeModifierFactory(this), _eyefollowerModifierFactory(this), _smkJumpModifierFactory(this), _balloonModifierFactory(this), _artModifierFactory(this) {
 }
 
 KnowWonderPlugIn::~KnowWonderPlugIn() {
@@ -4518,7 +4962,7 @@ void KnowWonderPlugIn::registerModifiers(IPlugInModifierRegistrar *registrar) co
 
 	// Mini-game modifiers from separate Magic School Bus plug-ins
 	static const char *const gameModifierNames[] = {
-		"AntMaze", "Art", "LLava", "Lander", "RoverRace", "Sub", "SvTown"
+		"AntMaze", "LLava", "Lander", "RoverRace", "Sub", "SvTown"
 	};
 	for (const char *name : gameModifierNames)
 		registrar->registerPlugInModifier(name, &_gameModifierFactory);
@@ -4527,6 +4971,7 @@ void KnowWonderPlugIn::registerModifiers(IPlugInModifierRegistrar *registrar) co
 	registrar->registerPlugInModifier("Eyefollower", &_eyefollowerModifierFactory);
 	registrar->registerPlugInModifier("SmkJump", &_smkJumpModifierFactory);
 	registrar->registerPlugInModifier("Balloon", &_balloonModifierFactory);
+	registrar->registerPlugInModifier("Art", &_artModifierFactory);
 }
 
 } // End of namespace KW
