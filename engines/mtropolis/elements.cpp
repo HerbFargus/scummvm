@@ -2524,10 +2524,17 @@ void TextLabelElement::visitInternalReferences(IStructuralReferenceVisitor *visi
 }
 
 MiniscriptInstructionOutcome TextLabelElement::scriptSetText(MiniscriptThread *thread, const DynamicValue &value) {
-	// Numbers are shown as text, as in Magic School Bus Volcano's high scores
+	// Numbers are shown as text, as in Magic School Bus Volcano's high scores and Mars's age
+	// on Mars, and nothing (an empty message value) as no text
 	DynamicValue derefValue = value.dereference();
 	if (derefValue.getType() == DynamicValueTypes::kInteger) {
 		_text = Common::String::format("%i", static_cast<int>(derefValue.getInt()));
+	} else if (derefValue.getType() == DynamicValueTypes::kFloat) {
+		_text = Common::String::format("%g", derefValue.getFloat());
+	} else if (derefValue.getType() == DynamicValueTypes::kBoolean) {
+		_text = derefValue.getBool() ? "true" : "false";
+	} else if (derefValue.getType() == DynamicValueTypes::kNull) {
+		_text.clear();
 	} else if (derefValue.getType() == DynamicValueTypes::kString) {
 		_text = derefValue.getString();
 	} else {
