@@ -1843,8 +1843,20 @@ void DlgMgrServerModifier::stopEngine() {
 
 	_isRunning = false;
 	_isPlaying = false;
-	_queue.clear();
+
+	DlgMgrClientModifier *client = getCurrentClient();
 	_currentClient.reset();
+	if (client && _runtime)
+		client->onPlaybackFinished(_runtime, false);
+
+	// Release queued lines so their clients can queue again
+	if (_runtime)
+		flushQueue(_runtime, false);
+	else
+		_queue.clear();
+
+	if (_plugIn && _plugIn->getDlgMgrServer() == this)
+		_plugIn->setDlgMgrServer(Common::WeakPtr<RuntimeObject>());
 
 	if (_playMediaSignaller) {
 		_playMediaSignaller->removeReceiver(this);
