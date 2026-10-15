@@ -2367,6 +2367,899 @@ const char *WhaleMazeModifier::getDefaultName() const {
 	return "WhaleMaze";
 }
 
+// Wall tile cels by the mask of open neighbours: 0x01 up-left, 0x02 up,
+// 0x04 up-right, 0x08 left, 0x10 right, 0x20 down-left, 0x40 down, 0x80 down-right
+static const byte kAntMazeWallCels[256] = {
+	46, 30, 23, 23, 29, 33, 23, 23, 15, 15, 3, 3, 18, 18, 3, 3,
+	19, 21, 5, 5, 19, 21, 5, 5, 1, 1, 44, 44, 1, 1, 44, 44,
+	28, 36, 25, 25, 32, 38, 25, 25, 15, 15, 3, 3, 18, 18, 3, 3,
+	22, 20, 6, 6, 22, 20, 6, 6, 1, 1, 44, 44, 1, 1, 44, 44,
+	11, 14, 2, 2, 13, 12, 2, 2, 7, 7, 43, 43, 8, 8, 43, 43,
+	9, 10, 41, 41, 9, 10, 41, 41, 42, 42, 45, 45, 42, 42, 45, 45,
+	11, 14, 2, 2, 13, 12, 2, 2, 7, 7, 43, 43, 8, 8, 43, 43,
+	9, 10, 41, 41, 9, 10, 41, 41, 42, 42, 45, 45, 42, 42, 45, 45,
+	27, 31, 26, 26, 34, 38, 26, 26, 17, 17, 4, 4, 16, 16, 4, 4,
+	19, 21, 5, 5, 19, 21, 5, 5, 1, 1, 44, 44, 1, 1, 44, 44,
+	35, 40, 24, 24, 39, 38, 24, 24, 17, 17, 4, 4, 16, 16, 4, 4,
+	22, 20, 6, 6, 22, 20, 6, 6, 1, 1, 44, 44, 1, 1, 44, 44,
+	11, 14, 2, 2, 13, 12, 2, 2, 7, 7, 43, 43, 8, 8, 43, 43,
+	9, 10, 41, 41, 9, 10, 41, 41, 42, 42, 45, 45, 42, 42, 45, 45,
+	11, 14, 2, 2, 13, 12, 2, 2, 7, 7, 43, 43, 8, 8, 43, 43,
+	9, 10, 41, 41, 9, 10, 41, 41, 42, 42, 45, 45, 42, 42, 45, 45,
+};
+
+// Cels of the ant and the enemies by direction
+static const int kAntMazeCelRight = 1;
+static const int kAntMazeCelLeft = 4;
+static const int kAntMazeCelDown = 7;
+static const int kAntMazeCelUp = 10;
+static const int kAntMazeCarryOffset = 19;
+static const int kAntMazeMunchCel = 37;
+static const int kAntMazeMunchTicks = 22;
+static const int kAntMazeOpenCel = 47;
+static const int kAntMazeTileSize = 30;
+static const int kAntMazeHidden = 500;
+
+AntMazeModifier::Enemy::Enemy() : startTick(-1), loop(0), idx(0), reversing(false), cel(kAntMazeCelRight) {
+}
+
+AntMazeModifier::AntMazeModifier()
+	: _levelsLoaded(false), _gameLevel(0), _paused(false), _running(false), _levelReady(false), _tickCount(0), _antCel(kAntMazeCelRight),
+	  _munchTicks(0), _foodCount(0), _foodLeft(0), _carried(0), _warpCount(0), _enemyCount(0), _antLionCount(0), _switchCount(0),
+	  _munchCount(0), _tokenCount(0), _runtime(nullptr) {
+	memset(_map, '*', sizeof(_map));
+}
+
+AntMazeModifier::AntMazeModifier(const AntMazeModifier &other)
+	: Modifier(other), _startWhen(other._startWhen), _stopWhen(other._stopWhen), _levels(other._levels), _levelsLoaded(other._levelsLoaded),
+	  _gameLevel(0), _paused(false), _running(false), _levelReady(false), _tickCount(0), _antCel(kAntMazeCelRight), _munchTicks(0),
+	  _foodCount(0), _foodLeft(0), _carried(0), _warpCount(0), _enemyCount(0), _antLionCount(0), _switchCount(0), _munchCount(0),
+	  _tokenCount(0), _runtime(nullptr) {
+	memset(_map, '*', sizeof(_map));
+}
+
+AntMazeModifier::~AntMazeModifier() {
+	stopGame();
+}
+
+bool AntMazeModifier::load(const PlugInModifierLoaderContext &context, const Data::KW::GameModifier &data) {
+	if (!loadDlgMgrEvent(_startWhen, data.enableWhen) || !loadDlgMgrEvent(_stopWhen, data.disableWhen))
+		return false;
+
+	return true;
+}
+
+// The levels are records in the plug-in's data section pointing at the map
+// and enemy route strings
+bool AntMazeModifier::loadLevels() {
+	if (_levelsLoaded)
+		return !_levels.empty();
+
+	_levelsLoaded = true;
+
+	Common::File f;
+	if (!f.open(Common::Path("mTrop_Resources/AntMaze.r32")) && !f.open(Common::Path("AntMaze.r32"))) {
+		warning("AntMaze: AntMaze.r32 from the installed game is needed for the levels");
+		return false;
+	}
+
+	Common::Array<byte> image;
+	image.resize(f.size());
+	f.read(&image[0], image.size());
+
+	bool failed = false;
+	auto readS16 = [&](uint32 va) -> int16 {
+		uint32 offset = va - 0x10000000;
+		if (offset + 2 > image.size()) {
+			failed = true;
+			return 0;
+		}
+		return static_cast<int16>(READ_LE_UINT16(&image[offset]));
+	};
+	auto readU32 = [&](uint32 va) -> uint32 {
+		uint32 offset = va - 0x10000000;
+		if (offset + 4 > image.size()) {
+			failed = true;
+			return 0;
+		}
+		return READ_LE_UINT32(&image[offset]);
+	};
+	auto readString = [&](uint32 va) -> Common::String {
+		Common::String str;
+		for (uint32 offset = va - 0x10000000; offset < image.size(); offset++) {
+			if (!image[offset])
+				return str;
+			str += static_cast<char>(image[offset]);
+		}
+		failed = true;
+		return str;
+	};
+
+	Common::Array<Level> levels;
+	levels.resize(kNumLevels + 1);
+	for (uint l = 1; l <= kNumLevels; l++) {
+		Level &level = levels[l];
+		uint32 base = 0x10009f82 + l * 0xae;
+
+		level.map = readString(readU32(base));
+		if (level.map.size() != kCols * kRows)
+			failed = true;
+
+		for (int i = 0; i < kMaxWarps; i++) {
+			uint32 warp = base + 4 + i * 8;
+			level.warps[i].pos = Common::Point(readS16(warp + 2), readS16(warp));
+			level.warps[i].dest = Common::Point(readS16(warp + 6), readS16(warp + 4));
+		}
+
+		for (int i = 0; i < kMaxEnemies; i++) {
+			uint32 enemy = base + 0x64 + i * 8;
+			level.enemies[i].startTick = readS16(enemy);
+			level.enemies[i].path = readString(readU32(enemy + 2));
+			level.enemies[i].loop = readS16(enemy + 6);
+		}
+
+		for (int i = 0; i < kMaxSwitches; i++) {
+			uint32 sw = base + 0x7c + i * 10;
+			level.switches[i].pos = Common::Point(readS16(sw + 2), readS16(sw));
+			level.switches[i].target = Common::Point(readS16(sw + 6), readS16(sw + 4));
+			level.switches[i].newChar = static_cast<char>(readS16(sw + 8));
+		}
+	}
+
+	// Level 1 has its nest in column 7 and one enemy leaving after 180 ticks
+	if (failed || !levels[1].map.hasPrefix("*******E*") || levels[1].enemies[0].startTick != 180 || levels[1].enemies[0].loop != 2
+		|| !levels[1].enemies[0].path.hasSuffix("!") || levels[1].enemies[1].startTick != -1) {
+		warning("AntMaze: AntMaze.r32 isn't the expected version");
+		return false;
+	}
+
+	_levels.swap(levels);
+	return true;
+}
+
+bool AntMazeModifier::respondsToEvent(const Event &evt) const {
+	return _startWhen.respondsTo(evt) || _stopWhen.respondsTo(evt) || evt.eventType == EventIDs::kParentDisabled || evt.eventType == EventIDs::kMouseDown;
+}
+
+VThreadState AntMazeModifier::consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) {
+	const Event &evt = msg->getEvent();
+
+	if (_startWhen.respondsTo(evt)) {
+		_runtime = runtime;
+		if (!_running) {
+			_running = true;
+			_keySignaller = runtime->getProject()->notifyOnKeyboardEvent(this);
+			scheduleTick(runtime);
+		}
+		_paused = false;
+		return kVThreadReturn;
+	}
+
+	if (_stopWhen.respondsTo(evt) || evt.eventType == EventIDs::kParentDisabled) {
+		stopGame();
+		return kVThreadReturn;
+	}
+
+	if (evt.eventType == EventIDs::kMouseDown) {
+		const DynamicValue &value = msg->getValue();
+		handleClick(runtime, (value.getType() == DynamicValueTypes::kPoint) ? value.getPoint() : runtime->getCachedMousePosition());
+	}
+
+	return kVThreadReturn;
+}
+
+void AntMazeModifier::onKeyboardEvent(Runtime *runtime, const KeyboardInputEvent &keyEvt) {
+	Common::EventType type = keyEvt.getKeyEventType();
+	if (!_running || _munchTicks > 0 || (type != Common::EVENT_KEYDOWN && type != Common::EVENT_KEYUP))
+		return;
+
+	// Any key, up or down, while paused
+	if (_paused) {
+		sendMessage(runtime, "PausedClick");
+		return;
+	}
+
+	// Moves repeat with the key
+	if (type != Common::EVENT_KEYDOWN || !_levelReady)
+		return;
+
+	switch (keyEvt.getKeyState().keycode) {
+	case Common::KEYCODE_UP:
+	case Common::KEYCODE_KP8:
+		if (_ant.y < 1 || mapAt(_ant.x, _ant.y - 1) == '*')
+			return;
+		_ant.y--;
+		_antCel = kAntMazeCelUp;
+		break;
+	case Common::KEYCODE_LEFT:
+	case Common::KEYCODE_KP4:
+		if (_ant.x < 1 || mapAt(_ant.x - 1, _ant.y) == '*')
+			return;
+		_ant.x--;
+		_antCel = kAntMazeCelLeft;
+		break;
+	case Common::KEYCODE_RIGHT:
+	case Common::KEYCODE_KP6:
+		if (_ant.x > kCols - 2 || mapAt(_ant.x + 1, _ant.y) == '*')
+			return;
+		_ant.x++;
+		_antCel = kAntMazeCelRight;
+		break;
+	case Common::KEYCODE_DOWN:
+	case Common::KEYCODE_KP2:
+		if (_ant.y > kRows - 2 || mapAt(_ant.x, _ant.y + 1) == '*')
+			return;
+		_ant.y++;
+		_antCel = kAntMazeCelDown;
+		break;
+	default:
+		return;
+	}
+
+	arrive(runtime);
+}
+
+// A click one or two squares away in a straight line moves the ant one square
+void AntMazeModifier::handleClick(Runtime *runtime, const Common::Point &mousePos) {
+	if (_munchTicks > 0)
+		return;
+
+	if (_paused) {
+		sendMessage(runtime, "PausedClick");
+		return;
+	}
+
+	if (!_levelReady)
+		return;
+
+	// Truncates toward zero like the original
+	int col = (mousePos.x - _origin.x) / kAntMazeTileSize;
+	int row = (mousePos.y - _origin.y) / kAntMazeTileSize;
+	if (col < 1 || col > kCols - 2 || row < 0 || row > kRows - 1)
+		return;
+
+	if (col == _ant.x) {
+		if ((row == _ant.y + 1 || row == _ant.y + 2) && mapAt(_ant.x, _ant.y + 1) != '*') {
+			_ant.y++;
+			_antCel = kAntMazeCelDown;
+		} else if ((row == _ant.y - 1 || row == _ant.y - 2) && mapAt(_ant.x, _ant.y - 1) != '*') {
+			_ant.y--;
+			_antCel = kAntMazeCelUp;
+		} else
+			return;
+	} else if (row == _ant.y) {
+		if ((col == _ant.x + 1 || col == _ant.x + 2) && mapAt(_ant.x + 1, _ant.y) != '*') {
+			_ant.x++;
+			_antCel = kAntMazeCelRight;
+		} else if ((col == _ant.x - 1 || col == _ant.x - 2) && mapAt(_ant.x - 1, _ant.y) != '*') {
+			_ant.x--;
+			_antCel = kAntMazeCelLeft;
+		} else
+			return;
+	} else
+		return;
+
+	arrive(runtime);
+}
+
+void AntMazeModifier::disable(Runtime *runtime) {
+	stopGame();
+}
+
+void AntMazeModifier::stopGame() {
+	_running = false;
+	if (_scheduledEvent) {
+		_scheduledEvent->cancel();
+		_scheduledEvent.reset();
+	}
+	if (_keySignaller) {
+		_keySignaller->removeReceiver(this);
+		_keySignaller.reset();
+	}
+}
+
+void AntMazeModifier::scheduleTick(Runtime *runtime) {
+	// The original ticks every 83 milliseconds
+	_scheduledEvent = runtime->getScheduler().scheduleMethod<AntMazeModifier, &AntMazeModifier::tick>(runtime->getPlayTime() + 83, this);
+}
+
+bool AntMazeModifier::readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) {
+	if (attrib == "paused") {
+		result.setBool(_paused);
+		return true;
+	} else if (attrib == "gamelevel") {
+		result.setInt(_gameLevel);
+		return true;
+	}
+
+	return Modifier::readAttribute(thread, result, attrib);
+}
+
+MiniscriptInstructionOutcome AntMazeModifier::writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) {
+	WritableAttribute writable;
+	if (attrib == "paused")
+		writable = kAttribPaused;
+	else if (attrib == "gamelevel")
+		writable = kAttribGameLevel;
+	else
+		return Modifier::writeRefAttribute(thread, result, attrib);
+
+	result.pod.ifc = DynamicValueWriteInterfaceGlue<WriteProxy>::getInstance();
+	result.pod.objectRef = this;
+	result.pod.ptrOrOffset = writable;
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
+MiniscriptInstructionOutcome AntMazeModifier::WriteProxy::write(MiniscriptThread *thread, const DynamicValue &assigned, void *objectRef, uintptr ptrOrOffset) {
+	AntMazeModifier *self = static_cast<AntMazeModifier *>(objectRef);
+
+	// Variables are passed by reference
+	DynamicValue value = assigned;
+	if (value.getType() == DynamicValueTypes::kObject) {
+		Common::SharedPtr<RuntimeObject> obj = value.getObject().object.lock();
+		if (obj && obj->isModifier() && static_cast<Modifier *>(obj.get())->isVariable())
+			static_cast<VariableModifier *>(obj.get())->varGetValue(value);
+	}
+
+	if (ptrOrOffset == kAttribPaused) {
+		if (value.getType() == DynamicValueTypes::kBoolean)
+			self->_paused = value.getBool();
+		else if (value.getType() == DynamicValueTypes::kInteger)
+			self->_paused = (value.getInt() != 0);
+		else
+			return kMiniscriptInstructionOutcomeFailed;
+	} else {
+		int32 level = 0;
+		if (!value.roundToInt(level))
+			return kMiniscriptInstructionOutcomeFailed;
+
+		// Levels out of range are kept but set nothing up
+		self->_gameLevel = level;
+		self->setupLevel(thread->getRuntime());
+	}
+
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
+MiniscriptInstructionOutcome AntMazeModifier::WriteProxy::refAttrib(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib) {
+	return kMiniscriptInstructionOutcomeFailed;
+}
+
+MiniscriptInstructionOutcome AntMazeModifier::WriteProxy::refAttribIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib, const DynamicValue &index) {
+	return kMiniscriptInstructionOutcomeFailed;
+}
+
+// Children of the owner element: 1 tiles, 2 ant, 3 food, 4 queen, 5 warp pads,
+// 6-8 enemies, 9 ant lions, 10 switches, 11 munch tunnels, 12 chance tokens,
+// 13 nest entrance
+Structural *AntMazeModifier::child(int index) const {
+	Structural *owner = findStructuralOwner();
+	if (!owner || index < 1 || index > static_cast<int>(owner->getChildren().size()))
+		return nullptr;
+	return owner->getChildren()[index - 1].get();
+}
+
+Structural *AntMazeModifier::grandchild(int index, int subIndex) const {
+	Structural *container = child(index);
+	if (!container || subIndex < 1 || subIndex > static_cast<int>(container->getChildren().size()))
+		return nullptr;
+	return container->getChildren()[subIndex - 1].get();
+}
+
+void AntMazeModifier::placeCentered(Runtime *runtime, Structural *element, int32 x, int32 y) {
+	if (!element || !element->isElement() || !static_cast<Element *>(element)->isVisual())
+		return;
+
+	const Common::Rect &rect = static_cast<VisualElement *>(element)->getRelativeRect();
+	DynamicValue pos;
+	pos.setPoint(Common::Point(x - rect.width() / 2, y - rect.height() / 2));
+	dlgMgrWriteAttribute(runtime, this, element, "position", pos);
+}
+
+void AntMazeModifier::hide(Runtime *runtime, Structural *element) {
+	placeCentered(runtime, element, kAntMazeHidden, kAntMazeHidden);
+}
+
+void AntMazeModifier::setCel(Runtime *runtime, Structural *element, int32 cel) {
+	dlgMgrSetInt(runtime, this, element, "cel", cel);
+}
+
+void AntMazeModifier::sendMessage(Runtime *runtime, const char *messageName) {
+	uint32 messageID = 0;
+	if (!runtime->getProject()->findAuthorMessageID(messageName, messageID))
+		return;
+
+	Structural *owner = findStructuralOwner();
+	if (!owner)
+		return;
+
+	debug(2, "AntMaze: Sending %s", messageName);
+
+	Common::SharedPtr<MessageProperties> props(new MessageProperties(Event(EventIDs::kAuthorMessage, messageID), DynamicValue(), getSelfReference()));
+	Common::SharedPtr<MessageDispatch> dispatch(new MessageDispatch(props, owner, true, true, false));
+	runtime->queueMessage(dispatch);
+}
+
+char AntMazeModifier::mapAt(int col, int row) const {
+	if (col < 0 || col >= kCols || row < 0 || row >= kRows)
+		return '*';
+	return _map[col][row];
+}
+
+const Common::Point *AntMazeModifier::findWarp(const Common::Point &pos) const {
+	for (int i = 0; i < _warpCount; i++) {
+		if (_warps[i] == pos)
+			return &_warpDests[i];
+	}
+	return nullptr;
+}
+
+Common::Point AntMazeModifier::tileCenter(int col, int row) const {
+	Structural *tile = grandchild(1, row * kCols + col + 1);
+	if (!tile || !tile->isElement() || !static_cast<Element *>(tile)->isVisual())
+		return Common::Point(0, 0);
+
+	// As VisualElement::getCenterPosition()
+	const Common::Rect &rect = static_cast<VisualElement *>(tile)->getRelativeRect();
+	return Common::Point((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2);
+}
+
+void AntMazeModifier::placeAnt(Runtime *runtime) {
+	Common::Point center = tileCenter(_ant.x, _ant.y);
+	setCel(runtime, child(2), _antCel);
+	placeCentered(runtime, child(2), center.x, center.y);
+}
+
+// Picks a wall shape from the open squares around it
+void AntMazeModifier::refreshTile(Runtime *runtime, int col, int row) {
+	if (col < 0 || col >= kCols || row < 0 || row >= kRows)
+		return;
+
+	int cel = kAntMazeOpenCel;
+	if (_map[col][row] == '*') {
+		static const int kNeighbours[8][2] = {{-1, -1}, {0, -1}, {1, -1}, {-1, 0}, {1, 0}, {-1, 1}, {0, 1}, {1, 1}};
+		uint mask = 0;
+		for (uint i = 0; i < 8; i++) {
+			int c = col + kNeighbours[i][0];
+			int r = row + kNeighbours[i][1];
+			if (c >= 0 && c < kCols && r >= 0 && r < kRows && _map[c][r] != '*')
+				mask |= (1 << i);
+		}
+		cel = kAntMazeWallCels[mask];
+	}
+
+	setCel(runtime, grandchild(1, row * kCols + col + 1), cel);
+}
+
+void AntMazeModifier::setupLevel(Runtime *runtime) {
+	_runtime = runtime;
+	if (_gameLevel < 1 || _gameLevel > kNumLevels || !findStructuralOwner() || !loadLevels())
+		return;
+
+	const Level &level = _levels[_gameLevel];
+
+	for (int r = 0; r < kRows; r++) {
+		for (int c = 0; c < kCols; c++)
+			_map[c][r] = level.map[r * kCols + c];
+	}
+
+	for (int k = 1; k <= kMaxFood; k++)
+		hide(runtime, grandchild(3, k));
+	_foodCount = _foodLeft = _carried = 0;
+
+	for (int k = 1; k <= kMaxWarps; k++)
+		hide(runtime, grandchild(5, k));
+	_warpCount = 0;
+
+	for (int i = 0; i < kMaxEnemies; i++)
+		hide(runtime, child(6 + i));
+	_enemyCount = 0;
+
+	for (int k = 1; k <= kMaxAntLions; k++)
+		hide(runtime, grandchild(9, k));
+	_antLionCount = 0;
+
+	for (int k = 1; k <= kMaxSwitches; k++) {
+		hide(runtime, grandchild(10, k));
+		setCel(runtime, grandchild(10, k), 1);
+	}
+	_switchCount = 0;
+
+	for (int k = 1; k <= kMaxMunch; k++)
+		hide(runtime, grandchild(11, k));
+	_munchCount = 0;
+
+	for (int k = 1; k <= kMaxTokens; k++)
+		hide(runtime, grandchild(12, k));
+	_tokenCount = 0;
+
+	for (int r = 0; r < kRows; r++) {
+		for (int c = 0; c < kCols; c++) {
+			const Common::Point pos(c, r);
+			dlgMgrSetBool(runtime, this, grandchild(1, r * kCols + c + 1), "paused", true);
+			refreshTile(runtime, c, r);
+
+			const Common::Point center = tileCenter(c, r);
+			switch (_map[c][r]) {
+			case 'A':
+				if (_antLionCount < kMaxAntLions) {
+					_antLions[_antLionCount++] = pos;
+					placeCentered(runtime, grandchild(9, _antLionCount), center.x, center.y);
+				}
+				break;
+			case 'C':
+				if (_tokenCount < kMaxTokens) {
+					_tokens[_tokenCount++] = pos;
+					placeCentered(runtime, grandchild(12, _tokenCount), center.x, center.y);
+				}
+				break;
+			case 'E':
+				for (Enemy &enemy : _enemies)
+					enemy.pos = pos;
+				placeCentered(runtime, child(13), center.x - 3, center.y - 28);
+				break;
+			case 'F':
+				if (_foodCount < kMaxFood) {
+					_food[_foodCount++] = pos;
+					placeCentered(runtime, grandchild(3, _foodCount), center.x, center.y);
+					_foodLeft++;
+				}
+				break;
+			case 'M':
+				if (_munchCount < kMaxMunch) {
+					_munch[_munchCount++] = pos;
+					placeCentered(runtime, grandchild(11, _munchCount), center.x, center.y);
+				}
+				break;
+			case 'Q':
+				setCel(runtime, child(4), 1);
+				placeCentered(runtime, child(4), center.x + 8, center.y);
+				break;
+			case 'q':
+				setCel(runtime, child(4), 4);
+				placeCentered(runtime, child(4), center.x - 8, center.y);
+				break;
+			case 'S':
+				_ant = _antStart = pos;
+				_antCel = kAntMazeCelRight;
+				_munchTicks = 0;
+				placeCentered(runtime, child(2), center.x, center.y);
+				setCel(runtime, child(2), _antCel);
+				break;
+			case 'T':
+				// One square can throw several switches
+				for (const SwitchRecord &record : level.switches) {
+					if (record.pos != pos || _switchCount >= kMaxSwitches)
+						continue;
+					Switch &sw = _switches[_switchCount++];
+					sw.pos = pos;
+					sw.target = record.target;
+					sw.newChar = record.newChar;
+					sw.used = false;
+					placeCentered(runtime, grandchild(10, _switchCount), center.x, center.y);
+				}
+				break;
+			case 'W':
+				if (_warpCount < kMaxWarps) {
+					_warps[_warpCount] = pos;
+					for (const WarpRecord &record : level.warps) {
+						if (record.pos == pos) {
+							_warpDests[_warpCount] = record.dest;
+							break;
+						}
+					}
+					_warpCount++;
+					placeCentered(runtime, grandchild(5, _warpCount), center.x, center.y + 6);
+				}
+				break;
+			default:
+				break;
+			}
+		}
+	}
+
+	for (int i = 0; i < kMaxEnemies; i++) {
+		Enemy &enemy = _enemies[i];
+		enemy.startTick = level.enemies[i].startTick;
+		enemy.path = level.enemies[i].path;
+		enemy.loop = level.enemies[i].loop;
+		enemy.idx = 0;
+		enemy.reversing = false;
+		if (enemy.startTick > 0)
+			_enemyCount++;
+	}
+
+	Structural *firstTile = grandchild(1, 1);
+	if (firstTile && firstTile->isElement() && static_cast<Element *>(firstTile)->isVisual()) {
+		const Common::Rect &rect = static_cast<VisualElement *>(firstTile)->getRelativeRect();
+		_origin = Common::Point(rect.left, rect.top);
+	}
+
+	_tickCount = 0;
+	_levelReady = true;
+
+	debug(2, "AntMaze: Level %i with %i food, %i enemies", static_cast<int>(_gameLevel), _foodCount, _enemyCount);
+}
+
+// Effects of the square the ant just stepped onto
+void AntMazeModifier::arrive(Runtime *runtime) {
+	int sfx = 0;
+
+	switch (mapAt(_ant.x, _ant.y)) {
+	case 'C':
+		for (int i = 0; i < _tokenCount; i++) {
+			if (_tokens[i] == _ant) {
+				hide(runtime, grandchild(12, i + 1));
+				_tokens[i] = Common::Point(-1, -1);
+				sendMessage(runtime, "ExtraChance");
+			}
+		}
+		break;
+	case 'F':
+		for (int i = 0; i < _foodCount; i++) {
+			if (_food[i] == _ant) {
+				hide(runtime, grandchild(3, i + 1));
+				_food[i] = Common::Point(-1, -1);
+				_foodLeft--;
+				_carried++;
+				sfx = 1;
+			}
+		}
+		break;
+	case 'M':
+		for (int i = 0; i < _munchCount; i++) {
+			if (_munch[i] == _ant) {
+				hide(runtime, grandchild(11, i + 1));
+				_munch[i] = Common::Point(-1, -1);
+				_munchTicks = kAntMazeMunchTicks;
+				_antCel = kAntMazeMunchCel;
+				sfx = 5;
+			}
+		}
+		break;
+	case 'Q':
+	case 'q':
+	case 'x':
+		// The win only needs all the food picked up, not delivered
+		if (_foodLeft < 1) {
+			sendMessage(runtime, "YouWin");
+			sfx = 2;
+		} else if (_carried > 0)
+			sendMessage(runtime, "GotFood");
+		_carried = 0;
+		break;
+	case 'T':
+		for (int i = 0; i < _switchCount; i++) {
+			Switch &sw = _switches[i];
+			if (sw.pos != _ant)
+				continue;
+
+			if (sw.target.x >= 0 && sw.target.x < kCols && sw.target.y >= 0 && sw.target.y < kRows)
+				_map[sw.target.x][sw.target.y] = sw.newChar;
+
+			// The original skips row 0 here
+			for (int c = sw.target.x - 1; c <= sw.target.x + 1; c++) {
+				for (int r = sw.target.y - 1; r <= sw.target.y + 1; r++) {
+					if (r > 0 && r < kRows)
+						refreshTile(runtime, c, r);
+				}
+			}
+
+			setCel(runtime, grandchild(10, i + 1), 2);
+			if (!sw.used) {
+				sfx = 4;
+				sw.used = true;
+			}
+		}
+		break;
+	case 'W':
+		if (const Common::Point *dest = findWarp(_ant)) {
+			sfx = 3;
+			_ant = *dest;
+		}
+		break;
+	default:
+		break;
+	}
+
+	if (_munchTicks == 0 && _carried > 0)
+		_antCel += kAntMazeCarryOffset;
+	placeAnt(runtime);
+
+	bool hit = false;
+	for (int i = 0; i < _enemyCount; i++) {
+		if (_enemies[i].pos == _ant && _enemies[i].startTick < _tickCount)
+			hit = true;
+	}
+	for (int i = 0; i < _antLionCount; i++) {
+		if (_antLions[i] == _ant)
+			hit = true;
+	}
+
+	if (hit) {
+		loseChance(runtime);
+		return;
+	}
+
+	if (sfx > 0)
+		sendMessage(runtime, Common::String::format("PlaySFX%i", sfx).c_str());
+}
+
+// The title counts the lives; the ant just goes back to the start with its load
+void AntMazeModifier::loseChance(Runtime *runtime) {
+	sendMessage(runtime, "GameOver");
+	_ant = _antStart;
+	_munchTicks = 0;
+	_antCel = (_carried > 0) ? kAntMazeCelRight + kAntMazeCarryOffset : kAntMazeCelRight;
+	placeAnt(runtime);
+}
+
+// Steps back over a route character
+void AntMazeModifier::undoEnemyStep(Enemy &enemy, char ch, bool &hit) {
+	switch (ch) {
+	case 'D':
+	case 'd':
+		enemy.pos.y--;
+		enemy.cel = kAntMazeCelUp;
+		break;
+	case 'L':
+	case 'l':
+		enemy.pos.x++;
+		enemy.cel = kAntMazeCelRight;
+		break;
+	case 'R':
+	case 'r':
+		enemy.pos.x--;
+		enemy.cel = kAntMazeCelLeft;
+		break;
+	case 'U':
+	case 'u':
+		enemy.pos.y++;
+		enemy.cel = kAntMazeCelDown;
+		break;
+	default:
+		break;
+	}
+
+	if (const Common::Point *dest = findWarp(enemy.pos)) {
+		if (enemy.pos == _ant)
+			hit = true;
+		enemy.pos = *dest;
+	}
+}
+
+// Uppercase route steps are trusted; lowercase ones warp and bounce off walls
+// and uneaten munch tunnels, replaying the route backwards to its loop point
+void AntMazeModifier::stepEnemy(Runtime *runtime, int index, bool &hit) {
+	Enemy &enemy = _enemies[index];
+	auto pathChar = [&enemy](int idx) -> char {
+		return (idx >= 0 && idx < static_cast<int>(enemy.path.size())) ? enemy.path[idx] : '\0';
+	};
+
+	char ch = pathChar(enemy.idx);
+	if (ch == '!') {
+		enemy.idx = enemy.loop;
+		ch = pathChar(enemy.idx);
+	}
+
+	if (!enemy.reversing) {
+		bool checked = false;
+		switch (ch) {
+		case 'd':
+			checked = true;
+			// fall through
+		case 'D':
+			enemy.pos.y++;
+			enemy.cel = kAntMazeCelDown;
+			break;
+		case 'l':
+			checked = true;
+			// fall through
+		case 'L':
+			enemy.pos.x--;
+			enemy.cel = kAntMazeCelLeft;
+			break;
+		case 'r':
+			checked = true;
+			// fall through
+		case 'R':
+			enemy.pos.x++;
+			enemy.cel = kAntMazeCelRight;
+			break;
+		case 'u':
+			checked = true;
+			// fall through
+		case 'U':
+			enemy.pos.y--;
+			enemy.cel = kAntMazeCelUp;
+			break;
+		default:
+			break;
+		}
+
+		if (checked) {
+			if (enemy.pos == _ant)
+				hit = true;
+			if (const Common::Point *dest = findWarp(enemy.pos))
+				enemy.pos = *dest;
+			for (int i = 0; i < _munchCount; i++) {
+				if (_munch[i] == enemy.pos)
+					enemy.reversing = true;
+			}
+			if (mapAt(enemy.pos.x, enemy.pos.y) == '*')
+				enemy.reversing = true;
+		}
+
+		if (enemy.reversing)
+			undoEnemyStep(enemy, ch, hit);
+	} else
+		undoEnemyStep(enemy, ch, hit);
+
+	if (enemy.pos.x >= 0 && enemy.pos.x < kCols && enemy.pos.y >= 0 && enemy.pos.y < kRows) {
+		Common::Point center = tileCenter(enemy.pos.x, enemy.pos.y);
+		placeCentered(runtime, child(6 + index), center.x, center.y);
+		setCel(runtime, child(6 + index), enemy.cel);
+		if (enemy.pos == _ant)
+			hit = true;
+	}
+
+	if (enemy.reversing) {
+		enemy.idx--;
+		if (enemy.idx > enemy.loop)
+			return;
+		enemy.reversing = false;
+	}
+	enemy.idx++;
+}
+
+void AntMazeModifier::tick(Runtime *runtime) {
+	_scheduledEvent.reset();
+	if (!_running)
+		return;
+
+	scheduleTick(runtime);
+
+	if (_paused || _gameLevel <= 0 || !_levelReady)
+		return;
+
+	_tickCount++;
+
+	if (_munchTicks > 0) {
+		_antCel++;
+		if (--_munchTicks == 0)
+			_antCel = (_carried > 0) ? kAntMazeCelRight + kAntMazeCarryOffset : kAntMazeCelRight;
+		setCel(runtime, child(2), _antCel);
+	}
+
+	bool hit = false;
+	for (int i = 0; i < _enemyCount; i++) {
+		const Enemy &enemy = _enemies[i];
+
+		// Comes out of the nest
+		if (_tickCount == enemy.startTick) {
+			Common::Point center = tileCenter(enemy.pos.x, enemy.pos.y);
+			placeCentered(runtime, child(6 + i), center.x, center.y);
+			continue;
+		}
+
+		if (_tickCount < enemy.startTick || _tickCount % 9 != 0)
+			continue;
+
+		stepEnemy(runtime, i, hit);
+	}
+
+	if (hit)
+		loseChance(runtime);
+}
+
+Common::SharedPtr<Modifier> AntMazeModifier::shallowClone() const {
+	return Common::SharedPtr<Modifier>(new AntMazeModifier(*this));
+}
+
+const char *AntMazeModifier::getDefaultName() const {
+	return "AntMaze";
+}
+
 EyefollowerModifier::EyefollowerModifier() : _cel(0) {
 }
 
@@ -12115,7 +13008,7 @@ const char *DlgMgrClientModifier::getDefaultName() const {
 
 KnowWonderPlugIn::KnowWonderPlugIn()
 	: _strUtilModifierFactory(this), _dlgMgrServerModifierFactory(this), _dlgMgrClientModifierFactory(this),
-	  _kwSmackerModifierFactory(this), _editCtrlModifierFactory(this), _fillModModifierFactory(this), _aviCtrlModifierFactory(this), _gameModifierFactory(this), _whaleMazeModifierFactory(this), _eyefollowerModifierFactory(this), _smkJumpModifierFactory(this), _balloonModifierFactory(this), _artModifierFactory(this), _svTownModifierFactory(this), _lLavaModifierFactory(this), _subModifierFactory(this), _landerModifierFactory(this), _roverRaceModifierFactory(this), _bugEatBugModifierFactory(this) {
+	  _kwSmackerModifierFactory(this), _editCtrlModifierFactory(this), _fillModModifierFactory(this), _aviCtrlModifierFactory(this), _whaleMazeModifierFactory(this), _antMazeModifierFactory(this), _eyefollowerModifierFactory(this), _smkJumpModifierFactory(this), _balloonModifierFactory(this), _artModifierFactory(this), _svTownModifierFactory(this), _lLavaModifierFactory(this), _subModifierFactory(this), _landerModifierFactory(this), _roverRaceModifierFactory(this), _bugEatBugModifierFactory(this) {
 }
 
 KnowWonderPlugIn::~KnowWonderPlugIn() {
@@ -12140,13 +13033,8 @@ void KnowWonderPlugIn::registerModifiers(IPlugInModifierRegistrar *registrar) co
 	registrar->registerPlugInModifier("AVICtrl", &_aviCtrlModifierFactory);
 
 	// Mini-game modifiers from separate Magic School Bus plug-ins
-	static const char *const gameModifierNames[] = {
-		"AntMaze"
-	};
-	for (const char *name : gameModifierNames)
-		registrar->registerPlugInModifier(name, &_gameModifierFactory);
-
 	registrar->registerPlugInModifier("WhaleMaze", &_whaleMazeModifierFactory);
+	registrar->registerPlugInModifier("AntMaze", &_antMazeModifierFactory);
 	registrar->registerPlugInModifier("Eyefollower", &_eyefollowerModifierFactory);
 	registrar->registerPlugInModifier("SmkJump", &_smkJumpModifierFactory);
 	registrar->registerPlugInModifier("Balloon", &_balloonModifierFactory);

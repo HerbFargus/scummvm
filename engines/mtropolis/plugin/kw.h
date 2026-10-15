@@ -503,6 +503,174 @@ private:
 	Common::SharedPtr<KeyboardEventSignaller> _keySignaller;
 };
 
+// Ant Maze mini-game from Magic School Bus Explores Bugs. The ant walks a grid
+// one square at a time, carrying food to the queen past scripted enemies and
+// ant lions. The levels are read from the original AntMaze.r32 plug-in.
+class AntMazeModifier : public Modifier, public IKeyboardEventReceiver {
+public:
+	AntMazeModifier();
+	AntMazeModifier(const AntMazeModifier &other);
+	~AntMazeModifier();
+
+	bool load(const PlugInModifierLoaderContext &context, const Data::KW::GameModifier &data);
+
+	bool respondsToEvent(const Event &evt) const override;
+	VThreadState consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) override;
+	void disable(Runtime *runtime) override;
+
+	bool readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) override;
+	MiniscriptInstructionOutcome writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) override;
+
+	void onKeyboardEvent(Runtime *runtime, const KeyboardInputEvent &keyEvt) override;
+
+#ifdef MTROPOLIS_DEBUG_ENABLE
+	const char *debugGetTypeName() const override { return "AntMaze Modifier"; }
+	SupportStatus debugGetSupportStatus() const override { return kSupportStatusDone; }
+#endif
+
+private:
+	static const int kCols = 22;
+	static const int kRows = 13;
+	static const int kNumLevels = 30;
+	static const int kMaxFood = 40;
+	static const int kMaxWarps = 12;
+	static const int kMaxEnemies = 3;
+	static const int kMaxAntLions = 20;
+	static const int kMaxSwitches = 5;
+	static const int kMaxMunch = 12;
+	static const int kMaxTokens = 5;
+
+	struct WarpRecord {
+		Common::Point pos;
+		Common::Point dest;
+	};
+
+	struct EnemyRecord {
+		int16 startTick;
+		int16 loop;
+		Common::String path;
+	};
+
+	struct SwitchRecord {
+		Common::Point pos;
+		Common::Point target;
+		char newChar;
+	};
+
+	struct Level {
+		Common::String map;		// Rows of kCols
+		WarpRecord warps[kMaxWarps];
+		EnemyRecord enemies[kMaxEnemies];
+		SwitchRecord switches[kMaxSwitches];
+	};
+
+	struct Enemy {
+		Enemy();
+
+		Common::Point pos;
+		int16 startTick;
+		int16 loop;
+		int idx;
+		bool reversing;
+		int cel;
+		Common::String path;
+	};
+
+	struct Switch {
+		Common::Point pos;
+		Common::Point target;
+		char newChar;
+		bool used;
+	};
+
+	struct WriteProxy {
+		static MiniscriptInstructionOutcome write(MiniscriptThread *thread, const DynamicValue &value, void *objectRef, uintptr ptrOrOffset);
+		static MiniscriptInstructionOutcome refAttrib(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib);
+		static MiniscriptInstructionOutcome refAttribIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib, const DynamicValue &index);
+	};
+
+	enum WritableAttribute {
+		kAttribPaused,
+		kAttribGameLevel,
+	};
+
+	Common::SharedPtr<Modifier> shallowClone() const override;
+	const char *getDefaultName() const override;
+
+	bool loadLevels();
+	void setupLevel(Runtime *runtime);
+	void tick(Runtime *runtime);
+	void scheduleTick(Runtime *runtime);
+	void stopGame();
+
+	void handleClick(Runtime *runtime, const Common::Point &mousePos);
+	void arrive(Runtime *runtime);
+	void loseChance(Runtime *runtime);
+	void stepEnemy(Runtime *runtime, int index, bool &hit);
+	void undoEnemyStep(Enemy &enemy, char ch, bool &hit);
+	void refreshTile(Runtime *runtime, int col, int row);
+
+	char mapAt(int col, int row) const;
+	const Common::Point *findWarp(const Common::Point &pos) const;
+	Common::Point tileCenter(int col, int row) const;
+	void placeAnt(Runtime *runtime);
+
+	Structural *child(int index) const;
+	Structural *grandchild(int index, int subIndex) const;
+	void placeCentered(Runtime *runtime, Structural *element, int32 x, int32 y);
+	void hide(Runtime *runtime, Structural *element);
+	void setCel(Runtime *runtime, Structural *element, int32 cel);
+	void sendMessage(Runtime *runtime, const char *messageName);
+
+	Event _startWhen;
+	Event _stopWhen;
+
+	Common::Array<Level> _levels;	// Index 0 is unused
+	bool _levelsLoaded;
+
+	int32 _gameLevel;
+	bool _paused;
+	bool _running;
+	bool _levelReady;
+	int16 _tickCount;
+	Common::Point _origin;	// Top left of the first tile
+
+	char _map[kCols][kRows];
+
+	Common::Point _ant;
+	Common::Point _antStart;
+	int _antCel;
+	int _munchTicks;
+
+	Common::Point _food[kMaxFood];
+	int _foodCount;
+	int _foodLeft;
+	int _carried;
+
+	Common::Point _warps[kMaxWarps];
+	Common::Point _warpDests[kMaxWarps];
+	int _warpCount;
+
+	Enemy _enemies[kMaxEnemies];
+	int _enemyCount;
+
+	Common::Point _antLions[kMaxAntLions];
+	int _antLionCount;
+
+	Switch _switches[kMaxSwitches];
+	int _switchCount;
+
+	Common::Point _munch[kMaxMunch];
+	int _munchCount;
+
+	Common::Point _tokens[kMaxTokens];
+	int _tokenCount;
+
+	Runtime *_runtime;
+	Common::SharedPtr<ScheduledEvent> _scheduledEvent;
+	Common::SharedPtr<KeyboardEventSignaller> _keySignaller;
+};
+
 // Turns its element's first child (a pair of eyes) toward the mouse by cel
 class EyefollowerModifier : public Modifier {
 public:
@@ -2212,8 +2380,8 @@ private:
 	PlugInModifierFactory<EditCtrlModifier, Data::KW::EditCtrlModifier> _editCtrlModifierFactory;
 	PlugInModifierFactory<FillModModifier, Data::KW::FillModModifier> _fillModModifierFactory;
 	PlugInModifierFactory<AVICtrlModifier, Data::KW::AVICtrlModifier> _aviCtrlModifierFactory;
-	PlugInModifierFactory<GameModifier, Data::KW::GameModifier> _gameModifierFactory;
 	PlugInModifierFactory<WhaleMazeModifier, Data::KW::GameModifier> _whaleMazeModifierFactory;
+	PlugInModifierFactory<AntMazeModifier, Data::KW::GameModifier> _antMazeModifierFactory;
 	PlugInModifierFactory<EyefollowerModifier, Data::KW::GameModifier> _eyefollowerModifierFactory;
 	PlugInModifierFactory<SmkJumpModifier, Data::KW::GameModifier> _smkJumpModifierFactory;
 	PlugInModifierFactory<BalloonModifier, Data::KW::GameModifier> _balloonModifierFactory;
