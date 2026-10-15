@@ -3197,6 +3197,7 @@ public:
 	virtual void varGetValue(DynamicValue &dest) const = 0;
 
 	bool readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) override;
+	MiniscriptInstructionOutcome writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) override;
 
 	void disable(Runtime *runtime) override;
 

@@ -4927,8 +4927,9 @@ bool Runtime::runFrame() {
 				error("Project has no subsections");
 			}
 
+			// A subsection with only one scene has no shared scene (Magic School Bus Bugs mini-game titles)
 			Structural *firstSubsection = firstSection->getChildren()[0].get();
-			if (firstSubsection->getChildren().size() < 2) {
+			if (firstSubsection->getChildren().size() == 0) {
 				error("Project has no subsections");
 			}
 
@@ -4939,13 +4940,14 @@ bool Runtime::runFrame() {
 			for (const Common::SharedPtr<SceneTransitionHooks> &hook : _hacks.sceneTransitionHooks)
 				hook->onProjectStarted(this);
 
-			Common::SharedPtr<Structural> startScene = firstSubsection->getChildren()[1];
+			const Common::SharedPtr<Structural> defaultStartScene = firstSubsection->getChildren()[firstSubsection->getChildren().size() > 1 ? 1 : 0];
+			Common::SharedPtr<Structural> startScene = defaultStartScene;
 			if (!_startSceneName.empty()) {
 				for (const Common::SharedPtr<Structural> &section : _project->getChildren()) {
 					for (const Common::SharedPtr<Structural> &subsection : section->getChildren()) {
 						// The first scene of each subsection is its shared scene
 						for (uint i = 1; i < subsection->getChildren().size(); i++) {
-							if (subsection->getChildren()[i]->getName().equalsIgnoreCase(_startSceneName) && startScene == firstSubsection->getChildren()[1])
+							if (subsection->getChildren()[i]->getName().equalsIgnoreCase(_startSceneName) && startScene == defaultStartScene)
 								startScene = subsection->getChildren()[i];
 						}
 					}
@@ -5138,8 +5140,10 @@ bool Runtime::runFrame() {
 			_sourceSceneTransitionEffect = SceneTransitionEffect();
 			_destinationSceneTransitionEffect = SceneTransitionEffect();
 
-			for (const SceneStackEntry &sceneStackEntry : _sceneStack)
-				recursiveAutoPlayMedia(sceneStackEntry.scene.get());
+			for (const SceneStackEntry &sceneStackEntry : _sceneStack) {
+				if (sceneStackEntry.scene)
+					recursiveAutoPlayMedia(sceneStackEntry.scene.get());
+			}
 
 			for (const Common::SharedPtr<SceneTransitionHooks> &hooks : _hacks.sceneTransitionHooks)
 				hooks->onSceneTransitionEnded(this, _activeMainScene);
@@ -5646,7 +5650,7 @@ void Runtime::executeCompleteTransitionToScene(const Common::SharedPtr<Structura
 	if (targetScene == targetSharedScene)
 		error("Transitioned into a default shared scene, this is not supported");
 
-	if (_activeMainScene == targetSharedScene)
+	if (targetSharedScene && _activeMainScene == targetSharedScene)
 		error("Transitioned into scene currently being used as a target scene, this is not supported");
 
 	for (size_t i = _sceneStack.size() - 1; i > 0; i--) {
@@ -5795,7 +5799,7 @@ void Runtime::executeHighLevelSceneTransition(const HighLevelSceneTransition &tr
 					if (targetScene == targetSharedScene)
 						error("Transitioned into a default shared scene, this is not supported");
 
-					if (_activeMainScene == targetSharedScene)
+					if (targetSharedScene && _activeMainScene == targetSharedScene)
 						error("Transitioned into scene currently being used as a target scene, this is not supported");
 
 					queueEventAsLowLevelSceneStateTransitionAction(Event(EventIDs::kSceneDeactivated, 0), _activeMainScene.get(), true, true);
@@ -5902,12 +5906,15 @@ void Runtime::executeSharedScenePostSceneChangeActions() {
 
 	const Common::Array<Common::SharedPtr<Structural> > &subsectionScenes = subsection->getChildren();
 
-	queueEventAsLowLevelSceneStateTransitionAction(Event(EventIDs::kSharedSceneSceneChanged, 0), _activeSharedScene.get(), true, true);
-	if (subsectionScenes.size() > 1) {
-		if (_activeMainScene == subsectionScenes[subsectionScenes.size() - 1])
-			queueEventAsLowLevelSceneStateTransitionAction(Event(EventIDs::kSharedSceneNoNextScene, 0), _activeSharedScene.get(), true, true);
-		if (_activeMainScene == subsectionScenes[1])
-			queueEventAsLowLevelSceneStateTransitionAction(Event(EventIDs::kSharedSceneNoPrevScene, 0), _activeSharedScene.get(), true, true);
+	// A lone scene has no shared scene
+	if (_activeSharedScene) {
+		queueEventAsLowLevelSceneStateTransitionAction(Event(EventIDs::kSharedSceneSceneChanged, 0), _activeSharedScene.get(), true, true);
+		if (subsectionScenes.size() > 1) {
+			if (_activeMainScene == subsectionScenes[subsectionScenes.size() - 1])
+				queueEventAsLowLevelSceneStateTransitionAction(Event(EventIDs::kSharedSceneNoNextScene, 0), _activeSharedScene.get(), true, true);
+			if (_activeMainScene == subsectionScenes[1])
+				queueEventAsLowLevelSceneStateTransitionAction(Event(EventIDs::kSharedSceneNoPrevScene, 0), _activeSharedScene.get(), true, true);
+		}
 	}
 
 	_pendingLowLevelTransitions.push_back(LowLevelSceneStateTransitionAction(_activeMainScene, LowLevelSceneStateTransitionAction::kShowDefaultVisibleElements));
@@ -6571,6 +6578,8 @@ VThreadState Runtime::updateMouseStateTask(const UpdateMouseStateTaskData &data)
 
 		for (size_t ri = 0; ri < _sceneStack.size(); ri++) {
 			const SceneStackEntry &sceneStackEntry = _sceneStack[_sceneStack.size() - 1 - ri];
+			if (!sceneStackEntry.scene)
+				continue;
 			recursiveFindMouseCollision(tracked, bestSceneStack, bestLayer, bestDirect, sceneStackEntry.scene.get(), _sceneStack.size() - 1 - ri, _cachedMousePosition.x, _cachedMousePosition.y, kMouseInteractivityTestMouseClick, _elementTrackedToCursor.lock().get());
 		}
 
@@ -6647,6 +6656,8 @@ VThreadState Runtime::updateMousePositionTask(const UpdateMousePositionTaskData 
 	if (_numMouseBlockers == 0) {
 		for (size_t ri = 0; ri < _sceneStack.size(); ri++) {
 			const SceneStackEntry &sceneStackEntry = _sceneStack[_sceneStack.size() - 1 - ri];
+			if (!sceneStackEntry.scene)
+				continue;
 			recursiveFindMouseCollision(collisionItem, bestSceneStack, bestLayer, bestDirect, sceneStackEntry.scene.get(), _sceneStack.size() - 1 - ri, data.x, data.y, kMouseInteractivityTestAnything, _elementTrackedToCursor.lock().get());
 		}
 	}
@@ -6837,7 +6848,8 @@ Scheduler &Runtime::getScheduler() {
 
 void Runtime::getScenesInRenderOrder(Common::Array<Structural*> &scenes) const {
 	for (Common::Array<SceneStackEntry>::const_iterator it = _sceneStack.begin(), itEnd = _sceneStack.end(); it != itEnd; ++it) {
-		scenes.push_back(it->scene.get());
+		if (it->scene)
+			scenes.push_back(it->scene.get());
 	}
 }
 
@@ -7070,8 +7082,10 @@ void Runtime::checkCollisions(ICollider *optRestrictToCollider) {
 		return;
 
 	Common::Array<ColliderInfo> collisionObjects;
-	for (size_t i = 0; i < _sceneStack.size(); i++)
-		recursiveFindColliders(_sceneStack[i].scene.get(), i, collisionObjects, 0, 0, true);
+	for (size_t i = 0; i < _sceneStack.size(); i++) {
+		if (_sceneStack[i].scene)
+			recursiveFindColliders(_sceneStack[i].scene.get(), i, collisionObjects, 0, 0, true);
+	}
 
 	Common::sort(collisionObjects.begin(), collisionObjects.end(), sortColliderPredicate);
 
@@ -7774,8 +7788,10 @@ const Common::SharedPtr<Structural> &Runtime::getActiveSharedScene() const {
 
 void Runtime::getSceneStack(Common::Array<Common::SharedPtr<Structural> >& sceneStack) const {
 	sceneStack.clear();
-	for (const SceneStackEntry &stackEntry : _sceneStack)
-		sceneStack.push_back(stackEntry.scene);
+	for (const SceneStackEntry &stackEntry : _sceneStack) {
+		if (stackEntry.scene)
+			sceneStack.push_back(stackEntry.scene);
+	}
 }
 
 bool Runtime::mustDraw() const {
@@ -10898,6 +10914,16 @@ bool VariableModifier::readAttribute(MiniscriptThread *thread, DynamicValue &res
 	}
 
 	return Modifier::readAttribute(thread, result, attrib);
+}
+
+// Magic School Bus Bugs scripts assign to var.value
+MiniscriptInstructionOutcome VariableModifier::writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) {
+	if (attrib == "value") {
+		result = createWriteProxy();
+		return kMiniscriptInstructionOutcomeContinue;
+	}
+
+	return Modifier::writeRefAttribute(thread, result, attrib);
 }
 
 void VariableModifier::disable(Runtime *runtime) {
