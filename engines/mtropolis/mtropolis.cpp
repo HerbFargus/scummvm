@@ -297,6 +297,19 @@ void TestInputScript::update(OSystem *system, Runtime *runtime, Engine *engine) 
 				pushKey(events, Common::KEYCODE_LEFT, 0);
 			else if (arg == "right")
 				pushKey(events, Common::KEYCODE_RIGHT, 0);
+		} else if (cmd == "keydown" || cmd == "keyup") {
+			// Holds or releases an arrow key
+			Common::Event evt;
+			evt.type = (cmd == "keydown") ? Common::EVENT_KEYDOWN : Common::EVENT_KEYUP;
+			if (arg == "up")
+				evt.kbd = Common::KeyState(Common::KEYCODE_UP);
+			else if (arg == "down")
+				evt.kbd = Common::KeyState(Common::KEYCODE_DOWN);
+			else if (arg == "left")
+				evt.kbd = Common::KeyState(Common::KEYCODE_LEFT);
+			else
+				evt.kbd = Common::KeyState(Common::KEYCODE_RIGHT);
+			events->pushEvent(evt);
 		} else if (cmd == "shot") {
 			saveScreenshot(system, arg);
 			debug(1, "Test input: Saved '%s'", arg.c_str());
