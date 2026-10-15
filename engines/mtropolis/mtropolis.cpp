@@ -146,8 +146,8 @@ void TestInputScript::probe(Structural *structural, const Common::Point &pt) {
 		const Common::Rect &rect = visual->getRelativeRect();
 		Common::Rect globalRect(pos.x, pos.y, pos.x + rect.width(), pos.y + rect.height());
 		if (globalRect.contains(pt))
-			debug(1, "Test input: Probe '%s' (%i,%i)-(%i,%i) visible %i ink %i", visual->getName().c_str(),
-				  globalRect.left, globalRect.top, globalRect.right, globalRect.bottom, visual->isVisible() ? 1 : 0, static_cast<int>(visual->getRenderProperties().getInkMode()));
+			debug(1, "Test input: Probe '%s' (%i,%i)-(%i,%i) visible %i ink %i layer %i", visual->getName().c_str(),
+				  globalRect.left, globalRect.top, globalRect.right, globalRect.bottom, visual->isVisible() ? 1 : 0, static_cast<int>(visual->getRenderProperties().getInkMode()), static_cast<int>(visual->getLayer()));
 	}
 
 	for (const Common::SharedPtr<Structural> &child : structural->getChildren())
