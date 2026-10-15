@@ -1964,11 +1964,22 @@ void DlgMgrServerModifier::updateCurrentLine(Runtime *runtime) {
 			if (target && track.sourceGUID != 0 && !track.assetSwapped) {
 				DynamicValue asset;
 				if (!source || !dlgMgrReadAttribute(runtime, this, source.get(), "asset", asset) || asset.getType() != DynamicValueTypes::kString) {
-					// The source may be in a scene that isn't loaded, so sounds use the media name stored with the track
-					if (track.trackType == Data::KW::DlgMgrTrack::kTrackTypeSound)
-						asset.setString(track.mediaName);
-					else
-						asset.clear();
+					// The source may be in a scene that isn't loaded, so sounds use the media name stored with the track.
+					// Some titles kept stale names from the title they were copied from, in which case another track's
+					// media name is the sound.
+					asset.clear();
+					if (track.trackType == Data::KW::DlgMgrTrack::kTrackTypeSound) {
+						if (runtime->getProject()->isAssetStored(track.mediaName))
+							asset.setString(track.mediaName);
+						else {
+							for (const DlgMgrClientModifier::Track &otherTrack : client->getTracks()) {
+								if (!otherTrack.mediaName.empty() && runtime->getProject()->isAssetStored(otherTrack.mediaName)) {
+									asset.setString(otherTrack.mediaName);
+									break;
+								}
+							}
+						}
+					}
 				}
 
 				if (asset.getType() == DynamicValueTypes::kString && !asset.getString().empty()) {
