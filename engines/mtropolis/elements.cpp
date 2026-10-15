@@ -1211,6 +1211,45 @@ CORO_BEGIN_DEFINITION(MovieElement::SeekToTimeCoroutine)
 	CORO_END_FUNCTION
 CORO_END_DEFINITION
 
+// Finds the asset that a script assigns to an element's "asset" attribute, by name or ID,
+// loading it if it belongs to another scene
+static Common::SharedPtr<Asset> resolveScriptAsset(MiniscriptThread *thread, const DynamicValue &value, AssetType assetType, Common::Array<Common::SharedPtr<Asset> > &outForceLoaded) {
+	Project *project = thread->getRuntime()->getProject();
+
+	uint32 assetID = 0;
+	if (value.getType() == DynamicValueTypes::kString) {
+		if (!project->getAssetIDByName(value.getString(), assetID)) {
+			warning("Element was assigned asset '%s', which doesn't exist", value.getString().c_str());
+			return nullptr;
+		}
+	} else {
+		DynamicValue converted;
+		if (!value.convertToType(DynamicValueTypes::kInteger, converted)) {
+			thread->error("Tried to set an element's asset to something that wasn't a name or ID");
+			return nullptr;
+		}
+		assetID = converted.getInt();
+	}
+
+	Common::SharedPtr<Asset> asset = project->getAssetByID(assetID).lock();
+	if (!asset) {
+		project->forceLoadAsset(assetID, outForceLoaded);
+		asset = project->getAssetByID(assetID).lock();
+	}
+
+	if (!asset) {
+		warning("Element was assigned asset %u, which couldn't be loaded", assetID);
+		return nullptr;
+	}
+
+	if (asset->getAssetType() != assetType) {
+		warning("Element was assigned asset %u, which is the wrong type", assetID);
+		return nullptr;
+	}
+
+	return asset;
+}
+
 ImageElement::ImageElement() : _cacheBitmap(false), _assetID(0) {
 }
 
@@ -1233,6 +1272,9 @@ bool ImageElement::readAttribute(MiniscriptThread *thread, DynamicValue &result,
 		// prompt buttons aren't layered correctly?
 		result.setString(_text);
 		return true;
+	} else if (attrib == "asset") {
+		result.setString(thread->getRuntime()->getProject()->getAssetNameByID(_assetID));
+		return true;
 	}
 
 	return VisualElement::readAttribute(thread, result, attrib);
@@ -1244,6 +1286,9 @@ MiniscriptInstructionOutcome ImageElement::writeRefAttribute(MiniscriptThread *t
 		return kMiniscriptInstructionOutcomeContinue;
 	} else if (attrib == "flushpriority") {
 		DynamicValueWriteFuncHelper<ImageElement, &ImageElement::scriptSetFlushPriority, true>::create(this, writeProxy);
+		return kMiniscriptInstructionOutcomeContinue;
+	} else if (attrib == "asset") {
+		DynamicValueWriteFuncHelper<ImageElement, &ImageElement::scriptSetAsset, true>::create(this, writeProxy);
 		return kMiniscriptInstructionOutcomeContinue;
 	}
 
@@ -1427,6 +1472,30 @@ void ImageElement::debugInspect(IDebugInspectionReport *report) const {
 }
 #endif
 
+// Swaps in another image, which the element takes the size of (Magic School Bus Animals swaps
+// animal pictures for cursors with this)
+MiniscriptInstructionOutcome ImageElement::scriptSetAsset(MiniscriptThread *thread, const DynamicValue &value) {
+	Common::Array<Common::SharedPtr<Asset> > forceLoadedAssets;
+	Common::SharedPtr<Asset> asset = resolveScriptAsset(thread, value, kAssetTypeImage, forceLoadedAssets);
+	if (!asset)
+		return kMiniscriptInstructionOutcomeContinue;
+
+	if (asset->getAssetID() == _assetID && _cachedImage)
+		return kMiniscriptInstructionOutcomeContinue;
+
+	ImageAsset *imageAsset = static_cast<ImageAsset *>(asset.get());
+	_assetID = asset->getAssetID();
+	_cachedImage = imageAsset->loadAndCacheImage(thread->getRuntime());
+
+	const Common::Rect &assetRect = imageAsset->getRect();
+	_rect.right = _rect.left + assetRect.width();
+	_rect.bottom = _rect.top + assetRect.height();
+
+	thread->getRuntime()->setSceneGraphDirty();
+
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
 MiniscriptInstructionOutcome ImageElement::scriptSetFlushPriority(MiniscriptThread *thread, const DynamicValue &value) {
 	// We don't support flushing media, and this value isn't readable, so just discard it
 	return kMiniscriptInstructionOutcomeContinue;
@@ -1486,6 +1555,9 @@ bool MToonElement::readAttribute(MiniscriptThread *thread, DynamicValue &result,
 	} else if (attrib == "regpoint") {
 		result.setPoint(_cachedMToon->getMetadata()->registrationPoint);
 		return true;
+	} else if (attrib == "asset") {
+		result.setString(thread->getRuntime()->getProject()->getAssetNameByID(_assetID));
+		return true;
 	}
 
 	return VisualElement::readAttribute(thread, result, attrib);
@@ -1506,6 +1578,9 @@ MiniscriptInstructionOutcome MToonElement::writeRefAttribute(MiniscriptThread *t
 		return kMiniscriptInstructionOutcomeContinue;
 	} else if (attrib == "range") {
 		DynamicValueWriteOrRefAttribFuncHelper<MToonElement, &MToonElement::scriptSetRange, &MToonElement::scriptRangeWriteRefAttribute>::create(this, result);
+		return kMiniscriptInstructionOutcomeContinue;
+	} else if (attrib == "asset") {
+		DynamicValueWriteFuncHelper<MToonElement, &MToonElement::scriptSetAsset, true>::create(this, result);
 		return kMiniscriptInstructionOutcomeContinue;
 	}
 
@@ -1597,6 +1672,37 @@ void MToonElement::deactivate() {
 	}
 
 	_renderSurface.reset();
+}
+
+// Swaps in another mToon, which plays its whole range from the current cel where it has one
+// (Magic School Bus Animals swaps Keesha's poses in the snake game with this)
+MiniscriptInstructionOutcome MToonElement::scriptSetAsset(MiniscriptThread *thread, const DynamicValue &value) {
+	Common::Array<Common::SharedPtr<Asset> > forceLoadedAssets;
+	Common::SharedPtr<Asset> asset = resolveScriptAsset(thread, value, kAssetTypeMToon, forceLoadedAssets);
+	if (!asset)
+		return kMiniscriptInstructionOutcomeContinue;
+
+	if (asset->getAssetID() == _assetID && _cachedMToon)
+		return kMiniscriptInstructionOutcomeContinue;
+
+	uint hackFlags = 0;
+	_assetID = asset->getAssetID();
+	_cachedMToon = static_cast<MToonAsset *>(asset.get())->loadAndCacheMToon(thread->getRuntime(), hackFlags);
+	_metadata = _cachedMToon->getMetadata();
+	_renderSurface.reset();
+	_paletteSurface.reset();
+
+	int32 numFrames = _metadata->frames.size();
+	_playRange = IntRange(1, numFrames);
+	if (_cel < 1 || _cel > numFrames)
+		_cel = 1;
+
+	_rect.right = _rect.left + _metadata->rect.width();
+	_rect.bottom = _rect.top + _metadata->rect.height();
+
+	thread->getRuntime()->setSceneGraphDirty();
+
+	return kMiniscriptInstructionOutcomeContinue;
 }
 
 void MToonElement::tryAutoSetName(Runtime *runtime, Project *project) {

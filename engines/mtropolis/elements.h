@@ -218,6 +218,7 @@ public:
 
 private:
 	MiniscriptInstructionOutcome scriptSetFlushPriority(MiniscriptThread *thread, const DynamicValue &value);
+	MiniscriptInstructionOutcome scriptSetAsset(MiniscriptThread *thread, const DynamicValue &value);
 
 	bool _cacheBitmap;
 	uint32 _assetID;
@@ -296,6 +297,7 @@ private:
 	MiniscriptInstructionOutcome scriptSetRangeTyped(MiniscriptThread *thread, const Common::Point &value);
 	MiniscriptInstructionOutcome scriptSetRangeTyped(MiniscriptThread *thread, const Label &value);
 	MiniscriptInstructionOutcome scriptSetRangeByName(MiniscriptThread *thread, const Common::String &name);
+	MiniscriptInstructionOutcome scriptSetAsset(MiniscriptThread *thread, const DynamicValue &value);
 
 	void onPauseStateChanged() override;
 
