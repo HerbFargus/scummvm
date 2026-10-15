@@ -670,7 +670,8 @@ static int32 dlgMgrCelForFrame(const DlgMgrClientModifier::Track &track, int32 f
 
 DlgMgrServerModifier::DlgMgrServerModifier()
 	: _plugIn(nullptr), _runtime(nullptr), _isRunning(false), _isPlaying(false), _skipRequested(false), _paused(false),
-	  _captions(false), _debugOutput(false), _relink(false), _startTime(0), _frameOffset(0), _lastFrame(-1), _maxEndFrame(0) {
+	  _captions(false), _debugOutput(false), _relink(false), _startTime(0), _frameOffset(0), _lastFrame(-1), _maxEndFrame(0),
+	  _captionNextLine(0), _captionNextPageFrame(0), _captionDuration(0), _captionTotalChars(0), _captionShown(false) {
 }
 
 DlgMgrServerModifier::DlgMgrServerModifier(const DlgMgrServerModifier &other)
@@ -678,7 +679,8 @@ DlgMgrServerModifier::DlgMgrServerModifier(const DlgMgrServerModifier &other)
 	  _captionSpeakerEvent(other._captionSpeakerEvent), _captionClearEvent(other._captionClearEvent), _captionFile(other._captionFile),
 	  _registryKey(other._registryKey), _titleName(other._titleName), _plugIn(other._plugIn), _runtime(nullptr), _isRunning(false),
 	  _isPlaying(false), _skipRequested(false), _paused(false), _captions(other._captions), _debugOutput(false), _relink(false),
-	  _startTime(0), _frameOffset(0), _lastFrame(-1), _maxEndFrame(0) {
+	  _startTime(0), _frameOffset(0), _lastFrame(-1), _maxEndFrame(0),
+	  _captionNextLine(0), _captionNextPageFrame(0), _captionDuration(0), _captionTotalChars(0), _captionShown(false) {
 }
 
 DlgMgrServerModifier::~DlgMgrServerModifier() {
@@ -851,6 +853,12 @@ void DlgMgrServerModifier::writeAttribute(Runtime *runtime, WritableAttribute at
 		break;
 	case kAttribCaption:
 		_captions = flag;
+		if (flag)
+			loadCaptions(runtime);
+		else {
+			_captionEntries.clear();
+			clearCaption(runtime);
+		}
 		break;
 	case kAttribPause:
 		setPaused(runtime, flag);
@@ -1031,6 +1039,7 @@ void DlgMgrServerModifier::updateCurrentLine(Runtime *runtime) {
 			if (!track.isSoundPlaying) {
 				track.isSoundPlaying = true;
 				dlgMgrSendCommand(runtime, this, target.get(), EventIDs::kPlay);
+				startCaption(runtime, client->getName(), track.startFrame, track.endFrame);
 			}
 		} else {
 			if (!track.isShown && (!track.hideAtEnd || track.endFrame != track.startFrame)) {
@@ -1058,9 +1067,12 @@ void DlgMgrServerModifier::updateCurrentLine(Runtime *runtime) {
 		}
 	}
 
+	updateCaption(runtime, frame);
+
 	if (frame > _maxEndFrame) {
 		_isPlaying = false;
 		_currentClient.reset();
+		clearCaption(runtime);
 		client->onPlaybackFinished(runtime, true);
 	}
 }
@@ -1100,7 +1112,216 @@ void DlgMgrServerModifier::stopCurrentLine(Runtime *runtime, bool resetTracks, b
 		track.isFinished = true;
 	}
 
+	clearCaption(runtime);
 	client->onPlaybackFinished(runtime, notifyDone);
+}
+
+void DlgMgrServerModifier::loadCaptions(Runtime *runtime) {
+	_captionEntries.clear();
+	_captionNames.clear();
+	_captionTexts.clear();
+
+	if (_captionFile.empty())
+		return;
+
+	Common::ScopedPtr<Common::SeekableReadStream> stream(runtime->getProject()->createReadStreamForProjectPath(_captionFile));
+	if (!stream) {
+		warning("DlgMgrServer: Couldn't open caption file '%s'", _captionFile.c_str());
+		return;
+	}
+
+	uint32 numEntries = stream->readUint32LE();
+	if (stream->err() || numEntries == 0 || numEntries > 0x10000)
+		return;
+
+	Common::Array<CaptionEntry> entries;
+	entries.resize(numEntries);
+	for (CaptionEntry &entry : entries) {
+		entry.textOffset = stream->readUint32LE();
+		entry.nameOffset = stream->readUint32LE();
+		entry.compareNames = (stream->readUint32LE() != 0);
+	}
+
+	uint32 namesSize = stream->readUint32LE();
+	Common::Array<char> names;
+	names.resize(namesSize + 1);
+	if (namesSize)
+		stream->read(&names[0], namesSize);
+	names[namesSize] = '\0';
+
+	uint32 textsSize = stream->readUint32LE();
+	Common::Array<char> texts;
+	texts.resize(textsSize + 1);
+	if (textsSize)
+		stream->read(&texts[0], textsSize);
+	texts[textsSize] = '\0';
+
+	if (stream->err()) {
+		warning("DlgMgrServer: Caption file '%s' is damaged", _captionFile.c_str());
+		return;
+	}
+
+	_captionEntries.swap(entries);
+	_captionNames.swap(names);
+	_captionTexts.swap(texts);
+}
+
+Common::String DlgMgrServerModifier::findCaption(const Common::String &lineName) const {
+	if (_captionEntries.empty() || lineName.empty() || lineName[0] == '~')
+		return Common::String();
+
+	// Line names are normalized before lookup
+	Common::String key = lineName;
+	size_t hashPos = key.findFirstOf('#');
+	if (hashPos != Common::String::npos)
+		key = key.substr(0, hashPos);
+	if (key.size() > 3 && (key.hasPrefix("dlg") || key.hasPrefix("Dlg")))
+		key = key.substr(3);
+	for (uint i = 0; i < key.size();) {
+		if (key[i] == '.' || key[i] == '_')
+			key.deleteChar(i);
+		else
+			i++;
+	}
+
+	uint32 hash = 1;
+	uint32 mult = 1;
+	for (uint i = key.size(); i > 0; i--) {
+		signed char c = static_cast<signed char>(key[i - 1]);
+		hash += static_cast<uint32>(static_cast<int32>(c)) * mult;
+		mult *= Common::isDigit(c) ? 5 : 13;
+		mult <<= 1;
+	}
+
+	uint numEntries = _captionEntries.size();
+	uint start = hash % numEntries;
+	for (uint probe = 0; probe < numEntries; probe++) {
+		const CaptionEntry &entry = _captionEntries[(start + probe) % numEntries];
+		if (entry.textOffset == 0xffffffffu)
+			continue;
+
+		bool matches = !entry.compareNames;
+		if (!matches && entry.nameOffset < _captionNames.size())
+			matches = (key == Common::String(&_captionNames[entry.nameOffset]));
+
+		if (matches) {
+			if (entry.textOffset >= _captionTexts.size())
+				return Common::String();
+			return Common::String(&_captionTexts[entry.textOffset]);
+		}
+
+		if (!entry.compareNames)
+			break;
+	}
+
+	return Common::String();
+}
+
+void DlgMgrServerModifier::startCaption(Runtime *runtime, const Common::String &lineName, int32 startFrame, int32 endFrame) {
+	if (!_captions)
+		return;
+
+	Common::String caption = findCaption(lineName);
+	if (caption.empty())
+		return;
+
+	Common::String speaker;
+	size_t tabPos = caption.findFirstOf('\t');
+	if (tabPos != Common::String::npos) {
+		speaker = caption.substr(0, tabPos);
+		caption = caption.substr(tabPos + 1);
+	}
+
+	// The original wraps at 560 pixels of 14 point Arial, about 68 average characters
+	const uint kMaxLineChars = 68;
+
+	_captionLines.clear();
+	Common::String line;
+	size_t pos = 0;
+	while (pos < caption.size()) {
+		size_t spacePos = caption.find(' ', pos);
+		if (spacePos == Common::String::npos)
+			spacePos = caption.size();
+
+		Common::String word = caption.substr(pos, spacePos - pos);
+		if (!line.empty() && line.size() + 1 + word.size() > kMaxLineChars) {
+			_captionLines.push_back(line);
+			line.clear();
+		}
+		if (!line.empty())
+			line += ' ';
+		line += word;
+		pos = spacePos + 1;
+	}
+	if (!line.empty())
+		_captionLines.push_back(line);
+
+	if (_captionLines.empty())
+		return;
+
+	_captionTotalChars = 0;
+	for (const Common::String &captionLine : _captionLines)
+		_captionTotalChars += captionLine.size() + 1;
+	_captionTotalChars = MAX<uint32>(1, _captionTotalChars - 1);
+
+	_captionDuration = MAX<int32>(0, endFrame - startFrame);
+	_captionNextPageFrame = startFrame;
+	_captionNextLine = 0;
+	_captionShown = true;
+
+	if (!speaker.empty()) {
+		DynamicValue speakerValue;
+		speakerValue.setString(speaker + ":");
+		sendCaptionEvent(runtime, _captionSpeakerEvent, speakerValue);
+	}
+
+	sendCaptionPage(runtime);
+}
+
+void DlgMgrServerModifier::updateCaption(Runtime *runtime, int32 frame) {
+	if (_captionShown && _captionNextLine < _captionLines.size() && frame >= _captionNextPageFrame)
+		sendCaptionPage(runtime);
+}
+
+// Pages are two lines, each shown for its share of the line's duration
+void DlgMgrServerModifier::sendCaptionPage(Runtime *runtime) {
+	Common::String text;
+	uint32 pageChars = 0;
+	for (uint i = 0; i < 2 && _captionNextLine < _captionLines.size(); i++) {
+		const Common::String &captionLine = _captionLines[_captionNextLine++];
+		text += captionLine + "\r";
+		pageChars += captionLine.size() + 1;
+	}
+
+	_captionNextPageFrame += static_cast<int32>(static_cast<int64>(_captionDuration) * pageChars / _captionTotalChars);
+
+	DynamicValue textValue;
+	textValue.setString(text);
+	sendCaptionEvent(runtime, _captionTextEvent, textValue);
+}
+
+void DlgMgrServerModifier::clearCaption(Runtime *runtime) {
+	if (!_captionShown)
+		return;
+
+	_captionShown = false;
+	_captionLines.clear();
+	sendCaptionEvent(runtime, _captionClearEvent, DynamicValue());
+}
+
+void DlgMgrServerModifier::sendCaptionEvent(Runtime *runtime, const Event &evt, const DynamicValue &value) {
+	if (evt.eventType == EventIDs::kNothing || static_cast<uint32>(evt.eventType) == 1)
+		return;
+
+	Common::SharedPtr<Structural> scene = runtime->getActiveMainScene();
+	if (!scene)
+		return;
+
+	debug(2, "DlgMgr: Caption event %u,%u", static_cast<uint>(evt.eventType), static_cast<uint>(evt.eventInfo));
+
+	Common::SharedPtr<MessageProperties> props(new MessageProperties(evt, value, getSelfReference()));
+	Common::SharedPtr<MessageDispatch> dispatch(new MessageDispatch(props, scene.get(), true, true, false));
+	runtime->queueMessage(dispatch);
 }
 
 void DlgMgrServerModifier::flushQueue(Runtime *runtime, bool notifyDone) {

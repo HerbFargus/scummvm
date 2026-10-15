@@ -260,6 +260,21 @@ private:
 
 	DlgMgrClientModifier *getCurrentClient() const;
 
+	// Closed captions, from a .ccd file of "SPEAKER\tcaption" entries keyed by dialogue line name
+	struct CaptionEntry {
+		uint32 textOffset;
+		uint32 nameOffset;
+		bool compareNames;	// More than one name hashes to this slot
+	};
+
+	void loadCaptions(Runtime *runtime);
+	Common::String findCaption(const Common::String &lineName) const;
+	void startCaption(Runtime *runtime, const Common::String &lineName, int32 startFrame, int32 endFrame);
+	void updateCaption(Runtime *runtime, int32 frame);
+	void sendCaptionPage(Runtime *runtime);
+	void clearCaption(Runtime *runtime);
+	void sendCaptionEvent(Runtime *runtime, const Event &evt, const DynamicValue &value);
+
 	Event _enableWhen;
 	Event _disableWhen;
 	Event _captionTextEvent;
@@ -289,6 +304,16 @@ private:
 	int32 _frameOffset;	// Frames played before the last pause
 	int32 _lastFrame;
 	int32 _maxEndFrame;
+
+	Common::Array<CaptionEntry> _captionEntries;
+	Common::Array<char> _captionNames;
+	Common::Array<char> _captionTexts;
+	Common::Array<Common::String> _captionLines;	// Wrapped lines of the current caption
+	uint _captionNextLine;
+	int32 _captionNextPageFrame;
+	int32 _captionDuration;
+	uint32 _captionTotalChars;
+	bool _captionShown;
 };
 
 class DlgMgrClientModifier : public Modifier {
