@@ -1321,19 +1321,42 @@ void ImageElement::render(Window *window) {
 		if (inkMode == VisualElementRenderProperties::kInkModeBackgroundMatte || inkMode == VisualElementRenderProperties::kInkModeBackgroundTransparent) {
 			const ColorRGB8 transColorRGB8 = _renderProps.getBackColor();
 			uint32 transColor = 0;
+			const Graphics::ManagedSurface *keyedSource = optimized.get();
+			Graphics::ManagedSurface remappedSurface;
 
-			if (optimized->format.bytesPerPixel == 1) {
+			if (optimized->format.bytesPerPixel == 1 && _cachedImage->getOriginalColorDepth() == kColorDepthMode1Bit) {
+				// 1-bit images draw with white as 0 and black as 1
+				transColor = (transColorRGB8 == ColorRGB8(255, 255, 255)) ? 0 : 1;
+			} else if (optimized->format.bytesPerPixel == 1) {
 				// Paletted images are keyed by the palette entry matching the background color
 				const Palette *palette = getPalette().get();
 				if (!palette)
 					palette = &getRuntime()->getGlobalPalette();
 
+				// Palettes can hold the color more than once (Magic School Bus Volcano's masks are
+				// white at index 255 in a palette that is also white at 0), so every match is keyed
 				const byte *paletteData = palette->getPalette();
+				bool isKeyed[Palette::kNumColors] = {};
+				uint numKeyed = 0;
 				for (uint i = 0; i < Palette::kNumColors; i++) {
 					if (transColorRGB8 == ColorRGB8(paletteData[i * 3 + 0], paletteData[i * 3 + 1], paletteData[i * 3 + 2])) {
-						transColor = i;
-						break;
+						if (numKeyed == 0)
+							transColor = i;
+						isKeyed[i] = true;
+						numKeyed++;
 					}
+				}
+
+				if (numKeyed > 1) {
+					remappedSurface.copyFrom(*optimized);
+					for (int y = 0; y < remappedSurface.h; y++) {
+						byte *row = static_cast<byte *>(remappedSurface.getBasePtr(0, y));
+						for (int x = 0; x < remappedSurface.w; x++) {
+							if (isKeyed[row[x]])
+								row[x] = transColor;
+						}
+					}
+					keyedSource = &remappedSurface;
 				}
 			} else {
 				transColor = optimized->format.ARGBToColor(0, transColorRGB8.r, transColorRGB8.g, transColorRGB8.b);
@@ -1343,7 +1366,7 @@ void ImageElement::render(Window *window) {
 					transColor = optimized->format.ARGBToColor(255, transColorRGB8.r, transColorRGB8.g, transColorRGB8.b);
 			}
 
-			window->getSurface()->transBlitFrom(*optimized, srcRect, destRect, transColor, false, alpha);
+			window->getSurface()->transBlitFrom(*keyedSource, srcRect, destRect, transColor, false, alpha);
 		} else if (inkMode == VisualElementRenderProperties::kInkModeDefault || inkMode == VisualElementRenderProperties::kInkModeCopy) {
 			if (alpha != 255) {
 				warning("Alpha fade was applied to a default or copy image, this isn't supported yet");
