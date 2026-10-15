@@ -598,6 +598,18 @@ bool PlugInTypeTaggedValue::load(DataReader &reader) {
 	return true;
 }
 
+Common::String PlugInTypeTaggedValue::getVarRefName() const {
+	if (type != kVariableReference || extraData.size() < 2 || extraData.back() != 0)
+		return Common::String();
+
+	for (size_t i = 0; i < extraData.size() - 1; i++) {
+		if (extraData[i] < 0x20 || extraData[i] >= 0x7f)
+			return Common::String();
+	}
+
+	return Common::String(reinterpret_cast<const char *>(&extraData[0]));
+}
+
 PlugInTypeTaggedValue::ValueUnion::ValueUnion() {
 }
 

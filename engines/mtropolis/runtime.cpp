@@ -1988,7 +1988,9 @@ bool DynamicValueSource::load(const Data::PlugInTypeTaggedValue &data) {
 		return true;
 	case Data::PlugInTypeTaggedValue::kVariableReference:
 		_sourceType = DynamicValueSourceTypes::kVariableReference;
-		new (&_valueUnion._varReference) VarReference(data.value.asVarRefGUID, "");
+		// The name lets the reference fall back to a same-named variable when its GUID is stale, as
+		// in Magic School Bus Animals, whose point motion modifiers send a variable copied from elsewhere
+		new (&_valueUnion._varReference) VarReference(data.value.asVarRefGUID, data.getVarRefName());
 		return true;
 	default:
 		_sourceType = DynamicValueSourceTypes::kConstant;
@@ -2132,12 +2134,12 @@ void DynamicValueWriteDiscardHelper::create(DynamicValueWriteProxy &proxy) {
 MiniscriptInstructionOutcome DynamicValueWritePointHelper::write(MiniscriptThread *thread, const DynamicValue &value, void *objectRef, uintptr ptrOrOffset) {
 	DynamicValue derefValue = value.dereference();
 
-	if (value.getType() != DynamicValueTypes::kPoint) {
+	if (derefValue.getType() != DynamicValueTypes::kPoint) {
 		thread->error("Can't set point to invalid type");
 		return kMiniscriptInstructionOutcomeFailed;
 	}
 
-	*static_cast<Common::Point *>(objectRef) = value.getPoint();
+	*static_cast<Common::Point *>(objectRef) = derefValue.getPoint();
 
 	return kMiniscriptInstructionOutcomeContinue;
 }

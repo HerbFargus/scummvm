@@ -514,6 +514,9 @@ struct PlugInTypeTaggedValue : public Common::NonCopyable {
 	Common::Array<uint8> extraData;
 
 	bool load(DataReader &reader);
+
+	// The variable name stored after a variable reference, or empty if there isn't one
+	Common::String getVarRefName() const;
 };
 
 class DataObject : public Common::NonCopyable {

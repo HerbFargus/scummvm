@@ -2633,7 +2633,7 @@ bool PointMotionModifier::readAttribute(MiniscriptThread *thread, DynamicValue &
 
 MiniscriptInstructionOutcome PointMotionModifier::writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &writeProxy, const Common::String &attrib) {
 	if (attrib == "destination") {
-		DynamicValueWriteFuncHelper<PointMotionModifier, &PointMotionModifier::scriptSetDestination, true>::create(this, writeProxy);
+		DynamicValueWriteOrRefAttribFuncHelper<PointMotionModifier, &PointMotionModifier::scriptSetDestination, &PointMotionModifier::scriptWriteRefDestinationAttribute>::create(this, writeProxy);
 		return kMiniscriptInstructionOutcomeContinue;
 	} else if (attrib == "speed") {
 		DynamicValueWriteFuncHelper<PointMotionModifier, &PointMotionModifier::scriptSetSpeed, true>::create(this, writeProxy);
@@ -2655,6 +2655,11 @@ MiniscriptInstructionOutcome PointMotionModifier::scriptSetDestination(Miniscrip
 
 	_destination = value.getPoint();
 	return kMiniscriptInstructionOutcomeContinue;
+}
+
+// Magic School Bus Animals nudges the destination with destination.y
+MiniscriptInstructionOutcome PointMotionModifier::scriptWriteRefDestinationAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, const Common::String &attrib) {
+	return DynamicValueWritePointHelper::refAttrib(thread, proxy, &_destination, 0, attrib);
 }
 
 MiniscriptInstructionOutcome PointMotionModifier::scriptSetSpeed(MiniscriptThread *thread, const DynamicValue &value) {

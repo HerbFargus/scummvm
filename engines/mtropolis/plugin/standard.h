@@ -604,6 +604,7 @@ private:
 	void sendToOwner(Runtime *runtime, EventIDs::EventID eventID);
 
 	MiniscriptInstructionOutcome scriptSetDestination(MiniscriptThread *thread, const DynamicValue &value);
+	MiniscriptInstructionOutcome scriptWriteRefDestinationAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, const Common::String &attrib);
 	MiniscriptInstructionOutcome scriptSetSpeed(MiniscriptThread *thread, const DynamicValue &value);
 	MiniscriptInstructionOutcome scriptSetDuration(MiniscriptThread *thread, const DynamicValue &value);
 	MiniscriptInstructionOutcome scriptSetUpdateRate(MiniscriptThread *thread, const DynamicValue &value);
