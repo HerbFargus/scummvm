@@ -170,7 +170,11 @@ void TestInputScript::dumpModifierTree(Modifier *modifier, int depth) {
 	Common::String indent;
 	for (int i = 0; i < depth; i++)
 		indent += "  ";
+#ifdef MTROPOLIS_DEBUG_ENABLE
+	debug(1, "Test input: Tree %s'%s' %x (%s)", indent.c_str(), modifier->getName().c_str(), modifier->getStaticGUID(), modifier->debugGetTypeName());
+#else
 	debug(1, "Test input: Tree %s'%s' %x (modifier)", indent.c_str(), modifier->getName().c_str(), modifier->getStaticGUID());
+#endif
 	IModifierContainer *container = modifier->getChildContainer();
 	if (container) {
 		for (const Common::SharedPtr<Modifier> &child : container->getModifiers())
