@@ -26,6 +26,7 @@
 #include "common/random.h"
 #include "common/substream.h"
 #include "common/system.h"
+#include "common/events.h"
 
 #include "graphics/cursorman.h"
 #include "graphics/managed_surface.h"
@@ -3217,6 +3218,18 @@ bool SystemInterface::readAttribute(MiniscriptThread *thread, DynamicValue &resu
 
 		result.setBool(hasVolume && isMounted);
 		return true;
+	} else if (attrib == "controlkeydown" || attrib == "shiftkeydown" || attrib == "altkeydown" || attrib == "optionkeydown" || attrib == "commandkeydown") {
+		int modifierState = g_system->getEventManager()->getModifierState();
+		int mask = Common::KBD_CTRL;
+		if (attrib == "shiftkeydown")
+			mask = Common::KBD_SHIFT;
+		else if (attrib == "altkeydown" || attrib == "optionkeydown")
+			mask = Common::KBD_ALT;
+		else if (attrib == "commandkeydown")
+			mask = Common::KBD_META;
+
+		result.setBool((modifierState & mask) != 0);
+		return true;
 	}
 
 	return RuntimeObject::readAttribute(thread, result, attrib);
@@ -3743,6 +3756,23 @@ bool Structural::readAttributeIndexed(MiniscriptThread *thread, DynamicValue &re
 }
 
 MiniscriptInstructionOutcome Structural::writeRefAttributeIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &writeProxy, const Common::String &attrib, const DynamicValue &index) {
+	// Writes through a child, such as childelem[i].position.y
+	if (attrib == "childelem") {
+		size_t childIndex = 0;
+		if (!childIndexFromScript(thread, index, _children.size(), "childelem", childIndex))
+			return kMiniscriptInstructionOutcomeFailed;
+
+		DynamicValueWriteObjectHelper::create(_children[childIndex].get(), writeProxy);
+		return kMiniscriptInstructionOutcomeContinue;
+	} else if (attrib == "childmod") {
+		size_t childIndex = 0;
+		if (!childIndexFromScript(thread, index, _modifiers.size(), "childmod", childIndex))
+			return kMiniscriptInstructionOutcomeFailed;
+
+		DynamicValueWriteObjectHelper::create(_modifiers[childIndex].get(), writeProxy);
+		return kMiniscriptInstructionOutcomeContinue;
+	}
+
 	for (const Common::SharedPtr<Modifier> &modifier : _modifiers) {
 		if (caseInsensitiveEqual(modifier->getName(), attrib))
 			return modifier->writeRefAttributeIndexed(thread, writeProxy, "value", index);

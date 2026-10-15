@@ -3582,6 +3582,11 @@ bool DlgMgrServerModifier::readAttribute(MiniscriptThread *thread, DynamicValue 
 		result.setBool(true);
 		return true;
 	}
+	if (attrib == "amminimized") {
+		// Whether the player window is minimized
+		result.setBool(false);
+		return true;
+	}
 	if (attrib == "debugoutput") {
 		result.setBool(_debugOutput);
 		return true;
