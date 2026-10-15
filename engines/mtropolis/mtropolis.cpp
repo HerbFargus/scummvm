@@ -49,6 +49,7 @@
 #include "mtropolis/actions.h"
 #include "mtropolis/boot.h"
 #include "mtropolis/debug.h"
+#include "mtropolis/elements.h"
 #include "mtropolis/runtime.h"
 
 #include "mtropolis/plugins.h"

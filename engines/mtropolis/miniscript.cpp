@@ -106,9 +106,9 @@ void MiniscriptReferences::linkInternalReferences(ObjectLinkingScope *scope) {
 
 		// A GUID can also belong to a different object than the one the script names, after objects
 		// were copied (in Magic School Bus Animals' penguin game, "lstiRCIdxMap" has listGood's GUID
-		// and "i" has a timer's), so an object with the name takes priority
+		// and "i" has a timer's), so in mTropolis 2.0 an object with the name takes priority
 		Common::SharedPtr<RuntimeObject> obj = it->resolution.lock();
-		if (obj && !it->name.empty() && !caseInsensitiveEqual(runtimeObjectName(obj.get()), it->name)) {
+		if (obj && !it->name.empty() && scope->getPreferNamesOverGUIDs() && !caseInsensitiveEqual(runtimeObjectName(obj.get()), it->name)) {
 			Common::WeakPtr<RuntimeObject> byName = scope->resolve(it->name, false);
 			if (!byName.expired())
 				it->resolution = byName;

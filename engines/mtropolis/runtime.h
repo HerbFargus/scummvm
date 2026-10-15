@@ -1318,12 +1318,18 @@ public:
 	Common::WeakPtr<RuntimeObject> resolve(const Common::String &name, bool isNameAlreadyInsensitive) const;
 	Common::WeakPtr<RuntimeObject> resolve(uint32 staticGUID, const Common::String &name, bool isNameAlreadyInsensitive) const;
 
+	// Whether script references go by name when their GUID belongs to a differently named object,
+	// set on the root scope for mTropolis 2.0 projects
+	void setPreferNamesOverGUIDs(bool preferNames);
+	bool getPreferNamesOverGUIDs() const;
+
 	void reset();
 
 private:
 	Common::HashMap<uint32, Common::WeakPtr<RuntimeObject> > _guidToObject;
 	Common::HashMap<Common::String, Common::WeakPtr<RuntimeObject> > _nameToObject;
 	ObjectLinkingScope *_parent;
+	bool _preferNamesOverGUIDs;
 };
 
 struct LowLevelSceneStateTransitionAction {

@@ -3708,6 +3708,17 @@ Structural *Structural::findChildForScript(const Common::String &name) const {
 			return child.get();
 	}
 
+	// mTropolis 2.0 also finds elements further down, as Magic School Bus Animals does with the
+	// bus front's Liz mirror, which is inside the mirror element
+	if (getRuntime() && getRuntime()->getProject() && getRuntime()->getProject()->getRuntimeVersion() >= kRuntimeVersion200) {
+		for (const Common::SharedPtr<Structural> &child : _children) {
+			if (child->isElement()) {
+				if (Structural *found = child->findChildForScript(name))
+					return found;
+			}
+		}
+	}
+
 	return nullptr;
 }
 
@@ -4276,7 +4287,19 @@ MiniscriptInstructionOutcome Structural::scriptSetUnload(MiniscriptThread *threa
 VolumeState::VolumeState() : volumeID(0), isMounted(false) {
 }
 
-ObjectLinkingScope::ObjectLinkingScope() : _parent(nullptr) {
+ObjectLinkingScope::ObjectLinkingScope() : _parent(nullptr), _preferNamesOverGUIDs(false) {
+}
+
+void ObjectLinkingScope::setPreferNamesOverGUIDs(bool preferNames) {
+	_preferNamesOverGUIDs = preferNames;
+}
+
+bool ObjectLinkingScope::getPreferNamesOverGUIDs() const {
+	for (const ObjectLinkingScope *scope = this; scope; scope = scope->_parent) {
+		if (scope->_preferNamesOverGUIDs)
+			return true;
+	}
+	return false;
 }
 
 ObjectLinkingScope::~ObjectLinkingScope() {
@@ -4351,6 +4374,7 @@ Common::WeakPtr<RuntimeObject> ObjectLinkingScope::resolve(uint32 staticGUID, co
 
 void ObjectLinkingScope::reset() {
 	_parent = nullptr;
+	_preferNamesOverGUIDs = false;
 	_guidToObject.clear(true);
 }
 
@@ -4960,6 +4984,7 @@ bool Runtime::runFrame() {
 			ensureMainWindowExists();
 
 			_rootLinkingScope.addObject(_project->getStaticGUID(), _project->getName(), _project);
+			_rootLinkingScope.setPreferNamesOverGUIDs(_project->getRuntimeVersion() >= kRuntimeVersion200);
 
 			// We have to materialize global variables because they are not cloned from aliases.
 			debug(1, "Materializing global variables...");

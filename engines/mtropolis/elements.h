@@ -343,6 +343,7 @@ public:
 	~TextLabelElement();
 
 	bool isTextLabel() const override;
+	const Common::String &getText() const { return _text; }
 
 	bool load(ElementLoaderContext &context, const Data::TextLabelElement &data);
 
