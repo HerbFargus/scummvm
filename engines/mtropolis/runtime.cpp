@@ -7511,12 +7511,8 @@ void Runtime::closeProject() {
 	// TODO: There are actually some elaborate cases here involving opening projects, project return list,
 	// Project Ended message, etc. and Obsidian actually attempts to stop MIDI playback on project end.
 
-	// A title opened with "add to return list" closes back to the title that opened it
-	if (_canReturnToPreviousTitle) {
-		_returnToPreviousTitleRequested = true;
-		return;
-	}
-
+	// The reference guide says a title opened with "add to return list" closes back to the
+	// title that opened it, but Magic School Bus quits from titles opened that way
 	_isQuitting = true;
 }
 
