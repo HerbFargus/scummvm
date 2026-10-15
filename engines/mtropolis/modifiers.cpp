@@ -3052,8 +3052,9 @@ CompoundVariableModifier::SaveLoad::SaveLoad(Runtime *runtime, CompoundVariableM
 
 void CompoundVariableModifier::SaveLoad::saveInternal(Common::WriteStream *stream) const {
 	stream->writeUint32BE(_childrenSaveLoad.size());
-	for (const ChildSaveLoad &childSL : _childrenSaveLoad)
+	for (const ChildSaveLoad &childSL : _childrenSaveLoad) {
 		childSL.saveLoad->save(childSL.modifier, stream);
+	}
 }
 
 bool CompoundVariableModifier::SaveLoad::loadInternal(Common::ReadStream *stream, uint32 saveFileVersion) {
@@ -3061,12 +3062,16 @@ bool CompoundVariableModifier::SaveLoad::loadInternal(Common::ReadStream *stream
 	if (stream->err())
 		return false;
 
-	if (numChildren != _childrenSaveLoad.size())
+	if (numChildren != _childrenSaveLoad.size()) {
+		warning("Compound variable save has %u children, expected %u", static_cast<uint>(numChildren), static_cast<uint>(_childrenSaveLoad.size()));
 		return false;
+	}
 
 	for (const ChildSaveLoad &childSL : _childrenSaveLoad) {
-		if (!childSL.saveLoad->load(childSL.modifier, stream, saveFileVersion))
+		if (!childSL.saveLoad->load(childSL.modifier, stream, saveFileVersion)) {
+			warning("Failed to load saved variable '%s'", childSL.modifier->getName().c_str());
 			return false;
+		}
 	}
 
 	return true;

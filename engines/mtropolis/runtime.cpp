@@ -10242,7 +10242,9 @@ bool ModifierSaveLoad::load(Modifier *modifier, Common::ReadStream *stream, uint
 			return false;
 	}
 
-	if (modifier->getStaticGUID() != checkGUID)
+	// Titles of the same game share saves, but each title has its own GUIDs,
+	// so a named modifier is matched by name
+	if (modifier->getStaticGUID() != checkGUID && nameLen == 0)
 		return false;
 
 	return loadInternal(stream, saveFileVersion);
