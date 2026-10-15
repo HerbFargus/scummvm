@@ -14,7 +14,8 @@ Anyone writing a real contribution should treat it as notes, not code to copy.
 
 Everything here was worked out from the games themselves: their project
 data, and disassembly of the plug-in DLLs and player executable that ship
-on the game discs. No mTropolis authoring materials or MOM SDK were used.
+on the game discs. The mTropolis 1.1 manuals and MOM SDK were later used to
+check that behaviour, but nothing from them is copied here.
 
 ## Plug-in modifiers used by these games
 
