@@ -41,6 +41,25 @@
 
 namespace MTropolis {
 
+// Nearest palette entry to a color, for drawing solid colors on 8-bit displays
+static uint8 nearestPaletteIndex(const Palette &palette, const ColorRGB8 &color) {
+	const byte *paletteData = palette.getPalette();
+	uint8 best = 0;
+	uint32 bestDistance = 0xffffffffu;
+	for (uint i = 0; i < Palette::kNumColors; i++) {
+		int dr = paletteData[i * 3 + 0] - color.r;
+		int dg = paletteData[i * 3 + 1] - color.g;
+		int db = paletteData[i * 3 + 2] - color.b;
+		uint32 distance = dr * dr + dg * dg + db * db;
+		if (distance < bestDistance) {
+			bestDistance = distance;
+			best = i;
+		}
+	}
+
+	return best;
+}
+
 GraphicElement::GraphicElement() : _cacheBitmap(false) {
 }
 
@@ -361,25 +380,8 @@ void GraphicElement::render(Window *window) {
 			const ColorRGB8 fillColorRGB8 = _renderProps.getForeColor();
 			uint32 fillColor = pixFmt.ARGBToColor(255, fillColorRGB8.r, fillColorRGB8.g, fillColorRGB8.b);
 
-			if (pixFmt.isCLUT8()) {
-				// Nearest palette entry
-				const Palette *palette = getPalette().get();
-				if (!palette)
-					palette = &getRuntime()->getGlobalPalette();
-
-				const byte *paletteData = palette->getPalette();
-				uint32 bestDistance = 0xffffffffu;
-				for (uint i = 0; i < Palette::kNumColors; i++) {
-					int dr = paletteData[i * 3 + 0] - fillColorRGB8.r;
-					int dg = paletteData[i * 3 + 1] - fillColorRGB8.g;
-					int db = paletteData[i * 3 + 2] - fillColorRGB8.b;
-					uint32 distance = dr * dr + dg * dg + db * db;
-					if (distance < bestDistance) {
-						bestDistance = distance;
-						fillColor = i;
-					}
-				}
-			}
+			if (pixFmt.isCLUT8())
+				fillColor = nearestPaletteIndex(getPalette() ? *getPalette() : getRuntime()->getGlobalPalette(), fillColorRGB8);
 
 			for (int32 srcY = clippedSrcRect.top; srcY < clippedSrcRect.bottom; srcY++) {
 				int32 spanWidth = clippedDrawRect.width();
@@ -1666,7 +1668,6 @@ bool MToonElement::isMouseCollisionAtPoint(int32 relativeX, int32 relativeY) con
 		if (_renderProps.getInkMode() == VisualElementRenderProperties::kInkModeBackgroundMatte) {
 			// TODO: This doesn't account for scaling
 			ColorRGB8 transColorRGB8 = _renderProps.getBackColor();
-			uint32 transColor = _renderSurface->format.ARGBToColor(255, transColorRGB8.r, transColorRGB8.g, transColorRGB8.b);
 
 			if (frameRect.width() == _renderSurface->w && frameRect.height() == _renderSurface->h) {
 				// Frame rect is the size of the render surface, meaning the frame is floating and we need to adjust to its coordinates
@@ -1679,8 +1680,21 @@ bool MToonElement::isMouseCollisionAtPoint(int32 relativeX, int32 relativeY) con
 			if (relativeX < 0 || relativeY < 0 || relativeX >= _renderSurface->w || relativeY >= _renderSurface->h)
 				return false;
 
-			// Check if the pixel is transparent
-			if (_renderSurface->getPixel(relativeX, relativeY) == transColor)
+			// Check if the pixel is transparent, comparing colors like rendering does
+			uint32 pixel = _renderSurface->getPixel(relativeX, relativeY);
+			uint8 r = 0, g = 0, b = 0;
+			if (_renderSurface->format.isCLUT8()) {
+				const Palette *palette = getPalette().get();
+				if (!palette)
+					palette = &getRuntime()->getGlobalPalette();
+				const byte *paletteData = palette->getPalette();
+				r = paletteData[pixel * 3 + 0];
+				g = paletteData[pixel * 3 + 1];
+				b = paletteData[pixel * 3 + 2];
+			} else
+				_renderSurface->format.colorToRGB(pixel, r, g, b);
+
+			if (transColorRGB8 == ColorRGB8(r, g, b))
 				return false;
 		}
 
@@ -2207,6 +2221,8 @@ void TextLabelElement::render(Window *window) {
 		if (_fontFamilyName.size() > 0) {
 			font = FontMan.getFontByName(_fontFamilyName.c_str());
 			if (!font)
+				font = getRuntime()->getWindowsFont(_fontFamilyName, _size, _styleFlags.bold, _styleFlags.italic);
+			if (!font)
 				font = FontMan.getFontByUsage(getDefaultUsageForNamedFont(_fontFamilyName, _size));
 		} else if (_macFontID != 0) {
 			// TODO: Formatting spans
@@ -2336,7 +2352,30 @@ void TextLabelElement::render(Window *window) {
 		color.r, color.g, color.b
 	};
 
-	if (_renderedText) {
+	// Copy ink draws the background color behind the text
+	if (_renderProps.getInkMode() == VisualElementRenderProperties::kInkModeCopy) {
+		const ColorRGB8 &backColor = _renderProps.getBackColor();
+		uint32 fillColor = target->format.ARGBToColor(255, backColor.r, backColor.g, backColor.b);
+
+		if (target->format.isCLUT8())
+			fillColor = nearestPaletteIndex(getPalette() ? *getPalette() : getRuntime()->getGlobalPalette(), backColor);
+
+		target->fillRect(destRect.findIntersectingRect(Common::Rect(0, 0, target->w, target->h)), fillColor);
+	}
+
+	if (_renderedText && target->format.isCLUT8()) {
+		// Blits between paletted surfaces copy indexes, so draw the text in the screen palette's nearest color
+		uint8 textColor = nearestPaletteIndex(getPalette() ? *getPalette() : getRuntime()->getGlobalPalette(), color);
+		Common::Rect clipped = destRect.findIntersectingRect(Common::Rect(0, 0, target->w, target->h));
+		for (int y = clipped.top; y < clipped.bottom; y++) {
+			const byte *src = static_cast<const byte *>(_renderedText->getBasePtr(clipped.left - destRect.left, y - destRect.top));
+			byte *dest = static_cast<byte *>(target->getBasePtr(clipped.left, y));
+			for (int x = 0; x < clipped.width(); x++) {
+				if (src[x])
+					dest[x] = textColor;
+			}
+		}
+	} else if (_renderedText) {
 		_renderedText->setPalette(drawPalette, 0, 2);
 		target->transBlitFrom(*_renderedText.get(), srcRect, destRect, 0);
 	}
