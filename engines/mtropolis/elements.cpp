@@ -2119,6 +2119,14 @@ MiniscriptInstructionOutcome MToonElement::scriptSetRangeByName(MiniscriptThread
 		Common::String available;
 		for (const MToonMetadata::FrameRangeDef &frameRange : _metadata->frameRanges)
 			available += " '" + frameRange.name + "'";
+
+		// mTropolis 2.0 scripts carry on when a range doesn't exist (Magic School Bus Mars sets
+		// ranges named for another button's mToon), leaving the range as it was
+		if (getRuntime()->getProject()->getRuntimeVersion() >= kRuntimeVersion200) {
+			debug(2, "mToon '%s' has no range '%s', ranges:%s", _name.c_str(), name.c_str(), available.c_str());
+			return kMiniscriptInstructionOutcomeContinue;
+		}
+
 		thread->error("mToon range '" + name + "' doesn't exist in the mToon data, ranges:" + available);
 	} else if (getRuntime()->getProject()->getRuntimeVersion() >= kRuntimeVersion200) {
 		if (gDebugLevel >= 2) {
