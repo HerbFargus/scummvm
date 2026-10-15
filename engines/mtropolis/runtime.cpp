@@ -3454,6 +3454,13 @@ bool Structural::readAttribute(MiniscriptThread *thread, DynamicValue &result, c
 	} else if (attrib == "childmodcount") {
 		result.setInt(_modifiers.size());
 		return true;
+	} else if (attrib == "childelem" && _children.size() > 0) {
+		// Without an index, the first child
+		result.setObject(_children[0]->getSelfReference());
+		return true;
+	} else if (attrib == "childmod" && _modifiers.size() > 0) {
+		result.setObject(_modifiers[0]->getSelfReference());
+		return true;
 	} else if (attrib == "name") {
 		result.setString(_name);
 		return true;
@@ -3644,6 +3651,13 @@ MiniscriptInstructionOutcome Structural::writeRefAttribute(MiniscriptThread *thr
 	} else if (attrib == "paused") {
 		DynamicValueWriteFuncHelper<Structural, &Structural::scriptSetPaused, true>::create(this, result);
 		return kMiniscriptInstructionOutcomeContinue;
+	} else if (attrib == "childelem" && _children.size() > 0) {
+		// Without an index, the first child, as in childelem.clone
+		DynamicValueWriteObjectHelper::create(_children[0].get(), result);
+		return kMiniscriptInstructionOutcomeContinue;
+	} else if (attrib == "childmod" && _modifiers.size() > 0) {
+		DynamicValueWriteObjectHelper::create(_modifiers[0].get(), result);
+		return kMiniscriptInstructionOutcomeContinue;
 	} else if (attrib == "this") {
 		// Yes, "this" is an attribute
 		DynamicValueWriteObjectHelper::create(thread->getModifier(), result);
@@ -3781,6 +3795,15 @@ MiniscriptInstructionOutcome Structural::writeRefAttributeIndexed(MiniscriptThre
 	return RuntimeObject::writeRefAttributeIndexed(thread, writeProxy, attrib, index);
 }
 
+
+// Notifications cascade from the object they are about, so they come from it or an ancestor
+bool Structural::isSelfOrAncestor(const RuntimeObject *obj) const {
+	for (const Structural *structural = this; structural; structural = structural->getParent()) {
+		if (structural == obj)
+			return true;
+	}
+	return false;
+}
 
 const Common::Array<Common::SharedPtr<Structural> > &Structural::getChildren() const {
 	return _children;
@@ -4043,6 +4066,18 @@ CORO_BEGIN_DEFINITION(Structural::StructuralConsumeCommandCoroutine)
 			CORO_END_IF
 
 			params->msg->setValue(locals->attribGetResult);
+
+			CORO_RETURN;
+		CORO_END_IF
+
+		// Kill and Clone commands from scripts. The runtime also sends Kill and Clone to the
+		// object itself as notifications, which must not be taken as new commands.
+		CORO_IF((Event(EventIDs::kKill, 0).respondsTo(params->msg->getEvent()) || Event(EventIDs::kClone, 0).respondsTo(params->msg->getEvent()))
+			&& !params->self->isSelfOrAncestor(params->msg->getSource().lock().get()))
+			if (params->msg->getEvent().eventType == EventIDs::kKill)
+				params->runtime->queueKillObject(params->self->getSelfReference());
+			else
+				params->runtime->queueCloneObject(params->self->getSelfReference());
 
 			CORO_RETURN;
 		CORO_END_IF

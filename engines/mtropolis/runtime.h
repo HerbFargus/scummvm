@@ -2234,6 +2234,7 @@ public:
 	MiniscriptInstructionOutcome writeRefAttributeIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &writeProxy, const Common::String &attrib, const DynamicValue &index) override;
 
 	const Common::Array<Common::SharedPtr<Structural> > &getChildren() const;
+	bool isSelfOrAncestor(const RuntimeObject *obj) const;
 	void addChild(const Common::SharedPtr<Structural> &child);
 	void removeAllChildren();
 	void removeAllModifiers();

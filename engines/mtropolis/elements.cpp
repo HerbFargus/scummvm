@@ -1909,6 +1909,18 @@ void MToonElement::playMedia(Runtime *runtime, Project *project) {
 			targetCel = sanitizeMaxCel;
 
 		if (_cel != targetCel) {
+			// Media cues on mToons are at cels
+			if (!isReversed && _mediaCues.size() > 0) {
+				bool wrapped = (targetCel < _cel);
+				for (MediaCueState *mediaCue : _mediaCues) {
+					if (wrapped) {
+						mediaCue->checkTimestampChange(runtime, _cel, maxCel, true, true);
+						mediaCue->checkTimestampChange(runtime, minCel - 1, targetCel, true, true);
+					} else
+						mediaCue->checkTimestampChange(runtime, _cel, targetCel, true, true);
+				}
+			}
+
 			_cel = targetCel;
 			_contentsDirty = true;
 		}
