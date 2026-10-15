@@ -25,6 +25,7 @@
 
 #include "common/endian.h"
 #include "common/file.h"
+#include "common/random.h"
 
 #include "graphics/managed_surface.h"
 #include "graphics/fontman.h"
@@ -2555,6 +2556,929 @@ const char *SmkJumpModifier::getDefaultName() const {
 	return "SmkJump";
 }
 
+BalloonModifier::BalloonModifier()
+	: _levelsLoaded(false), _runtime(nullptr), _running(false), _initialized(false), _paused(true), _level(1), _tier(0), _padShown(false),
+	  _kidsNeeded(0), _points(0), _lives(5), _kids(0), _baseSpeed(2.7), _speed(2.7), _wind(2), _windCountdown(0), _countingDown(false),
+	  _countdown(0), _flyState(kFlyNormal), _stateTicks(0), _bx(0.0), _by(0.0), _mouseHeld(false), _keyboardMode(false), _keyUp(false),
+	  _keyDown(false), _upSFX(false), _downSFX(false), _planeSFX(false), _heliSFX(false), _lightningSFX(false), _birdTimer(0),
+	  _boltOn(false), _boltTimer(0) {
+	_pad = Object();
+}
+
+BalloonModifier::~BalloonModifier() {
+	stopGame();
+}
+
+bool BalloonModifier::load(const PlugInModifierLoaderContext &context, const Data::KW::GameModifier &data) {
+	return loadDlgMgrEvent(_startWhen, data.enableWhen) && loadDlgMgrEvent(_stopWhen, data.disableWhen);
+}
+
+// The levels and flyer motions are tables in the plug-in's data section
+bool BalloonModifier::loadLevels() {
+	if (_levelsLoaded)
+		return !_levels.empty();
+
+	_levelsLoaded = true;
+
+	Common::File f;
+	if (!f.open(Common::Path("mTrop_Resources/balloon.r32")) && !f.open(Common::Path("balloon.r32"))) {
+		warning("Balloon: balloon.r32 from the installed game is needed for the levels");
+		return false;
+	}
+
+	Common::Array<byte> image;
+	image.resize(f.size());
+	f.read(&image[0], image.size());
+
+	bool failed = false;
+	auto readS32 = [&](uint32 va) -> int32 {
+		uint32 offset = va - 0x10000000;
+		if (offset + 4 > image.size()) {
+			failed = true;
+			return 0;
+		}
+		return static_cast<int32>(READ_LE_UINT32(&image[offset]));
+	};
+	auto readDouble = [&](uint32 va) -> double {
+		uint32 offset = va - 0x10000000;
+		if (offset + 8 > image.size()) {
+			failed = true;
+			return 0.0;
+		}
+		uint64 bits = READ_LE_UINT64(&image[offset]);
+		double value;
+		memcpy(&value, &bits, sizeof(value));
+		return value;
+	};
+	auto readObject = [&](uint32 va) -> Object {
+		Object obj;
+		obj.x = readDouble(va);
+		obj.y = readDouble(va + 8);
+		obj.type = readS32(va + 0x18);
+		obj.sub = readS32(va + 0x1c);
+		return obj;
+	};
+
+	static const uint32 kListSizes[kListCount] = {80, 33, 65, 54, 30};
+
+	Common::Array<Level> levels;
+	levels.resize(16);
+	for (uint l = 1; l <= 15; l++) {
+		Level &level = levels[l];
+		uint32 base = 0x1000e2dc + l * 0x20ec;
+
+		level.start = Common::Point(readS32(base), readS32(base + 4));
+		level.kidsNeeded = readS32(base + 8);
+
+		uint32 record = base + 0xc;
+		for (uint list = 0; list < kListCount; list++) {
+			for (uint i = 0; i < kListSizes[list]; i++) {
+				level.lists[list].push_back(readObject(record));
+				record += 32;
+			}
+		}
+
+		level.pad = readObject(base + 0x20cc);
+	}
+
+	// Patterns 1-5 are consecutive, pattern 6 is separate
+	for (uint p = 1; p <= 6; p++) {
+		uint32 table = (p == 6) ? 0x100100c0 : 0x10010140 + 0x80 * (p - 1);
+		for (uint i = 0; i < 8; i++) {
+			MotionStep step;
+			step.dx = readDouble(table + i * 16);
+			step.dy = readDouble(table + i * 16 + 8);
+			_motion[p].push_back(step);
+		}
+	}
+
+	// Level 1 starts at (200, 170), needs 3 kids and lands at x 2100
+	if (failed || levels[1].start != Common::Point(200, 170) || levels[1].kidsNeeded != 3 || levels[1].pad.x != 2100.0) {
+		warning("Balloon: balloon.r32 isn't the expected version");
+		return false;
+	}
+
+	_levels.swap(levels);
+	return true;
+}
+
+bool BalloonModifier::respondsToEvent(const Event &evt) const {
+	return _startWhen.respondsTo(evt) || _stopWhen.respondsTo(evt) || evt.eventType == EventIDs::kParentDisabled
+		|| evt.eventType == EventIDs::kMouseDown || evt.eventType == EventIDs::kMouseUp;
+}
+
+VThreadState BalloonModifier::consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) {
+	const Event &evt = msg->getEvent();
+
+	if (_stopWhen.respondsTo(evt) || evt.eventType == EventIDs::kParentDisabled) {
+		stopGame();
+		return kVThreadReturn;
+	}
+
+	if (_startWhen.respondsTo(evt)) {
+		_runtime = runtime;
+		newGame(runtime, 1);
+
+		if (!_running) {
+			_running = true;
+			_keySignaller = runtime->getProject()->notifyOnKeyboardEvent(this);
+			_scheduledEvent = runtime->getScheduler().scheduleMethod<BalloonModifier, &BalloonModifier::tick>(runtime->getPlayTime() + 83, this);
+		}
+		return kVThreadReturn;
+	}
+
+	if (evt.eventType == EventIDs::kMouseDown) {
+		// A click skips the countdown
+		if (_countingDown)
+			_countdown = 0;
+		else {
+			_mouseHeld = true;
+			_keyboardMode = false;
+		}
+	} else if (evt.eventType == EventIDs::kMouseUp) {
+		_mouseHeld = false;
+		_keyboardMode = false;
+	}
+
+	return kVThreadReturn;
+}
+
+void BalloonModifier::onKeyboardEvent(Runtime *runtime, const KeyboardInputEvent &keyEvt) {
+	Common::KeyCode key = keyEvt.getKeyState().keycode;
+	if (key != Common::KEYCODE_UP && key != Common::KEYCODE_DOWN)
+		return;
+
+	bool down = (keyEvt.getKeyEventType() == Common::EVENT_KEYDOWN);
+	if (down)
+		_keyboardMode = true;
+
+	if (key == Common::KEYCODE_UP)
+		_keyUp = down;
+	else
+		_keyDown = down;
+}
+
+void BalloonModifier::disable(Runtime *runtime) {
+	stopGame();
+}
+
+void BalloonModifier::stopGame() {
+	_running = false;
+	if (_scheduledEvent) {
+		_scheduledEvent->cancel();
+		_scheduledEvent.reset();
+	}
+	if (_keySignaller) {
+		_keySignaller->removeReceiver(this);
+		_keySignaller.reset();
+	}
+}
+
+bool BalloonModifier::readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) {
+	if (attrib == "paused") {
+		result.setBool(_paused);
+		return true;
+	} else if (attrib == "gamelevel") {
+		result.setInt(_level);
+		return true;
+	} else if (attrib == "points") {
+		result.setInt(_points);
+		return true;
+	}
+
+	return Modifier::readAttribute(thread, result, attrib);
+}
+
+MiniscriptInstructionOutcome BalloonModifier::writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) {
+	WritableAttribute writable;
+	if (attrib == "paused")
+		writable = kAttribPaused;
+	else if (attrib == "gamelevel")
+		writable = kAttribGameLevel;
+	else if (attrib == "introdlg")
+		writable = kAttribIntroDlg;
+	else if (attrib == "goup" || attrib == "godown" || attrib == "stopballoon")
+		writable = kAttribIgnored;	// Debugging aids
+	else
+		return Modifier::writeRefAttribute(thread, result, attrib);
+
+	result.pod.ifc = DynamicValueWriteInterfaceGlue<WriteProxy>::getInstance();
+	result.pod.objectRef = this;
+	result.pod.ptrOrOffset = writable;
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
+MiniscriptInstructionOutcome BalloonModifier::WriteProxy::write(MiniscriptThread *thread, const DynamicValue &assigned, void *objectRef, uintptr ptrOrOffset) {
+	BalloonModifier *self = static_cast<BalloonModifier *>(objectRef);
+
+	// Variables are passed by reference
+	DynamicValue value = assigned;
+	if (value.getType() == DynamicValueTypes::kObject) {
+		Common::SharedPtr<RuntimeObject> obj = value.getObject().object.lock();
+		if (obj && obj->isModifier() && static_cast<Modifier *>(obj.get())->isVariable())
+			static_cast<VariableModifier *>(obj.get())->varGetValue(value);
+	}
+
+	if (ptrOrOffset == kAttribGameLevel) {
+		int32 level = 0;
+		if (!value.roundToInt(level))
+			return kMiniscriptInstructionOutcomeFailed;
+		if (level >= 1 && level < 16)
+			self->newGame(thread->getRuntime(), level);
+		return kMiniscriptInstructionOutcomeContinue;
+	}
+
+	if (ptrOrOffset == kAttribPaused) {
+		bool flag = false;
+		if (value.getType() == DynamicValueTypes::kBoolean)
+			flag = value.getBool();
+		else if (value.getType() == DynamicValueTypes::kInteger)
+			flag = (value.getInt() != 0);
+		else
+			return kMiniscriptInstructionOutcomeFailed;
+
+		// Unpausing only takes effect once a level is set up
+		if (self->_initialized || flag)
+			self->_paused = flag;
+	}
+
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
+MiniscriptInstructionOutcome BalloonModifier::WriteProxy::refAttrib(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib) {
+	return kMiniscriptInstructionOutcomeFailed;
+}
+
+MiniscriptInstructionOutcome BalloonModifier::WriteProxy::refAttribIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib, const DynamicValue &index) {
+	return kMiniscriptInstructionOutcomeFailed;
+}
+
+// Children of the owner element: 1 balloon per tier, 2 banner and badge, 3 trees, 4 mountains,
+// 5 buildings, 6 flyers, 7 lightning bolt, 8 kids, 9 midground, 10 lives, 11 windsock, 12 pad,
+// 13 airship, 14 fireworks, 15 crash per tier
+Structural *BalloonModifier::child(int index) const {
+	Structural *owner = findStructuralOwner();
+	if (!owner || index < 1 || index > static_cast<int>(owner->getChildren().size()))
+		return nullptr;
+	return owner->getChildren()[index - 1].get();
+}
+
+Structural *BalloonModifier::grandchild(int index, int subIndex) const {
+	Structural *container = child(index);
+	if (!container || subIndex < 1 || subIndex > static_cast<int>(container->getChildren().size()))
+		return nullptr;
+	return container->getChildren()[subIndex - 1].get();
+}
+
+Structural *BalloonModifier::listElement(int list, uint index) const {
+	static const int kContainers[kListCount] = {3, 4, 5, 6, 8};
+	return grandchild(kContainers[list], index + 1);
+}
+
+Structural *BalloonModifier::balloonElement() const {
+	return grandchild(1, _tier + 1);
+}
+
+void BalloonModifier::place(Runtime *runtime, Structural *element, int32 x, int32 y) {
+	if (!element || !element->isElement() || !static_cast<Element *>(element)->isVisual())
+		return;
+
+	// Placed centered on the point
+	const Common::Rect &rect = static_cast<VisualElement *>(element)->getRelativeRect();
+	placeTopLeft(runtime, element, x - rect.width() / 2, y - rect.height() / 2);
+}
+
+void BalloonModifier::placeTopLeft(Runtime *runtime, Structural *element, int32 x, int32 y) {
+	if (!element)
+		return;
+
+	DynamicValue pos;
+	pos.setPoint(Common::Point(x, y));
+	dlgMgrWriteAttribute(runtime, this, element, "position", pos);
+}
+
+void BalloonModifier::hide(Runtime *runtime, Structural *element) {
+	placeTopLeft(runtime, element, -100, 600);
+}
+
+void BalloonModifier::sendMessage(Runtime *runtime, const char *messageName) {
+	uint32 messageID = 0;
+	if (!runtime->getProject()->findAuthorMessageID(messageName, messageID))
+		return;
+
+	Structural *owner = findStructuralOwner();
+	if (!owner)
+		return;
+
+	Common::SharedPtr<MessageProperties> props(new MessageProperties(Event(EventIDs::kAuthorMessage, messageID), DynamicValue(), getSelfReference()));
+	Common::SharedPtr<MessageDispatch> dispatch(new MessageDispatch(props, owner, true, true, false));
+	runtime->queueMessage(dispatch);
+}
+
+void BalloonModifier::setSFX(Runtime *runtime, bool &state, bool on, const char *onMessage, const char *offMessage) {
+	if (state != on) {
+		state = on;
+		sendMessage(runtime, on ? onMessage : offMessage);
+	}
+}
+
+void BalloonModifier::newGame(Runtime *runtime, int32 level) {
+	_points = 0;
+	_lives = (level <= 5) ? 5 : (level <= 10) ? 4 : 3;
+	sendMessage(runtime, "UpdateScore");
+	setupLevel(runtime, level);
+}
+
+void BalloonModifier::setupLevel(Runtime *runtime, int32 levelNum) {
+	_runtime = runtime;
+	if (!loadLevels() || levelNum < 1 || levelNum > 15)
+		return;
+
+	const Level &level = _levels[levelNum];
+	_level = levelNum;
+	_tier = (levelNum <= 5) ? 0 : (levelNum <= 10) ? 1 : 2;
+
+	static const double kSpeeds[3] = {2.7, 3.2, 3.6};
+	_baseSpeed = _speed = kSpeeds[_tier];
+	_wind = 2;
+	_windCountdown = runtime->getRandom()->getRandomNumberRng(110, 400);
+	dlgMgrSetInt(runtime, this, child(11), "cel", _wind);
+
+	_bx = level.start.x;
+	_by = level.start.y;
+	_kids = 0;
+	_kidsNeeded = level.kidsNeeded;
+	_flyState = kFlyNormal;
+	_stateTicks = 0;
+	_countingDown = true;
+	_countdown = 28;
+	_mouseHeld = false;
+	_keyUp = false;
+	_keyDown = false;
+	_paused = true;
+	_birdTimer = runtime->getRandom()->getRandomNumberRng(9, 30);
+	_boltOn = false;
+	_boltTimer = runtime->getRandom()->getRandomNumberRng(30, 140);
+	hide(runtime, child(7));
+
+	for (int t = 0; t < 3; t++) {
+		if (t == _tier)
+			place(runtime, grandchild(1, t + 1), static_cast<int32>(_bx), static_cast<int32>(_by));
+		else
+			hide(runtime, grandchild(1, t + 1));
+		hide(runtime, grandchild(15, t + 1));
+	}
+
+	for (uint list = 0; list < kListCount; list++) {
+		_lists[list] = level.lists[list];
+		for (uint i = 0; i < _lists[list].size(); i++)
+			hide(runtime, listElement(list, i));
+	}
+
+	_flyerActive.clear();
+	_flyerActive.resize(_lists[kListFlyers].size());
+	_flyerStep.clear();
+	_flyerStep.resize(_lists[kListFlyers].size());
+	for (uint i = 0; i < _lists[kListFlyers].size(); i++)
+		dlgMgrSetBool(runtime, this, listElement(kListFlyers, i), "paused", true);
+
+	_kidTaken.clear();
+	_kidTaken.resize(_lists[kListKids].size());
+
+	// This tier's midground pieces scroll, the others are hidden
+	static const int kMidgroundFirst[3] = {1, 4, 7};
+	static const int kMidgroundLast[3] = {3, 6, 10};
+	_midgroundX.clear();
+	_midgroundX.resize(11);
+	for (int i = 1; i <= 10; i++) {
+		Structural *piece = grandchild(9, i);
+		if (i >= kMidgroundFirst[_tier] && i <= kMidgroundLast[_tier] && piece && piece->isElement() && static_cast<Element *>(piece)->isVisual())
+			_midgroundX[i] = static_cast<VisualElement *>(piece)->getRelativeRect().left;
+		else
+			hide(runtime, piece);
+	}
+
+	_pad = level.pad;
+	_padShown = false;
+	hide(runtime, child(12));
+	hide(runtime, child(13));
+	for (int i = 1; i <= 5; i++)
+		hide(runtime, grandchild(14, i));
+
+	placeTopLeft(runtime, grandchild(2, 1), 151, 160);
+	dlgMgrSetInt(runtime, this, grandchild(2, 2), "cel", levelNum % 5);
+	placeTopLeft(runtime, grandchild(2, 2), 391, 198);
+	showLives(runtime);
+
+	_initialized = true;
+}
+
+void BalloonModifier::showLives(Runtime *runtime) {
+	for (int i = 1; i <= 5; i++) {
+		if (i == _lives - 1)
+			placeTopLeft(runtime, grandchild(10, i), 207, 437);
+		else
+			hide(runtime, grandchild(10, i));
+	}
+}
+
+void BalloonModifier::tick(Runtime *runtime) {
+	_scheduledEvent.reset();
+	if (!_running)
+		return;
+
+	_scheduledEvent = runtime->getScheduler().scheduleMethod<BalloonModifier, &BalloonModifier::tick>(runtime->getPlayTime() + 83, this);
+
+	if (_paused || !_initialized)
+		return;
+
+	if (_countingDown) {
+		if (_countdown-- > 0)
+			return;
+
+		_countingDown = false;
+		hide(runtime, grandchild(2, 1));
+		hide(runtime, grandchild(2, 2));
+		showLives(runtime);
+		return;
+	}
+
+	// The game waits while the mouse is over the bottom bar, except the up and down buttons
+	const Common::Point &mouse = runtime->getCachedMousePosition();
+	if (mouse.y > 480 || (mouse.y >= 430 && (mouse.x < 79 || mouse.x > 195)))
+		return;
+
+	if (_flyState == kFlyNormal || _flyState == kFlyOverPad)
+		moveBalloon(runtime, mouse);
+
+	if (tickFlyState(runtime))
+		return;
+
+	tickWind(runtime);
+	scrollGround(runtime);
+	scrollFlyers(runtime);
+	scrollMidground(runtime);
+	scrollPad(runtime);
+}
+
+void BalloonModifier::moveBalloon(Runtime *runtime, const Common::Point &mouse) {
+	bool onButtons = (mouse.y >= 427 && mouse.y <= 477);
+	bool up = (_mouseHeld && onButtons && mouse.x >= 78 && mouse.x <= 138) || (_keyboardMode && _keyUp);
+	bool down = (_mouseHeld && onButtons && mouse.x >= 140 && mouse.x <= 196) || (_keyboardMode && _keyDown);
+
+	bool rising = false;
+	bool sinking = false;
+	if (up) {
+		if (_by > 62.0) {
+			_by -= _speed;
+			rising = true;
+		}
+	} else if (down) {
+		if (_by < 378.0) {
+			_by += _speed * 1.5;
+			sinking = true;
+		}
+	} else if (!_mouseHeld && !_keyUp && !_keyDown) {
+		// It drifts down unless held
+		if (_by < 378.0)
+			_by += 0.1;
+	}
+
+	setSFX(runtime, _upSFX, rising, "UpSFXOn", "UpSFXOff");
+	setSFX(runtime, _downSFX, sinking, "DownSFXOn", "DownSFXOff");
+	place(runtime, balloonElement(), static_cast<int32>(_bx), static_cast<int32>(_by));
+}
+
+void BalloonModifier::crash() {
+	if (_flyState == kFlyNormal || _flyState == kFlyOverPad)
+		_flyState = kFlyCrash;
+}
+
+// Crashing and landing. Returns true if nothing else moves this tick.
+bool BalloonModifier::tickFlyState(Runtime *runtime) {
+	Structural *crashElement = grandchild(15, _tier + 1);
+
+	switch (_flyState) {
+	case kFlyCrash:
+		hide(runtime, balloonElement());
+		place(runtime, crashElement, static_cast<int32>(_bx), static_cast<int32>(_by));
+		dlgMgrSetInt(runtime, this, crashElement, "cel", 1);
+		sendMessage(runtime, "PlaySFX5");
+		setSFX(runtime, _upSFX, false, "UpSFXOn", "UpSFXOff");
+		setSFX(runtime, _downSFX, false, "DownSFXOn", "DownSFXOff");
+		setSFX(runtime, _planeSFX, false, "PlaneSFXOn", "PlaneSFXOff");
+		setSFX(runtime, _heliSFX, false, "HelicopterSFXOn", "HelicopterSFXOff");
+		setSFX(runtime, _lightningSFX, false, "LightningSFXOn", "LightningSFXOff");
+		_flyState = kFlyFalling;
+		_stateTicks = 0;
+		return true;
+	case kFlyFalling:
+		if (++_stateTicks == 13)
+			_flyState = kFlyDropping;
+		else if (_by >= 490.0)
+			_flyState = kFlyCrashed;
+		else
+			_by += 9.5;
+		dlgMgrSetInt(runtime, this, crashElement, "cel", _stateTicks);
+		place(runtime, crashElement, static_cast<int32>(_bx), static_cast<int32>(_by));
+		return true;
+	case kFlyDropping:
+		if (_by < 490.0) {
+			_by += 8.5;
+			place(runtime, crashElement, static_cast<int32>(_bx), static_cast<int32>(_by));
+		} else
+			_flyState = kFlyCrashed;
+		return true;
+	case kFlyCrashed:
+		hide(runtime, crashElement);
+		if (_lives > 1) {
+			_lives--;
+			setupLevel(runtime, _level);
+		} else {
+			_paused = true;
+			sendMessage(runtime, "GameOver");
+		}
+		return true;
+	case kFlyLanded:
+		_stateTicks++;
+		if (_stateTicks == 1) {
+			sendMessage(runtime, "levelwon");
+			for (int i = 1; i <= 5; i++)
+				place(runtime, grandchild(14, i), runtime->getRandom()->getRandomNumberRng(120, 520), runtime->getRandom()->getRandomNumberRng(45, 190));
+			if (_kids == _kidsNeeded) {
+				_points += 200;
+				sendMessage(runtime, "UpdateScore");
+			}
+		} else if (_stateTicks == 12) {
+			for (int i = 1; i <= 5; i++)
+				hide(runtime, grandchild(14, i));
+			if (_level < 15 && _level != 5 && _level != 10) {
+				setupLevel(runtime, _level + 1);
+				_paused = false;
+			} else {
+				_paused = true;
+				sendMessage(runtime, "YouWin");
+			}
+		} else {
+			for (int i = 1; i <= 5; i++)
+				dlgMgrSetInt(runtime, this, grandchild(14, i), "cel", _stateTicks);
+		}
+		return true;
+	case kFlyOverPad: {
+			// Only the flyers move while the balloon comes down onto the pad
+			bool airship = (_pad.type == 31);
+			double basket = _by + 46.0;
+			bool landed = airship ? (_bx > _pad.x - 17.0 && _bx <= _pad.x + 51.0 && basket >= _pad.y - 27.0 && basket < _pad.y - 17.0)
+								  : (_bx > _pad.x - 98.0 && _bx < _pad.x + 98.0 && basket > _pad.y - 41.0 && basket < _pad.y - 31.0);
+			if (landed) {
+				sendMessage(runtime, "PlaySFX1");
+				setSFX(runtime, _upSFX, false, "UpSFXOn", "UpSFXOff");
+				setSFX(runtime, _downSFX, false, "DownSFXOn", "DownSFXOff");
+				_flyState = kFlyLanded;
+				_stateTicks = 0;
+			}
+			scrollFlyers(runtime);
+			return true;
+		}
+	default:
+		return false;
+	}
+}
+
+void BalloonModifier::tickWind(Runtime *runtime) {
+	if (--_windCountdown > 0)
+		return;
+
+	static const double kWindFactors[3] = {0.85, 1.0, 1.2};
+	_windCountdown = runtime->getRandom()->getRandomNumberRng(110, 400);
+	_wind = runtime->getRandom()->getRandomNumberRng(1, 3);
+	_speed = _baseSpeed * kWindFactors[_wind - 1];
+	dlgMgrSetInt(runtime, this, child(11), "cel", _wind);
+}
+
+// Triangle test: the width grows linearly from the top point down to the base
+static bool balloonInTriangle(double px, double py, double left, double right, double top, double bottom) {
+	if (py < top || py > bottom || bottom <= top)
+		return false;
+
+	int32 w = static_cast<int32>(static_cast<int32>(py - top) * ((right - left) / 2.0) / static_cast<int32>(bottom - top));
+	int32 cx = static_cast<int32>(left + (right - left) / 2.0);
+	return px >= cx - w && px <= cx + w;
+}
+
+static bool balloonInRect(double px, double py, double left, double right, double top, double bottom) {
+	return px > left && px < right && py > top && py < bottom;
+}
+
+// Ground objects are tested against two points at the bottom of the basket
+bool BalloonModifier::hitsGround(const Object &obj) const {
+	const double ox = obj.x;
+	const double oy = obj.y;
+	const double probes[2][2] = {{_bx + 20.0, _by + 46.0}, {_bx - 12.0, _by + 46.0}};
+
+	for (const auto &probe : probes) {
+		double px = probe[0];
+		double py = probe[1];
+		bool hit = false;
+
+		switch (obj.type) {
+		case 0: hit = balloonInTriangle(px, py, ox - 35, ox + 35, oy - 70, oy + 70); break;
+		case 1: hit = balloonInRect(px, py, ox - 22, ox + 14, oy - 90, oy + 98); break;
+		case 2: hit = balloonInRect(px, py, ox - 40, ox + 40, oy - 58, oy + 86); break;
+		case 3: hit = balloonInTriangle(px, py, ox - 87, ox + 87, oy - 74, oy + 74); break;
+		case 4: hit = balloonInRect(px, py, ox - 36, ox + 36, oy - 72, oy + 80); break;
+		case 5: hit = balloonInRect(px, py, ox - 21, ox + 21, oy - 67, oy + 67); break;
+		case 6: hit = balloonInTriangle(px, py, ox - 105, ox + 95, oy - 54, oy + 54); break;
+		case 7: hit = balloonInTriangle(px, py, ox - 70, ox + 68, oy - 56, oy + 55); break;
+		case 8: hit = balloonInTriangle(px, py, ox - 67, ox + 59, oy - 65, oy + 59); break;
+		case 9: hit = balloonInTriangle(px, py, ox - 83, ox + 53, oy - 61, oy - 27) || balloonInRect(px, py, ox - 83, ox + 83, oy - 34, oy + 76); break;
+		case 10: hit = balloonInRect(px, py, ox - 52, ox + 34, oy - 63, oy + 63); break;
+		case 11: hit = balloonInRect(px, py, ox - 24, ox + 16, oy - 57, oy + 87) || balloonInRect(px, py, ox - 24, ox - 12, oy - 90, oy - 58); break;
+		case 12: hit = balloonInTriangle(px, py, ox - 41, ox + 41, oy - 80, oy - 54) || balloonInRect(px, py, ox - 36, ox + 36, oy - 55, oy + 81); break;
+		case 13: hit = balloonInRect(px, py, ox - 39, ox + 39, oy - 71, oy + 71); break;
+		case 14: hit = balloonInRect(px, py, ox - 43, ox + 43, oy - 63, oy + 63); break;
+		case 15: hit = balloonInRect(px, py, ox - 43, ox + 43, oy - 42, oy + 86) || balloonInTriangle(px, py, ox - 43, ox + 43, oy - 85, oy - 41); break;
+		case 16: hit = balloonInTriangle(px, py, ox - 47, ox + 47, oy - 82, oy - 27) || balloonInRect(px, py, ox - 24, ox + 24, oy - 31, oy + 81); break;
+		case 17: hit = balloonInTriangle(px, py, ox - 32, ox + 34, oy - 78, oy + 24) || balloonInRect(px, py, ox - 31, ox + 31, oy + 22, oy + 80); break;
+		case 18: hit = balloonInRect(px, py, ox - 62, ox + 62, oy - 48, oy + 48); break;
+		case 19: hit = balloonInRect(px, py, ox - 17, ox + 17, oy - 86, oy + 86); break;
+		default: break;
+		}
+
+		if (hit)
+			return true;
+	}
+
+	return false;
+}
+
+// Flyers are tested by their points inside a box around the balloon
+bool BalloonModifier::hitsFlyer(const Object &obj) const {
+	const double fx = obj.x;
+	const double fy = obj.y;
+
+	auto anyIn = [&](const double points[][2], int count, double left, double right) {
+		for (int i = 0; i < count; i++) {
+			if (points[i][0] > left && points[i][0] < right && points[i][1] > _by - 50.0 && points[i][1] < _by + 50.0)
+				return true;
+		}
+		return false;
+	};
+
+	switch (obj.type) {
+	case 20: {
+			const double points[4][2] = {{fx - 32, fy}, {fx + 33, fy - 11}, {fx - 9, fy - 10}, {fx - 16, fy + 12}};
+			for (const auto &p : points) {
+				if (p[0] > _bx - 25 && p[0] < _bx + 25 && p[1] > _by - 48 && p[1] < _by + 48)
+					return true;
+			}
+			return false;
+		}
+	case 21: {
+			const double points[4][2] = {{fx - 37, fy + 7}, {fx - 26, fy - 15}, {fx + 43, fy + 2}, {fx - 3, fy + 16}};
+			for (const auto &p : points) {
+				if (p[0] > _bx - 25 && p[0] < _bx + 25 && p[1] > _by - 48 && p[1] < _by + 48)
+					return true;
+			}
+			return false;
+		}
+	case 22: {
+			const double points[2][2] = {{fx - 11, fy + 5}, {fx + 12, fy + 5}};
+			return anyIn(points, 2, _bx - 12, _bx + 32);
+		}
+	case 23: {
+			if (!_boltOn)
+				return false;
+			const double bolt1[1][2] = {{fx - 50, fy + 60}};
+			const double bolt2[2][2] = {{fx - 27, fy + 84}, {fx - 4, fy + 29}};
+			return anyIn(bolt1, 1, _bx - 15, _bx + 35) || anyIn(bolt2, 2, _bx - 25, _bx + 25);
+		}
+	case 25: {
+			const double points[2][2] = {{fx - 11, fy - 26}, {fx + 5, fy + 8}};
+			return anyIn(points, 2, _bx - 13, _bx + 33);
+		}
+	case 26: {
+			const double points[2][2] = {{fx - 6, fy - 28}, {fx - 1, fy - 5}};
+			return anyIn(points, 2, _bx - 10, _bx + 30);
+		}
+	default:
+		return false;
+	}
+}
+
+void BalloonModifier::scrollGround(Runtime *runtime) {
+	static const double kShowLimits[kListCount] = {690.0, 700.0, 710.0, 0.0, 650.0};
+
+	for (uint list = 0; list < kListCount; list++) {
+		if (list == kListFlyers)
+			continue;
+
+		Common::Array<Object> &objects = _lists[list];
+		for (uint i = 0; i < objects.size(); i++) {
+			Object &obj = objects[i];
+			if (obj.x <= -90.0)
+				continue;
+
+			obj.x -= _speed;
+			Structural *element = listElement(list, i);
+			if (obj.x <= -90.0) {
+				hide(runtime, element);
+				obj.x = -300.0;
+				continue;
+			}
+			if (obj.x >= kShowLimits[list])
+				continue;
+			if (list == kListKids && _kidTaken[i])
+				continue;
+
+			place(runtime, element, static_cast<int32>(obj.x), static_cast<int32>(obj.y));
+
+			if (list == kListKids) {
+				// Kids are picked up when the balloon reaches them
+				if (obj.type == 28 && _flyState == kFlyNormal) {
+					bool reached = false;
+					for (double ky : {obj.y, obj.y - 12.0}) {
+						if (obj.x > _bx - 25 && obj.x < _bx + 25 && ky > _by - 50 && ky < _by + 50)
+							reached = true;
+					}
+					if (reached) {
+						_kidTaken[i] = true;
+						hide(runtime, element);
+						_points += 100;
+						_kids++;
+						sendMessage(runtime, "UpdateScore");
+						sendMessage(runtime, "PlaySFX4");
+					}
+				}
+			} else if (_flyState == kFlyNormal && hitsGround(obj))
+				crash();
+		}
+	}
+}
+
+void BalloonModifier::scrollFlyers(Runtime *runtime) {
+	bool planeNear = false;
+	bool heliNear = false;
+	bool birdNear = false;
+
+	Common::Array<Object> &flyers = _lists[kListFlyers];
+	for (uint i = 0; i < flyers.size(); i++) {
+		Object &obj = flyers[i];
+		if (obj.x <= -90.0)
+			continue;
+
+		Structural *element = listElement(kListFlyers, i);
+		obj.x -= (_flyState == kFlyOverPad) ? 0.0 : _speed;
+		if (obj.x < 674.0) {
+			if (obj.type == 20)
+				obj.x -= 2.0;
+			else if (obj.type == 21)
+				obj.x -= 1.0;
+		}
+
+		if (obj.x <= -90.0) {
+			hide(runtime, element);
+			dlgMgrSetBool(runtime, this, element, "paused", true);
+			obj.x = -300.0;
+			continue;
+		}
+		if (obj.x >= 674.0)
+			continue;
+
+		if (!_flyerActive[i]) {
+			_flyerActive[i] = true;
+			dlgMgrSetBool(runtime, this, element, "paused", false);
+		}
+
+		if (obj.sub >= 1 && obj.sub <= 6 && !_motion[obj.sub].empty()) {
+			const MotionStep &step = _motion[obj.sub][_flyerStep[i]];
+			obj.x -= step.dx;
+			obj.y += step.dy;
+			_flyerStep[i] = (_flyerStep[i] + 1) % 7;
+		}
+
+		place(runtime, element, static_cast<int32>(obj.x), static_cast<int32>(obj.y));
+
+		bool near = (obj.x > _bx - 70.0 && obj.x < _bx + 220.0);
+		if (near) {
+			if (obj.type == 20)
+				planeNear = true;
+			else if (obj.type == 21)
+				heliNear = true;
+			else if (obj.type == 22)
+				birdNear = true;
+		}
+
+		// Storm clouds throw lightning on and off
+		if (obj.type == 23) {
+			if (--_boltTimer <= 0) {
+				_boltOn = !_boltOn;
+				_boltTimer = _boltOn ? runtime->getRandom()->getRandomNumberRng(9, 48) : runtime->getRandom()->getRandomNumberRng(30, 140);
+				setSFX(runtime, _lightningSFX, _boltOn, "LightningSFXOn", "LightningSFXOff");
+			}
+			if (_boltOn)
+				place(runtime, child(7), static_cast<int32>(obj.x) - 26, static_cast<int32>(obj.y) + 58);
+			else
+				hide(runtime, child(7));
+		}
+
+		if (_flyState != kFlyNormal || !hitsFlyer(obj))
+			continue;
+
+		if (obj.type == 25) {
+			hide(runtime, element);
+			obj.x = -300.0;
+			_points += 50;
+			sendMessage(runtime, "UpdateScore");
+			sendMessage(runtime, "PlaySFX3");
+		} else if (obj.type == 26) {
+			if (_lives < 5) {
+				hide(runtime, element);
+				obj.x = -300.0;
+				sendMessage(runtime, "PlaySFX2");
+				_lives++;
+				showLives(runtime);
+			}
+		} else
+			crash();
+	}
+
+	setSFX(runtime, _planeSFX, planeNear && _flyState == kFlyNormal, "PlaneSFXOn", "PlaneSFXOff");
+	setSFX(runtime, _heliSFX, heliNear && _flyState == kFlyNormal, "HelicopterSFXOn", "HelicopterSFXOff");
+
+	if (birdNear && --_birdTimer <= 0) {
+		_birdTimer = runtime->getRandom()->getRandomNumberRng(9, 30);
+		sendMessage(runtime, "BirdSFX");
+	}
+}
+
+void BalloonModifier::scrollMidground(Runtime *runtime) {
+	static const int kFirst[3] = {1, 4, 7};
+	static const int kLast[3] = {3, 6, 10};
+	static const double kWrapAt[3] = {-210.0, -250.0, -133.0};
+	static const double kWrapBy[3] = {1308.0, 1549.0, 1128.0};
+
+	for (int i = kFirst[_tier]; i <= kLast[_tier]; i++) {
+		Structural *piece = grandchild(9, i);
+		if (!piece || !piece->isElement() || !static_cast<Element *>(piece)->isVisual())
+			continue;
+
+		_midgroundX[i] -= 2.0;
+		if (_midgroundX[i] <= kWrapAt[_tier])
+			_midgroundX[i] += kWrapBy[_tier];
+
+		placeTopLeft(runtime, piece, static_cast<int32>(_midgroundX[i]), static_cast<VisualElement *>(piece)->getRelativeRect().top);
+	}
+}
+
+void BalloonModifier::scrollPad(Runtime *runtime) {
+	bool airship = (_pad.type == 31);
+	Structural *padElement = child(airship ? 13 : 12);
+
+	_pad.x -= _speed;
+	if (_pad.x < 740.0) {
+		if (!_padShown) {
+			_padShown = true;
+			dlgMgrSetBool(runtime, this, padElement, "paused", false);
+		}
+		place(runtime, padElement, static_cast<int32>(_pad.x), static_cast<int32>(_pad.y));
+	}
+
+	if (_flyState != kFlyNormal)
+		return;
+
+	if (_pad.x <= _bx) {
+		_flyState = kFlyOverPad;
+		_boltOn = false;
+		hide(runtime, child(7));
+		return;
+	}
+
+	// Coming in too low hits the side of the pad
+	double basket = _by + 46.0;
+	for (double px : {_bx + 20.0, _bx - 12.0}) {
+		bool hit = airship ? (px > _pad.x - 93.0 && px < _pad.x + 105.0 && basket > _pad.y - 71.0 && basket < _pad.y + 83.0)
+						   : (px > _pad.x - 98.0 && px < _pad.x + 98.0 && basket > _pad.y - 36.0 && basket < _pad.y + 60.0);
+		if (hit) {
+			crash();
+			return;
+		}
+	}
+}
+
+Common::SharedPtr<Modifier> BalloonModifier::shallowClone() const {
+	Common::SharedPtr<BalloonModifier> clone(new BalloonModifier(*this));
+	clone->_scheduledEvent.reset();
+	clone->_keySignaller.reset();
+	clone->_running = false;
+	clone->_initialized = false;
+	return clone;
+}
+
+const char *BalloonModifier::getDefaultName() const {
+	return "Balloon";
+}
+
 // Cel for an animation track at a timeline frame, or -1 to leave it alone
 static int32 dlgMgrCelForFrame(const DlgMgrClientModifier::Track &track, int32 frame) {
 	if (track.frames.size() > 0) {
@@ -3546,7 +4470,7 @@ const char *DlgMgrClientModifier::getDefaultName() const {
 
 KnowWonderPlugIn::KnowWonderPlugIn()
 	: _strUtilModifierFactory(this), _dlgMgrServerModifierFactory(this), _dlgMgrClientModifierFactory(this),
-	  _kwSmackerModifierFactory(this), _editCtrlModifierFactory(this), _gameModifierFactory(this), _whaleMazeModifierFactory(this), _eyefollowerModifierFactory(this), _smkJumpModifierFactory(this) {
+	  _kwSmackerModifierFactory(this), _editCtrlModifierFactory(this), _gameModifierFactory(this), _whaleMazeModifierFactory(this), _eyefollowerModifierFactory(this), _smkJumpModifierFactory(this), _balloonModifierFactory(this) {
 }
 
 KnowWonderPlugIn::~KnowWonderPlugIn() {
@@ -3570,7 +4494,7 @@ void KnowWonderPlugIn::registerModifiers(IPlugInModifierRegistrar *registrar) co
 
 	// Mini-game modifiers from separate Magic School Bus plug-ins
 	static const char *const gameModifierNames[] = {
-		"AntMaze", "Art", "Balloon", "LLava", "Lander", "RoverRace", "Sub", "SvTown"
+		"AntMaze", "Art", "LLava", "Lander", "RoverRace", "Sub", "SvTown"
 	};
 	for (const char *name : gameModifierNames)
 		registrar->registerPlugInModifier(name, &_gameModifierFactory);
@@ -3578,6 +4502,7 @@ void KnowWonderPlugIn::registerModifiers(IPlugInModifierRegistrar *registrar) co
 	registrar->registerPlugInModifier("WhaleMaze", &_whaleMazeModifierFactory);
 	registrar->registerPlugInModifier("Eyefollower", &_eyefollowerModifierFactory);
 	registrar->registerPlugInModifier("SmkJump", &_smkJumpModifierFactory);
+	registrar->registerPlugInModifier("Balloon", &_balloonModifierFactory);
 }
 
 } // End of namespace KW

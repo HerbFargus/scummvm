@@ -540,6 +540,171 @@ private:
 	int32 _progressCel;
 };
 
+
+// Hot air balloon mini-game from Magic School Bus Discovers Flight. The world
+// scrolls left while the balloon goes up and down, collecting kids and
+// avoiding obstacles until it lands on a pad. The levels are read from the
+// original balloon.r32 plug-in.
+class BalloonModifier : public Modifier, public IKeyboardEventReceiver {
+public:
+	BalloonModifier();
+	~BalloonModifier();
+
+	bool load(const PlugInModifierLoaderContext &context, const Data::KW::GameModifier &data);
+
+	bool respondsToEvent(const Event &evt) const override;
+	VThreadState consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) override;
+	void disable(Runtime *runtime) override;
+
+	bool readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) override;
+	MiniscriptInstructionOutcome writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) override;
+
+	void onKeyboardEvent(Runtime *runtime, const KeyboardInputEvent &keyEvt) override;
+
+#ifdef MTROPOLIS_DEBUG_ENABLE
+	const char *debugGetTypeName() const override { return "Balloon Modifier"; }
+	SupportStatus debugGetSupportStatus() const override { return kSupportStatusPartial; }
+#endif
+
+private:
+	enum ListType {
+		kListTrees,
+		kListMountains,
+		kListBuildings,
+		kListFlyers,
+		kListKids,
+
+		kListCount,
+	};
+
+	enum FlyState {
+		kFlyNormal = 2,
+		kFlyCrash = 3,
+		kFlyOverPad = 4,
+		kFlyLanded = 5,
+		kFlyFalling = 6,
+		kFlyDropping = 7,
+		kFlyCrashed = 8,
+	};
+
+	struct Object {
+		double x;
+		double y;
+		int32 type;
+		int32 sub;	// Motion pattern for flyers
+	};
+
+	struct Level {
+		Common::Point start;
+		int32 kidsNeeded;
+		Common::Array<Object> lists[kListCount];
+		Object pad;
+	};
+
+	struct MotionStep {
+		double dx;
+		double dy;
+	};
+
+	enum WritableAttribute {
+		kAttribPaused,
+		kAttribGameLevel,
+		kAttribIntroDlg,
+		kAttribIgnored,
+	};
+
+	struct WriteProxy {
+		static MiniscriptInstructionOutcome write(MiniscriptThread *thread, const DynamicValue &value, void *objectRef, uintptr ptrOrOffset);
+		static MiniscriptInstructionOutcome refAttrib(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib);
+		static MiniscriptInstructionOutcome refAttribIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib, const DynamicValue &index);
+	};
+
+	Common::SharedPtr<Modifier> shallowClone() const override;
+	const char *getDefaultName() const override;
+
+	bool loadLevels();
+	void newGame(Runtime *runtime, int32 level);
+	void setupLevel(Runtime *runtime, int32 level);
+	void tick(Runtime *runtime);
+	void stopGame();
+
+	void moveBalloon(Runtime *runtime, const Common::Point &mouse);
+	bool tickFlyState(Runtime *runtime);
+	void tickWind(Runtime *runtime);
+	void scrollGround(Runtime *runtime);
+	void scrollFlyers(Runtime *runtime);
+	void scrollMidground(Runtime *runtime);
+	void scrollPad(Runtime *runtime);
+	bool hitsGround(const Object &obj) const;
+	bool hitsFlyer(const Object &obj) const;
+	void crash();
+	void showLives(Runtime *runtime);
+	void setSFX(Runtime *runtime, bool &state, bool on, const char *onMessage, const char *offMessage);
+
+	Structural *child(int index) const;
+	Structural *grandchild(int index, int subIndex) const;
+	Structural *listElement(int list, uint index) const;
+	Structural *balloonElement() const;
+	void place(Runtime *runtime, Structural *element, int32 x, int32 y);
+	void placeTopLeft(Runtime *runtime, Structural *element, int32 x, int32 y);
+	void hide(Runtime *runtime, Structural *element);
+	void sendMessage(Runtime *runtime, const char *messageName);
+
+	Event _startWhen;
+	Event _stopWhen;
+
+	Common::Array<Level> _levels;	// Index 0 is unused
+	Common::Array<MotionStep> _motion[7];	// Flyer motion patterns 1-6
+	bool _levelsLoaded;
+
+	Runtime *_runtime;
+	Common::SharedPtr<ScheduledEvent> _scheduledEvent;
+	Common::SharedPtr<KeyboardEventSignaller> _keySignaller;
+	bool _running;
+	bool _initialized;
+	bool _paused;
+
+	int32 _level;
+	int _tier;
+	Common::Array<Object> _lists[kListCount];
+	Common::Array<bool> _flyerActive;
+	Common::Array<int> _flyerStep;
+	Common::Array<bool> _kidTaken;
+	Object _pad;
+	bool _padShown;
+	int32 _kidsNeeded;
+
+	int32 _points;
+	int32 _lives;
+	int32 _kids;
+	double _baseSpeed;
+	double _speed;
+	int32 _wind;
+	int32 _windCountdown;
+
+	bool _countingDown;
+	int32 _countdown;
+	int _flyState;
+	int32 _stateTicks;
+	double _bx;
+	double _by;
+
+	bool _mouseHeld;
+	bool _keyboardMode;
+	bool _keyUp;
+	bool _keyDown;
+	bool _upSFX;
+	bool _downSFX;
+	bool _planeSFX;
+	bool _heliSFX;
+	bool _lightningSFX;
+	int32 _birdTimer;
+	bool _boltOn;
+	int32 _boltTimer;
+
+	Common::Array<double> _midgroundX;
+};
+
 class DlgMgrClientModifier;
 class KnowWonderPlugIn;
 
@@ -767,6 +932,7 @@ private:
 	PlugInModifierFactory<WhaleMazeModifier, Data::KW::GameModifier> _whaleMazeModifierFactory;
 	PlugInModifierFactory<EyefollowerModifier, Data::KW::GameModifier> _eyefollowerModifierFactory;
 	PlugInModifierFactory<SmkJumpModifier, Data::KW::GameModifier> _smkJumpModifierFactory;
+	PlugInModifierFactory<BalloonModifier, Data::KW::GameModifier> _balloonModifierFactory;
 
 	Common::WeakPtr<RuntimeObject> _dlgMgrServer;
 };
