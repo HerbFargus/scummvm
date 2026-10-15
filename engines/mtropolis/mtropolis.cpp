@@ -147,9 +147,12 @@ void TestInputScript::probe(Structural *structural, const Common::Point &pt) {
 		Common::Point pos = visual->getGlobalPosition();
 		const Common::Rect &rect = visual->getRelativeRect();
 		Common::Rect globalRect(pos.x, pos.y, pos.x + rect.width(), pos.y + rect.height());
-		if (globalRect.contains(pt))
-			debug(1, "Test input: Probe '%s' (%i,%i)-(%i,%i) visible %i ink %i layer %i", visual->getName().c_str(),
-				  globalRect.left, globalRect.top, globalRect.right, globalRect.bottom, visual->isVisible() ? 1 : 0, static_cast<int>(visual->getRenderProperties().getInkMode()), static_cast<int>(visual->getLayer()));
+		if (globalRect.contains(pt)) {
+			const ColorRGB8 &backColor = visual->getRenderProperties().getBackColor();
+			debug(1, "Test input: Probe '%s' (%i,%i)-(%i,%i) visible %i ink %i back %02x%02x%02x layer %i", visual->getName().c_str(),
+				  globalRect.left, globalRect.top, globalRect.right, globalRect.bottom, visual->isVisible() ? 1 : 0, static_cast<int>(visual->getRenderProperties().getInkMode()),
+				  backColor.r, backColor.g, backColor.b, static_cast<int>(visual->getLayer()));
+		}
 	}
 
 	for (const Common::SharedPtr<Structural> &child : structural->getChildren())
@@ -188,7 +191,11 @@ void TestInputScript::dumpTree(Structural *structural, int depth) {
 	Common::String indent;
 	for (int i = 0; i < depth; i++)
 		indent += "  ";
+#ifdef MTROPOLIS_DEBUG_ENABLE
+	debug(1, "Test input: Tree %s'%s' %x (%s)", indent.c_str(), structural->getName().c_str(), structural->getStaticGUID(), structural->debugGetTypeName());
+#else
 	debug(1, "Test input: Tree %s'%s' %x (element)", indent.c_str(), structural->getName().c_str(), structural->getStaticGUID());
+#endif
 	for (const Common::SharedPtr<Modifier> &modifier : structural->getModifiers())
 		dumpModifierTree(modifier.get(), depth + 1);
 	for (const Common::SharedPtr<Structural> &child : structural->getChildren())
