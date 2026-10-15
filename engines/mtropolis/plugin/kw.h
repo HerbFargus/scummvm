@@ -750,6 +750,8 @@ private:
 		kAttribCancel,
 		kAttribFlush,
 		kAttribSoundStopped,
+		kAttribResSwitch,
+		kAttribDoFocusMsg,
 		kAttribDebugOutput,
 		kAttribRelink,
 		kAttribCaption,

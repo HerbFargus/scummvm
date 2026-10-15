@@ -3630,6 +3630,8 @@ MiniscriptInstructionOutcome DlgMgrServerModifier::writeRefAttribute(MiniscriptT
 		{"pause", kAttribPause},
 		{"waitcursor", kAttribWaitCursor},
 		{"restoredisplay", kAttribRestoreDisplay},
+		{"resswitch", kAttribResSwitch},
+		{"dofocusmsg", kAttribDoFocusMsg},
 	};
 
 	for (const auto &entry : kAttribs) {
@@ -3701,6 +3703,8 @@ void DlgMgrServerModifier::writeAttribute(Runtime *runtime, WritableAttribute at
 	case kAttribSoundStopped:
 	case kAttribWaitCursor:
 	case kAttribRestoreDisplay:
+	case kAttribResSwitch:		// Screen resolution switching, which ScummVM handles
+	case kAttribDoFocusMsg:		// Window focus messages
 		break;
 	}
 }
