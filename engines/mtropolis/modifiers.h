@@ -1162,6 +1162,7 @@ private:
 	MiniscriptInstructionOutcome writeRefAttributeIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &writeProxy, const Common::String &attrib, const DynamicValue &index) override;
 
 	Modifier *findChildByName(Runtime *runtime, const Common::String &name) const;
+	Modifier *childFromScriptIndex(MiniscriptThread *thread, const DynamicValue &index) const;
 
 	Common::Array<Common::SharedPtr<Modifier> > _children;
 };

@@ -2959,6 +2959,15 @@ bool CompoundVariableModifier::readAttribute(MiniscriptThread *thread, DynamicVa
 }
 
 bool CompoundVariableModifier::readAttributeIndexed(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib, const DynamicValue &index) {
+	if (attrib == "childobject") {
+		Modifier *child = childFromScriptIndex(thread, index);
+		if (!child)
+			return false;
+
+		result.setObject(child->getSelfReference());
+		return true;
+	}
+
 	Modifier *var = findChildByName(thread->getRuntime(), attrib);
 	if (!var || !var->isVariable())
 		return false;
@@ -2982,11 +2991,32 @@ MiniscriptInstructionOutcome CompoundVariableModifier::writeRefAttribute(Miniscr
 }
 
 MiniscriptInstructionOutcome CompoundVariableModifier::writeRefAttributeIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &writeProxy, const Common::String &attrib, const DynamicValue &index) {
+	// Writes through a child, such as childobject[i].score
+	if (attrib == "childobject") {
+		Modifier *child = childFromScriptIndex(thread, index);
+		if (!child)
+			return kMiniscriptInstructionOutcomeFailed;
+
+		DynamicValueWriteObjectHelper::create(child, writeProxy);
+		return kMiniscriptInstructionOutcomeContinue;
+	}
+
 	Modifier *var = findChildByName(thread->getRuntime(), attrib);
 	if (!var || !var->isModifier())
 		return kMiniscriptInstructionOutcomeFailed;
 
 	return var->writeRefAttributeIndexed(thread, writeProxy, "value", index);
+}
+
+// The child for a 1-based script index, as in childobject[i]
+Modifier *CompoundVariableModifier::childFromScriptIndex(MiniscriptThread *thread, const DynamicValue &index) const {
+	DynamicValue indexConverted;
+	if (!index.convertToType(DynamicValueTypes::kInteger, indexConverted) || indexConverted.getInt() < 1 || static_cast<uint32>(indexConverted.getInt()) > _children.size()) {
+		thread->error("Invalid index for 'childobject'");
+		return nullptr;
+	}
+
+	return _children[indexConverted.getInt() - 1].get();
 }
 
 Modifier *CompoundVariableModifier::findChildByName(Runtime *runtime, const Common::String &name) const {

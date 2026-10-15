@@ -2516,12 +2516,17 @@ void TextLabelElement::visitInternalReferences(IStructuralReferenceVisitor *visi
 }
 
 MiniscriptInstructionOutcome TextLabelElement::scriptSetText(MiniscriptThread *thread, const DynamicValue &value) {
-	if (value.getType() != DynamicValueTypes::kString) {
+	// Numbers are shown as text, as in Magic School Bus Volcano's high scores
+	DynamicValue derefValue = value.dereference();
+	if (derefValue.getType() == DynamicValueTypes::kInteger) {
+		_text = Common::String::format("%i", static_cast<int>(derefValue.getInt()));
+	} else if (derefValue.getType() == DynamicValueTypes::kString) {
+		_text = derefValue.getString();
+	} else {
 		thread->error("Tried to set a text label element's text to something that wasn't a string");
 		return kMiniscriptInstructionOutcomeFailed;
 	}
 
-	_text = value.getString();
 	_needsRender = true;
 	_isBitmap = false;
 	_contentsDirty = true;

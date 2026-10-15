@@ -3744,9 +3744,9 @@ bool Structural::readAttributeIndexed(MiniscriptThread *thread, DynamicValue &re
 
 		result.setObject(_children[indexInt - 1]->getSelfReference());
 		return true;
-	} else if (attrib == "childelem") {
+	} else if (attrib == "childelem" || attrib == "childobject") {
 		size_t childIndex = 0;
-		if (!childIndexFromScript(thread, index, _children.size(), "childelem", childIndex))
+		if (!childIndexFromScript(thread, index, _children.size(), attrib.c_str(), childIndex))
 			return false;
 
 		result.setObject(_children[childIndex]->getSelfReference());
@@ -3771,9 +3771,9 @@ bool Structural::readAttributeIndexed(MiniscriptThread *thread, DynamicValue &re
 
 MiniscriptInstructionOutcome Structural::writeRefAttributeIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &writeProxy, const Common::String &attrib, const DynamicValue &index) {
 	// Writes through a child, such as childelem[i].position.y
-	if (attrib == "childelem") {
+	if (attrib == "childelem" || attrib == "childobject") {
 		size_t childIndex = 0;
-		if (!childIndexFromScript(thread, index, _children.size(), "childelem", childIndex))
+		if (!childIndexFromScript(thread, index, _children.size(), attrib.c_str(), childIndex))
 			return kMiniscriptInstructionOutcomeFailed;
 
 		DynamicValueWriteObjectHelper::create(_children[childIndex].get(), writeProxy);
