@@ -11114,8 +11114,9 @@ VThreadState DlgMgrClientModifier::consumeMessage(Runtime *runtime, const Common
 
 	if (_playWhen.respondsTo(evt)) {
 		if (_filterByTriggerValue) {
+			// mTropolis 2.0 sends variables by reference (Bugs' bus sends iDialog)
 			int32 value = 0;
-			if (!msg->getValue().roundToInt(value) || value != _triggerValue)
+			if (!msg->getValue().dereference().roundToInt(value) || value != _triggerValue)
 				return kVThreadReturn;
 		}
 
