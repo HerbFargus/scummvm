@@ -3429,6 +3429,22 @@ void Structural::setSceneLoadState(SceneLoadState sceneLoadState) {
 }
 
 
+// Absolute path of an object, as the "path" attribute, e.g. "/Project/Section/Subsection/Scene/Element/Modifier"
+static Common::String objectPathForScript(RuntimeObject *obj) {
+	Common::String path;
+	while (obj) {
+		if (obj->isStructural()) {
+			path = "/" + static_cast<Structural *>(obj)->getName() + path;
+			obj = static_cast<Structural *>(obj)->getParent();
+		} else if (obj->isModifier()) {
+			path = "/" + static_cast<Modifier *>(obj)->getName() + path;
+			obj = static_cast<Modifier *>(obj)->getParent().lock().get();
+		} else
+			break;
+	}
+	return path;
+}
+
 // Converts a 1-based script index for the mTropolis 2.0 child attributes
 static bool childIndexFromScript(MiniscriptThread *thread, const DynamicValue &index, size_t count, const char *attrib, size_t &outIndex) {
 	DynamicValue indexConverted;
@@ -3463,6 +3479,9 @@ bool Structural::readAttribute(MiniscriptThread *thread, DynamicValue &result, c
 		return true;
 	} else if (attrib == "name") {
 		result.setString(_name);
+		return true;
+	} else if (attrib == "path") {
+		result.setString(objectPathForScript(this));
 		return true;
 	} else if (attrib == "paused") {
 		result.setBool(_paused);
@@ -10591,6 +10610,9 @@ bool Modifier::readAttribute(MiniscriptThread *thread, DynamicValue &result, con
 	} else if (attrib == "name") {
 		result.setString(_name);
 		return true;
+	} else if (attrib == "path") {
+		result.setString(objectPathForScript(this));
+		return true;
 	} else if (attrib == "element") {
 		Structural *owner = findStructuralOwner();
 		result.setObject(owner ? owner->getSelfReference() : Common::WeakPtr<RuntimeObject>());
@@ -10916,7 +10938,7 @@ bool VariableModifier::readAttribute(MiniscriptThread *thread, DynamicValue &res
 	return Modifier::readAttribute(thread, result, attrib);
 }
 
-// Magic School Bus Bugs scripts assign to var.value
+// Writing "value" is the same as writing the variable, as Magic School Bus Bugs scripts do
 MiniscriptInstructionOutcome VariableModifier::writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) {
 	if (attrib == "value") {
 		result = createWriteProxy();
