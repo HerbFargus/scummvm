@@ -10,6 +10,12 @@ here should be sent upstream as-is. It is published as a reference: what the
 plug-in modifiers do, how their data is laid out, and what the games need.
 Anyone writing a real contribution should treat it as notes, not code to copy.
 
+## Sources
+
+Everything here was worked out from the games themselves: their project
+data, and disassembly of the plug-in DLLs and player executable that ship
+on the game discs. No mTropolis authoring materials or MOM SDK were used.
+
 ## Plug-in modifiers used by these games
 
 | Modifier | Plug-in file | Games |
