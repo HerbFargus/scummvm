@@ -1800,7 +1800,7 @@ const char *NavigateModifier::getDefaultName() const {
 }
 
 OpenTitleModifier::OpenTitleModifier()
-	/*: _addToReturnList(false) */ {
+	: _addToReturnList(false) {
 }
 
 OpenTitleModifier::~OpenTitleModifier() {
@@ -1815,7 +1815,8 @@ bool OpenTitleModifier::load(const PlugInModifierLoaderContext &context, const D
 
 	_pathOrUrl = data.pathOrUrl.value.asString;
 
-	//_addToReturnList = static_cast<bool>(data.addToReturnList.value.asInt);
+	// mTropolis 2.0 titles store flags here, with bit 0 for adding to the return list
+	_addToReturnList = ((data.addToReturnList.value.asInt & 1) != 0);
 
 	return true;
 }
@@ -1826,7 +1827,7 @@ bool OpenTitleModifier::respondsToEvent(const Event &evt) const {
 
 VThreadState OpenTitleModifier::consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) {
 	if (_executeWhen.respondsTo(msg->getEvent()))
-		runtime->requestOpenTitle(_pathOrUrl);
+		runtime->requestOpenTitle(_pathOrUrl, _addToReturnList);
 
 	return kVThreadReturn;
 }

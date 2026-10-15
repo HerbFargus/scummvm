@@ -557,7 +557,8 @@ Common::Error MTropolisEngine::run() {
 		handleEvents();
 
 		Common::String openTitlePath;
-		if (_runtime->takeOpenTitleRequest(openTitlePath)) {
+		bool addToReturnList = false;
+		if (_runtime->takeOpenTitleRequest(openTitlePath, addToReturnList)) {
 			// Titles are opened relative to the folder of the current main segment
 			static const char *const kStartupSegmentFolder = "<Startup Segment Folder>";
 
@@ -576,10 +577,13 @@ Common::Error MTropolisEngine::run() {
 			debug(1, "Opening title '%s' as '%s'", openTitlePath.c_str(), newMainSegment.c_str());
 
 			BootConfiguration titleConfig = bootProject(*_gameDescription, newMainSegment);
-			titleStack.push_back(mainSegmentPath);
+			if (addToReturnList)
+				titleStack.push_back(mainSegmentPath);
+			else
+				titleStack.clear();
 			mainSegmentPath = titleConfig._mainSegmentPath;
 			_runtime->queueProject(titleConfig._projectDesc);
-			_runtime->setCanReturnToPreviousTitle(true);
+			_runtime->setCanReturnToPreviousTitle(!titleStack.empty());
 		} else if (_runtime->takeReturnToPreviousTitleRequest() && !titleStack.empty()) {
 			mainSegmentPath = titleStack.back();
 			titleStack.pop_back();

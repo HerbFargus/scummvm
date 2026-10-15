@@ -1584,11 +1584,11 @@ public:
 	void queueProject(const Common::SharedPtr<ProjectDescription> &desc);
 
 	// Open Title: requests that the engine boots another title file
-	void requestOpenTitle(const Common::String &path);
+	void requestOpenTitle(const Common::String &path, bool addToReturnList);
 
 	// TrueType stand-in for a Windows font, or null if none is available
 	const Graphics::Font *getWindowsFont(const Common::String &familyName, uint pointSize, bool bold, bool italic);
-	bool takeOpenTitleRequest(Common::String &outPath);
+	bool takeOpenTitleRequest(Common::String &outPath, bool &outAddToReturnList);
 	void setCanReturnToPreviousTitle(bool canReturn);
 	bool takeReturnToPreviousTitleRequest();
 	void closeProject();
@@ -1701,6 +1701,7 @@ public:
 	void checkCollisions(ICollider *optRestrictToCollider);
 
 	void setCursorElement(const Common::WeakPtr<VisualElement> &element);
+	void setCursorElementHotspot(const Common::Point &hotspot);
 	void updateCursorElementPosition();
 
 	void addBoundaryDetector(IBoundaryDetector *boundaryDetector);
@@ -1861,7 +1862,7 @@ private:
 
 	static bool isStructuralMouseInteractive(Structural *structural, MouseInteractivityTestType testType);
 	static bool isModifierMouseInteractive(Modifier *modifier, MouseInteractivityTestType testType);
-	static void recursiveFindMouseCollision(Structural *&bestResult, int32 &bestLayer, int32 &bestStackHeight, bool &bestDirect, Structural *candidate, int32 stackHeight, int32 relativeX, int32 relativeY, MouseInteractivityTestType testType);
+	static void recursiveFindMouseCollision(Structural *&bestResult, int32 &bestLayer, int32 &bestStackHeight, bool &bestDirect, Structural *candidate, int32 stackHeight, int32 relativeX, int32 relativeY, MouseInteractivityTestType testType, const Structural *excluded);
 
 	void queueEventAsLowLevelSceneStateTransitionAction(const Event &evt, Structural *root, bool cascade, bool relay);
 
@@ -1910,6 +1911,7 @@ private:
 	Common::Array<VolumeState> _volumes;
 	Common::SharedPtr<ProjectDescription> _queuedProjectDesc;
 	Common::String _openTitleRequest;
+	bool _openTitleAddToReturnList = false;
 	Common::HashMap<Common::String, Common::SharedPtr<Graphics::Font> > _windowsFonts;
 	bool _canReturnToPreviousTitle = false;
 	bool _returnToPreviousTitleRequested = false;
@@ -2028,6 +2030,7 @@ private:
 	uint32 _collisionCheckTime;
 
 	Common::WeakPtr<VisualElement> _elementTrackedToCursor;
+	Common::Point _cursorElementHotspot;	// Point of the cursor element that follows the mouse
 	//uint32 _elementCursorUpdateTime;
 
 	Common::Array<IPostEffect *> _postEffects;
@@ -2155,6 +2158,7 @@ private:
 	MiniscriptInstructionOutcome setAutoResetCursor(MiniscriptThread *thread, const DynamicValue &value);
 	MiniscriptInstructionOutcome setWinSndBufferSize(MiniscriptThread *thread, const DynamicValue &value);
 	MiniscriptInstructionOutcome setCursor(MiniscriptThread *thread, const DynamicValue &value);
+	MiniscriptInstructionOutcome setCursorHotspot(MiniscriptThread *thread, const DynamicValue &value);
 
 	int32 _opInt;
 	bool _gameMode;

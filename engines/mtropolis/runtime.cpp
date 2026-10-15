@@ -1038,7 +1038,9 @@ bool DynamicList::dynamicValueToIndex(size_t &outIndex, const DynamicValue &valu
 		if (i < 1)
 			return false;
 		outIndex = static_cast<size_t>(i - 1);
-	}
+	} else
+		return false;
+
 	return true;
 }
 
@@ -3075,6 +3077,9 @@ MiniscriptInstructionOutcome WorldManagerInterface::writeRefAttribute(Miniscript
 	} else if (attrib == "cursor" || attrib == "cursorelement") {
 		DynamicValueWriteFuncHelper<WorldManagerInterface, &WorldManagerInterface::setCursor, true>::create(this, result);
 		return kMiniscriptInstructionOutcomeContinue;
+	} else if (attrib == "cursorhotspot") {
+		DynamicValueWriteFuncHelper<WorldManagerInterface, &WorldManagerInterface::setCursorHotspot, true>::create(this, result);
+		return kMiniscriptInstructionOutcomeContinue;
 	}
 	return RuntimeObject::writeRefAttribute(thread, result, attrib);
 }
@@ -3137,13 +3142,44 @@ MiniscriptInstructionOutcome WorldManagerInterface::setWinSndBufferSize(Miniscri
 	return kMiniscriptInstructionOutcomeContinue;
 }
 
+static Common::SharedPtr<VisualElement> findVisualElementByName(Structural *structural, const Common::String &name) {
+	for (const Common::SharedPtr<Structural> &child : structural->getChildren()) {
+		if (child->isElement() && static_cast<Element *>(child.get())->isVisual() && caseInsensitiveEqual(child->getName(), name))
+			return child.staticCast<VisualElement>();
+
+		Common::SharedPtr<VisualElement> found = findVisualElementByName(child.get(), name);
+		if (found)
+			return found;
+	}
+
+	return nullptr;
+}
+
+MiniscriptInstructionOutcome WorldManagerInterface::setCursorHotspot(MiniscriptThread *thread, const DynamicValue &value) {
+	if (value.getType() != DynamicValueTypes::kPoint) {
+		thread->error("Cursor hotspot wasn't a point");
+		return kMiniscriptInstructionOutcomeFailed;
+	}
+
+	thread->getRuntime()->setCursorElementHotspot(value.getPoint());
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
 MiniscriptInstructionOutcome WorldManagerInterface::setCursor(MiniscriptThread *thread, const DynamicValue &value) {
 	switch (value.getType())
 	{
 	case DynamicValueTypes::kNull:
-	case DynamicValueTypes::kString:	// A system cursor name, e.g. "systemArrow"
 		thread->getRuntime()->setCursorElement(Common::WeakPtr<VisualElement>());
 		return kMiniscriptInstructionOutcomeContinue;
+	case DynamicValueTypes::kString: {
+			// A string names an element in the scene, otherwise it's a system cursor such as "systemArrow"
+			Common::SharedPtr<VisualElement> element;
+			Common::SharedPtr<Structural> scene = thread->getRuntime()->getActiveMainScene();
+			if (scene)
+				element = findVisualElementByName(scene.get(), value.getString());
+			thread->getRuntime()->setCursorElement(element);
+			return kMiniscriptInstructionOutcomeContinue;
+		}
 	case DynamicValueTypes::kObject: {
 			Common::SharedPtr<RuntimeObject> obj = value.getObject().object.lock();
 			if (obj && obj->isElement() && static_cast<Element *>(obj.get())->isVisual()) {
@@ -5594,7 +5630,9 @@ void Runtime::executeHighLevelSceneReturn() {
 		return;
 	}
 
-	const SceneReturnListEntry &sceneReturn = _sceneReturnList.back();
+	// The scene being returned to leaves the return list
+	const SceneReturnListEntry sceneReturn = _sceneReturnList.back();
+	_sceneReturnList.pop_back();
 
 	if (sceneReturn.scene == _activeSharedScene)
 		error("Transitioned into the active shared scene as the main scene, this is not supported");
@@ -5880,13 +5918,17 @@ bool Runtime::isModifierMouseInteractive(Modifier *modifier, MouseInteractivityT
 	return false;
 }
 
-void Runtime::recursiveFindMouseCollision(Structural *&bestResult, int32 &bestLayer, int32 &bestStackHeight, bool &bestDirect, Structural *candidate, int32 stackHeight, int32 relativeX, int32 relativeY, MouseInteractivityTestType testType) {
+void Runtime::recursiveFindMouseCollision(Structural *&bestResult, int32 &bestLayer, int32 &bestStackHeight, bool &bestDirect, Structural *candidate, int32 stackHeight, int32 relativeX, int32 relativeY, MouseInteractivityTestType testType, const Structural *excluded) {
 	int32 childRelativeX = relativeX;
 	int32 childRelativeY = relativeY;
 	if (candidate->isElement()) {
 		Element *element = static_cast<Element *>(candidate);
 		if (element->isVisual()) {
 			VisualElement *visual = static_cast<VisualElement *>(candidate);
+
+			// The mouse reaches what's under an element used as the cursor
+			if (visual == excluded)
+				return;
 
 			if (visual->isVisible()) {
 				int layer = visual->getLayer();
@@ -5920,7 +5962,7 @@ void Runtime::recursiveFindMouseCollision(Structural *&bestResult, int32 &bestLa
 	}
 
 	for (const Common::SharedPtr<Structural> &child : candidate->getChildren())
-		recursiveFindMouseCollision(bestResult, bestLayer, bestStackHeight, bestDirect, child.get(), stackHeight, childRelativeX, childRelativeY, testType);
+		recursiveFindMouseCollision(bestResult, bestLayer, bestStackHeight, bestDirect, child.get(), stackHeight, childRelativeX, childRelativeY, testType, excluded);
 }
 
 void Runtime::queueEventAsLowLevelSceneStateTransitionAction(const Event &evt, Structural *root, bool cascade, bool relay) {
@@ -6433,7 +6475,7 @@ VThreadState Runtime::updateMouseStateTask(const UpdateMouseStateTaskData &data)
 
 		for (size_t ri = 0; ri < _sceneStack.size(); ri++) {
 			const SceneStackEntry &sceneStackEntry = _sceneStack[_sceneStack.size() - 1 - ri];
-			recursiveFindMouseCollision(tracked, bestSceneStack, bestLayer, bestDirect, sceneStackEntry.scene.get(), _sceneStack.size() - 1 - ri, _cachedMousePosition.x, _cachedMousePosition.y, kMouseInteractivityTestMouseClick);
+			recursiveFindMouseCollision(tracked, bestSceneStack, bestLayer, bestDirect, sceneStackEntry.scene.get(), _sceneStack.size() - 1 - ri, _cachedMousePosition.x, _cachedMousePosition.y, kMouseInteractivityTestMouseClick, _elementTrackedToCursor.lock().get());
 		}
 
 		if (tracked) {
@@ -6509,7 +6551,7 @@ VThreadState Runtime::updateMousePositionTask(const UpdateMousePositionTaskData 
 	if (_numMouseBlockers == 0) {
 		for (size_t ri = 0; ri < _sceneStack.size(); ri++) {
 			const SceneStackEntry &sceneStackEntry = _sceneStack[_sceneStack.size() - 1 - ri];
-			recursiveFindMouseCollision(collisionItem, bestSceneStack, bestLayer, bestDirect, sceneStackEntry.scene.get(), _sceneStack.size() - 1 - ri, data.x, data.y, kMouseInteractivityTestAnything);
+			recursiveFindMouseCollision(collisionItem, bestSceneStack, bestLayer, bestDirect, sceneStackEntry.scene.get(), _sceneStack.size() - 1 - ri, data.x, data.y, kMouseInteractivityTestAnything, _elementTrackedToCursor.lock().get());
 		}
 	}
 
@@ -7048,6 +7090,12 @@ void Runtime::setCursorElement(const Common::WeakPtr<VisualElement> &element) {
 	_haveCursorElement = !element.expired();
 
 	updateMainWindowCursor();
+	updateCursorElementPosition();
+}
+
+void Runtime::setCursorElementHotspot(const Common::Point &hotspot) {
+	_cursorElementHotspot = hotspot;
+	updateCursorElementPosition();
 }
 
 void Runtime::updateCursorElementPosition() {
@@ -7056,10 +7104,11 @@ void Runtime::updateCursorElementPosition() {
 		return;
 
 	Common::Point elementPos = element->getGlobalPosition();
-	if (elementPos != _cachedMousePosition) {
+	Common::Point targetPos = _cachedMousePosition - _cursorElementHotspot;
+	if (elementPos != targetPos) {
 		VisualElement::OffsetTranslateTaskData *taskData = _vthread->pushTask("VisualElement::offsetTranslateTask", element.get(), &VisualElement::offsetTranslateTask);
-		taskData->dx = _cachedMousePosition.x - elementPos.x;
-		taskData->dy = _cachedMousePosition.y - elementPos.y;
+		taskData->dx = targetPos.x - elementPos.x;
+		taskData->dy = targetPos.y - elementPos.y;
 	}
 }
 
@@ -7433,8 +7482,9 @@ const Graphics::Font *Runtime::getWindowsFont(const Common::String &familyName, 
 #endif
 }
 
-void Runtime::requestOpenTitle(const Common::String &path) {
+void Runtime::requestOpenTitle(const Common::String &path, bool addToReturnList) {
 	_openTitleRequest = path;
+	_openTitleAddToReturnList = addToReturnList;
 }
 
 void Runtime::setCanReturnToPreviousTitle(bool canReturn) {
@@ -7447,11 +7497,12 @@ bool Runtime::takeReturnToPreviousTitleRequest() {
 	return requested;
 }
 
-bool Runtime::takeOpenTitleRequest(Common::String &outPath) {
+bool Runtime::takeOpenTitleRequest(Common::String &outPath, bool &outAddToReturnList) {
 	if (_openTitleRequest.empty())
 		return false;
 
 	outPath = _openTitleRequest;
+	outAddToReturnList = _openTitleAddToReturnList;
 	_openTitleRequest.clear();
 	return true;
 }
@@ -7459,7 +7510,13 @@ bool Runtime::takeOpenTitleRequest(Common::String &outPath) {
 void Runtime::closeProject() {
 	// TODO: There are actually some elaborate cases here involving opening projects, project return list,
 	// Project Ended message, etc. and Obsidian actually attempts to stop MIDI playback on project end.
-	// For now we just quit.
+
+	// A title opened with "add to return list" closes back to the title that opened it
+	if (_canReturnToPreviousTitle) {
+		_returnToPreviousTitleRequested = true;
+		return;
+	}
+
 	_isQuitting = true;
 }
 
@@ -9670,7 +9727,7 @@ void VisualElement::debugInspect(IDebugInspectionReport *report) const {
 #endif
 
 MiniscriptInstructionOutcome VisualElement::scriptSetVisibility(MiniscriptThread *thread, const DynamicValue &result) {
-	// FIXME: Need to make this fire Show/Hide events??
+	// FIXME: Need to make this fire Show/Hide events?? (done for mTropolis 2.0 projects)
 	if (result.getType() == DynamicValueTypes::kBoolean) {
 		const bool targetValue = result.getBool();
 
@@ -9680,8 +9737,18 @@ MiniscriptInstructionOutcome VisualElement::scriptSetVisibility(MiniscriptThread
 		_visibleByDefault = targetValue;
 
 		if (_visible != targetValue) {
-			_visible = targetValue;
-			thread->getRuntime()->setSceneGraphDirty();
+			Runtime *runtime = thread->getRuntime();
+			if (runtime->getProject()->getRuntimeVersion() >= kRuntimeVersion200) {
+				// Setting visible is the same as a Show or Hide command, which fire Shown/Hidden
+				setVisible(runtime, targetValue);
+
+				Common::SharedPtr<MessageProperties> msgProps(new MessageProperties(Event(targetValue ? EventIDs::kElementShow : EventIDs::kElementHide, 0), DynamicValue(), getSelfReference()));
+				Common::SharedPtr<MessageDispatch> dispatch(new MessageDispatch(msgProps, this, false, true, false));
+				runtime->queueMessage(dispatch);
+			} else {
+				_visible = targetValue;
+				runtime->setSceneGraphDirty();
+			}
 		}
 		return kMiniscriptInstructionOutcomeContinue;
 	}
