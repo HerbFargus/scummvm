@@ -7025,6 +7025,531 @@ const char *RoverRaceModifier::getDefaultName() const {
 	return "RoverRace";
 }
 
+// Values of the bugtype variable
+enum BugEatBugType {
+	kBugTypeFly = 1,
+	kBugTypeMosquito,
+	kBugTypePoison,
+	kBugTypeChance,
+	kBugTypePredator,
+	kBugTypeDistraction,
+};
+
+static const int32 kBugEatBugScreenWidth = 640;
+static const int32 kBugEatBugScreenHeight = 480;
+static const int32 kBugEatBugParked = 500;
+static const int32 kBugEatBugCooldown = 8;
+
+// PlaySFX1-4 are picked at random when a bug is eaten
+static const char *const kBugEatBugSfx[] = {
+	"PlaySFX1", "PlaySFX2", "PlaySFX3", "PlaySFX4", "PlaySFXMiss", "PlaySFXPoison", "PlaySFXTimer", "PlaySFXDistract"
+};
+
+static int32 bugEatBugPeriod(int32 tickRate) {
+	return (tickRate > 0) ? static_cast<int32>(1000.0 / tickRate) : 83;
+}
+
+BugEatBugModifier::BugEatBugModifier()
+	: _rate(100.0), _tickRate(15), _running(false), _paused(false), _numFlyers(0), _numEdible(0), _numPreds(0), _numDistractions(0),
+	  _timerCels(0), _timerTotal(0), _timerLeft(0), _timerWarn(0), _score(0) {
+	for (Flyer &flyer : _flyers) {
+		flyer.type = flyer.dx = flyer.x = flyer.y = flyer.cel = flyer.pred = 0;
+		flyer.dead = false;
+	}
+	for (int i = 0; i < kMaxStill * 2; i++) {
+		Still &still = (i < kMaxStill) ? _preds[i] : _distractions[i - kMaxStill];
+		still.cel = still.animEnd = still.cooldown = 1;
+	}
+}
+
+BugEatBugModifier::~BugEatBugModifier() {
+	stopGame();
+}
+
+bool BugEatBugModifier::load(const PlugInModifierLoaderContext &context, const Data::KW::BugEatBugModifier &data) {
+	if (!loadDlgMgrEvent(_startWhen, data.enableWhen) || !loadDlgMgrEvent(_stopWhen, data.disableWhen))
+		return false;
+
+	if (data.destination.type == Data::PlugInTypeTaggedValue::kPoint)
+		data.destination.value.asPoint.toScummVMPoint(_destination);
+	if (data.rate.type == Data::PlugInTypeTaggedValue::kFloat)
+		_rate = data.rate.value.asFloat.toXPFloat().toDouble();
+	if (data.tickRate.type == Data::PlugInTypeTaggedValue::kInteger)
+		_tickRate = data.tickRate.value.asInt;
+
+	return true;
+}
+
+bool BugEatBugModifier::respondsToEvent(const Event &evt) const {
+	return _startWhen.respondsTo(evt) || _stopWhen.respondsTo(evt) || evt.eventType == EventIDs::kParentDisabled || evt.eventType == EventIDs::kMouseDown;
+}
+
+VThreadState BugEatBugModifier::consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) {
+	const Event &evt = msg->getEvent();
+
+	if (_startWhen.respondsTo(evt)) {
+		startGame(runtime);
+		return kVThreadReturn;
+	}
+
+	// Stopping only stops the clock, the tables stay
+	if (_stopWhen.respondsTo(evt) || evt.eventType == EventIDs::kParentDisabled) {
+		stopGame();
+		return kVThreadReturn;
+	}
+
+	// The original handles clicks even while stopped
+	if (evt.eventType == EventIDs::kMouseDown)
+		click(runtime);
+
+	return kVThreadReturn;
+}
+
+void BugEatBugModifier::disable(Runtime *runtime) {
+	stopGame();
+}
+
+void BugEatBugModifier::stopGame() {
+	_running = false;
+	if (_scheduledEvent) {
+		_scheduledEvent->cancel();
+		_scheduledEvent.reset();
+	}
+}
+
+bool BugEatBugModifier::readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) {
+	if (attrib == "paused") {
+		result.setBool(_paused);
+		return true;
+	} else if (attrib == "rate") {
+		result.setFloat(_rate);
+		return true;
+	} else if (attrib == "destination") {
+		result.setPoint(_destination);
+		return true;
+	}
+
+	return Modifier::readAttribute(thread, result, attrib);
+}
+
+MiniscriptInstructionOutcome BugEatBugModifier::writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) {
+	WritableAttribute writable;
+	if (attrib == "paused")
+		writable = kAttribPaused;
+	else if (attrib == "rate")
+		writable = kAttribRate;
+	else if (attrib == "destination")
+		writable = kAttribDestination;
+	else
+		return Modifier::writeRefAttribute(thread, result, attrib);
+
+	result.pod.ifc = DynamicValueWriteInterfaceGlue<WriteProxy>::getInstance();
+	result.pod.objectRef = this;
+	result.pod.ptrOrOffset = writable;
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
+MiniscriptInstructionOutcome BugEatBugModifier::WriteProxy::write(MiniscriptThread *thread, const DynamicValue &assigned, void *objectRef, uintptr ptrOrOffset) {
+	BugEatBugModifier *self = static_cast<BugEatBugModifier *>(objectRef);
+
+	// Variables are passed by reference
+	DynamicValue value = assigned;
+	if (value.getType() == DynamicValueTypes::kObject) {
+		Common::SharedPtr<RuntimeObject> obj = value.getObject().object.lock();
+		if (obj && obj->isModifier() && static_cast<Modifier *>(obj.get())->isVariable())
+			static_cast<VariableModifier *>(obj.get())->varGetValue(value);
+	}
+
+	DynamicValue converted;
+	switch (ptrOrOffset) {
+	case kAttribPaused:
+		if (!value.convertToType(DynamicValueTypes::kBoolean, converted))
+			return kMiniscriptInstructionOutcomeFailed;
+		self->_paused = converted.getBool();
+		break;
+	case kAttribRate:
+		if (!value.convertToType(DynamicValueTypes::kFloat, converted) || converted.getFloat() < 0.0 || converted.getFloat() > 9999999.0)
+			return kMiniscriptInstructionOutcomeFailed;
+		self->_rate = converted.getFloat();
+		break;
+	case kAttribDestination:
+		if (!value.convertToType(DynamicValueTypes::kPoint, converted))
+			return kMiniscriptInstructionOutcomeFailed;
+		self->_destination = converted.getPoint();
+		break;
+	default:
+		break;
+	}
+
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
+MiniscriptInstructionOutcome BugEatBugModifier::WriteProxy::refAttrib(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib) {
+	return kMiniscriptInstructionOutcomeFailed;
+}
+
+MiniscriptInstructionOutcome BugEatBugModifier::WriteProxy::refAttribIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib, const DynamicValue &index) {
+	return kMiniscriptInstructionOutcomeFailed;
+}
+
+// The value of the first of the element's own modifiers with that name, or 0
+int32 BugEatBugModifier::readVar(Structural *element, const char *name) const {
+	for (const Common::SharedPtr<Modifier> &modifier : element->getModifiers()) {
+		if (!modifier->getName().equalsIgnoreCase(name))
+			continue;
+
+		int32 result = 0;
+		if (modifier->isVariable()) {
+			DynamicValue value;
+			static_cast<VariableModifier *>(modifier.get())->varGetValue(value);
+			if (!value.roundToInt(result))
+				result = 0;
+		}
+		return result;
+	}
+
+	return 0;
+}
+
+void BugEatBugModifier::startGame(Runtime *runtime) {
+	if (!_running) {
+		_running = true;
+		_scheduledEvent = runtime->getScheduler().scheduleMethod<BugEatBugModifier, &BugEatBugModifier::tick>(runtime->getPlayTime() + bugEatBugPeriod(_tickRate), this);
+	}
+
+	for (Flyer &flyer : _flyers) {
+		flyer.element.reset();
+		flyer.type = flyer.dx = flyer.x = flyer.y = flyer.cel = flyer.pred = 0;
+		flyer.dead = false;
+	}
+	for (int i = 0; i < kMaxStill * 2; i++) {
+		Still &still = (i < kMaxStill) ? _preds[i] : _distractions[i - kMaxStill];
+		still.element.reset();
+		still.body = still.mouth = Common::Rect();
+		still.mouthCenter = Common::Point();
+		still.cel = still.animEnd = still.cooldown = 1;
+	}
+	_numFlyers = _numEdible = _numPreds = _numDistractions = 0;
+	_timerElement.reset();
+	_scoreElement.reset();
+	_timerCels = 0;
+
+	Structural *owner = findStructuralOwner();
+	if (owner) {
+		for (const Common::SharedPtr<Structural> &child : owner->getChildren()) {
+			Structural *element = child.get();
+			if (!element->isElement() || !static_cast<Element *>(element)->isVisual())
+				continue;
+
+			const Common::Rect &rect = static_cast<VisualElement *>(element)->getRelativeRect();
+			int32 type = readVar(element, "bugtype");
+			int32 speed = readVar(element, "bugspeed");
+
+			if (type < 1) {
+				// Not a bug: look for the timer bar and the score
+				int32 time = readVar(element, "gametime");
+				if (time > 0) {
+					_timerElement = element->getSelfReference();
+					_timerTotal = _timerLeft = _tickRate * time;
+					_timerWarn = static_cast<int32>(_tickRate * 4.3);
+
+					DynamicValue cels;
+					_timerCels = 0;
+					if (dlgMgrReadAttribute(runtime, this, element, "celcount", cels) && cels.getType() == DynamicValueTypes::kInteger)
+						_timerCels = cels.getInt();
+				}
+
+				int32 score = readVar(element, "gamescore");
+				if (score > 0) {
+					// gamescore 1 starts a new game, from 10 on it is the score carried over
+					_scoreElement = element->getSelfReference();
+					_score = (score < 10) ? 0 : score;
+					setInt(runtime, _scoreElement, "text", _score);
+				}
+			} else if (speed < 1) {
+				// Predators and distractions stay put, other bugs are parked off screen
+				if (type == kBugTypePredator && rect.top < kBugEatBugScreenHeight) {
+					Still &pred = _preds[_numPreds];
+					pred.element = element->getSelfReference();
+					pred.body = rect;
+
+					// The AttackRect is the predator's first child
+					if (!element->getChildren().empty()) {
+						Structural *mouth = element->getChildren()[0].get();
+						if (mouth->isElement() && static_cast<Element *>(mouth)->isVisual()) {
+							pred.mouth = static_cast<VisualElement *>(mouth)->getRelativeRect();
+							pred.mouth.translate(rect.left, rect.top);
+							pred.mouthCenter = Common::Point(pred.mouth.left + pred.mouth.width() / 2, pred.mouth.top + pred.mouth.height() / 2);
+						}
+					}
+
+					if (++_numPreds >= kMaxStill) {
+						warning("BugEatBug: Too many predator bugs located.");
+						break;
+					}
+				} else if (type == kBugTypeDistraction && rect.top < kBugEatBugScreenHeight) {
+					Still &distraction = _distractions[_numDistractions];
+					distraction.element = element->getSelfReference();
+					distraction.body = rect;
+
+					if (++_numDistractions >= kMaxStill) {
+						warning("BugEatBug: Too many distraction bugs located.");
+						break;
+					}
+				} else {
+					placeTopLeft(runtime, element->getSelfReference(), kBugEatBugParked, kBugEatBugParked);
+				}
+			} else {
+				// Flyers start in a random direction, faster ones by their bugspeed
+				Flyer &flyer = _flyers[_numFlyers];
+				flyer.element = element->getSelfReference();
+				flyer.type = type;
+
+				// As VisualElement::getCenterPosition()
+				flyer.x = (rect.left + rect.right) / 2;
+				flyer.y = (rect.top + rect.bottom) / 2;
+
+				if (runtime->getRandom()->getRandomNumber(0x7fff) < 0x3ffc) {
+					flyer.dx = speed + 3;
+					flyer.cel = 4;
+				} else {
+					flyer.dx = -3 - speed;
+					flyer.cel = 2;
+				}
+
+				if (type == kBugTypeFly || type == kBugTypeMosquito)
+					_numEdible++;
+
+				if (++_numFlyers >= kMaxFlyers) {
+					warning("BugEatBug: Too many flying bugs located.");
+					break;
+				}
+			}
+		}
+	}
+
+	// Each flyer drifts to the height of a random predator's mouth
+	for (int i = 0; i < _numFlyers; i++)
+		_flyers[i].pred = (_numPreds > 0) ? runtime->getRandom()->getRandomNumberRng(0, _numPreds - 1) : 0;
+
+	_paused = false;
+
+	debug(2, "BugEatBug: Started with %i flyers (%i edible), %i predators, %i distractions, %i timer ticks", static_cast<int>(_numFlyers),
+		static_cast<int>(_numEdible), static_cast<int>(_numPreds), static_cast<int>(_numDistractions), static_cast<int>(_timerTotal));
+}
+
+void BugEatBugModifier::click(Runtime *runtime) {
+	if (_paused) {
+		sendMessage(runtime, "PausedClick");
+		return;
+	}
+
+	const Common::Point mouse = runtime->getCachedMousePosition();
+
+	for (int j = 0; j < _numPreds; j++) {
+		Still &pred = _preds[j];
+		if (mouse.x <= pred.body.left || mouse.x >= pred.body.right || mouse.y <= pred.body.top || mouse.y >= pred.body.bottom || pred.cooldown >= 1)
+			continue;
+
+		pred.cel = 7;
+		pred.animEnd = 9;
+		pred.cooldown = kBugEatBugCooldown;
+
+		// One flyer per strike
+		bool caught = false;
+		for (int i = 0; i < _numFlyers; i++) {
+			Flyer &flyer = _flyers[i];
+			if (flyer.x <= pred.mouth.left || flyer.x >= pred.mouth.right || flyer.y <= pred.mouth.top || flyer.y >= pred.mouth.bottom || flyer.dx == 0)
+				continue;
+
+			// Removed on the next tick
+			flyer.x = pred.mouthCenter.x;
+			flyer.y = pred.mouthCenter.y;
+			flyer.dx = 0;
+
+			if (flyer.type == kBugTypeFly)
+				_score += 5;
+			else if (flyer.type == kBugTypeMosquito)
+				_score += 10;
+			else if (flyer.type == kBugTypeChance)
+				_score += 25;
+			setInt(runtime, _scoreElement, "text", _score);
+
+			int sfx = (flyer.type == kBugTypePoison) ? 5 : runtime->getRandom()->getRandomNumberRng(0, 3);
+			if (_numEdible > 0 || flyer.type > kBugTypeMosquito)
+				sendMessage(runtime, kBugEatBugSfx[sfx]);
+
+			// Poison stuns the predator for 5 seconds
+			if (flyer.type == kBugTypePoison)
+				pred.cooldown = _tickRate * 5;
+
+			debug(2, "BugEatBug: Predator %i ate flyer %i (type %i), score %i", j, i, static_cast<int>(flyer.type), static_cast<int>(_score));
+			caught = true;
+			break;
+		}
+
+		if (!caught)
+			sendMessage(runtime, "PlaySFXMiss");
+	}
+
+	for (int k = 0; k < _numDistractions; k++) {
+		Still &distraction = _distractions[k];
+		if (mouse.x <= distraction.body.left || mouse.x >= distraction.body.right || mouse.y <= distraction.body.top || mouse.y >= distraction.body.bottom)
+			continue;
+
+		distraction.cel = 2;
+		distraction.animEnd = 5;
+		sendMessage(runtime, "PlaySFXDistract");
+	}
+}
+
+// Plays cels from cel up to animEnd - 1, then shows cel 1
+void BugEatBugModifier::animate(Runtime *runtime, Still &still) {
+	if (still.animEnd == 1)
+		return;
+
+	setInt(runtime, still.element, "cel", still.cel);
+	if (still.animEnd == 0) {
+		still.animEnd = 1;
+	} else if (++still.cel >= still.animEnd) {
+		still.cel = 1;
+		still.animEnd = 0;
+	}
+}
+
+void BugEatBugModifier::tick(Runtime *runtime) {
+	_scheduledEvent.reset();
+	if (!_running)
+		return;
+
+	_scheduledEvent = runtime->getScheduler().scheduleMethod<BugEatBugModifier, &BugEatBugModifier::tick>(runtime->getPlayTime() + bugEatBugPeriod(_tickRate), this);
+
+	if (_paused)
+		return;
+
+	// Flyers are drawn where they were on the last tick. Cels 1-3 fly right, 4-6 fly left.
+	static const int32 kNextCel[7] = {0, 2, 3, 1, 5, 6, 4};
+	for (int i = 0; i < _numFlyers; i++) {
+		Flyer &flyer = _flyers[i];
+		if (flyer.dead)
+			continue;
+
+		int32 shownCel = flyer.cel;
+		if (flyer.cel >= 1 && flyer.cel <= 6)
+			flyer.cel = kNextCel[flyer.cel];
+		setInt(runtime, flyer.element, "cel", shownCel);
+		placeCentered(runtime, flyer.element, flyer.x, flyer.y);
+
+		if (flyer.dx == 0) {
+			// Eaten since the last tick
+			flyer.x = flyer.y = kBugEatBugParked;
+			placeTopLeft(runtime, flyer.element, kBugEatBugParked, kBugEatBugParked);
+			flyer.dead = true;
+
+			if (flyer.type == kBugTypeFly || flyer.type == kBugTypeMosquito)
+				_numEdible--;
+			else if (flyer.type == kBugTypeChance)
+				sendMessage(runtime, "ExtraChance");
+
+			if (_numEdible < 1)
+				sendMessage(runtime, "YouWin");
+		} else {
+			flyer.x -= flyer.dx;
+			flyer.y += runtime->getRandom()->getRandomNumberRng(-3, 3);
+
+			const Common::Rect &mouth = _preds[flyer.pred].mouth;
+			if (flyer.y < mouth.top)
+				flyer.y++;
+			else if (flyer.y > mouth.bottom)
+				flyer.y--;
+
+			if (flyer.x < 0) {
+				flyer.dx = -ABS(flyer.dx);
+				flyer.cel = 1;
+			}
+			if (flyer.x > kBugEatBugScreenWidth) {
+				flyer.dx = ABS(flyer.dx);
+				flyer.cel = 4;
+			}
+		}
+	}
+
+	for (int j = 0; j < _numPreds; j++) {
+		animate(runtime, _preds[j]);
+		_preds[j].cooldown--;
+	}
+
+	for (int k = 0; k < _numDistractions; k++)
+		animate(runtime, _distractions[k]);
+
+	// The timer bar fills up as the time runs out
+	if (_timerTotal > 0) {
+		int32 shownCel = _timerCels - (_timerCels * _timerLeft) / _timerTotal;
+		_timerLeft--;
+		setInt(runtime, _timerElement, "cel", shownCel);
+
+		if (_timerLeft == _timerWarn)
+			sendMessage(runtime, "PlaySFXTimer");
+		if (_timerLeft == 0)
+			sendMessage(runtime, "GameOver");
+	}
+}
+
+void BugEatBugModifier::placeCentered(Runtime *runtime, const Common::WeakPtr<RuntimeObject> &element, int32 x, int32 y) {
+	Common::SharedPtr<RuntimeObject> obj = element.lock();
+	if (!obj || !obj->isStructural())
+		return;
+
+	Structural *structural = static_cast<Structural *>(obj.get());
+	if (!structural->isElement() || !static_cast<Element *>(structural)->isVisual())
+		return;
+
+	const Common::Rect &rect = static_cast<VisualElement *>(structural)->getRelativeRect();
+	placeTopLeft(runtime, element, x - rect.width() / 2, y - rect.height() / 2);
+}
+
+void BugEatBugModifier::placeTopLeft(Runtime *runtime, const Common::WeakPtr<RuntimeObject> &element, int32 x, int32 y) {
+	Common::SharedPtr<RuntimeObject> obj = element.lock();
+	if (!obj)
+		return;
+
+	DynamicValue pos;
+	pos.setPoint(Common::Point(x, y));
+	dlgMgrWriteAttribute(runtime, this, obj.get(), "position", pos);
+}
+
+void BugEatBugModifier::setInt(Runtime *runtime, const Common::WeakPtr<RuntimeObject> &element, const char *attrib, int32 value) {
+	Common::SharedPtr<RuntimeObject> obj = element.lock();
+	if (obj)
+		dlgMgrSetInt(runtime, this, obj.get(), attrib, value);
+}
+
+void BugEatBugModifier::sendMessage(Runtime *runtime, const char *messageName) {
+	uint32 messageID = 0;
+	if (!runtime->getProject()->findAuthorMessageID(messageName, messageID))
+		return;
+
+	Structural *owner = findStructuralOwner();
+	if (!owner)
+		return;
+
+	debug(2, "BugEatBug: Sending '%s'", messageName);
+	Common::SharedPtr<MessageProperties> props(new MessageProperties(Event(EventIDs::kAuthorMessage, messageID), DynamicValue(), getSelfReference()));
+	Common::SharedPtr<MessageDispatch> dispatch(new MessageDispatch(props, owner, true, true, false));
+	runtime->queueMessage(dispatch);
+}
+
+Common::SharedPtr<Modifier> BugEatBugModifier::shallowClone() const {
+	Common::SharedPtr<BugEatBugModifier> clone(new BugEatBugModifier(*this));
+	clone->_scheduledEvent.reset();
+	clone->_running = false;
+	return clone;
+}
+
+const char *BugEatBugModifier::getDefaultName() const {
+	return "BugEatBug";
+}
+
 // Children of the owner element
 enum LanderChild {
 	kLanderChildLander = 1,
@@ -11590,7 +12115,7 @@ const char *DlgMgrClientModifier::getDefaultName() const {
 
 KnowWonderPlugIn::KnowWonderPlugIn()
 	: _strUtilModifierFactory(this), _dlgMgrServerModifierFactory(this), _dlgMgrClientModifierFactory(this),
-	  _kwSmackerModifierFactory(this), _editCtrlModifierFactory(this), _fillModModifierFactory(this), _aviCtrlModifierFactory(this), _gameModifierFactory(this), _whaleMazeModifierFactory(this), _eyefollowerModifierFactory(this), _smkJumpModifierFactory(this), _balloonModifierFactory(this), _artModifierFactory(this), _svTownModifierFactory(this), _lLavaModifierFactory(this), _subModifierFactory(this), _landerModifierFactory(this), _roverRaceModifierFactory(this) {
+	  _kwSmackerModifierFactory(this), _editCtrlModifierFactory(this), _fillModModifierFactory(this), _aviCtrlModifierFactory(this), _gameModifierFactory(this), _whaleMazeModifierFactory(this), _eyefollowerModifierFactory(this), _smkJumpModifierFactory(this), _balloonModifierFactory(this), _artModifierFactory(this), _svTownModifierFactory(this), _lLavaModifierFactory(this), _subModifierFactory(this), _landerModifierFactory(this), _roverRaceModifierFactory(this), _bugEatBugModifierFactory(this) {
 }
 
 KnowWonderPlugIn::~KnowWonderPlugIn() {
@@ -11631,6 +12156,7 @@ void KnowWonderPlugIn::registerModifiers(IPlugInModifierRegistrar *registrar) co
 	registrar->registerPlugInModifier("Sub", &_subModifierFactory);
 	registrar->registerPlugInModifier("Lander", &_landerModifierFactory);
 	registrar->registerPlugInModifier("RoverRace", &_roverRaceModifierFactory);
+	registrar->registerPlugInModifier("BugEatBug", &_bugEatBugModifierFactory);
 }
 
 } // End of namespace KW

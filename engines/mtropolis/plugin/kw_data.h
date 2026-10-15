@@ -113,6 +113,19 @@ protected:
 	DataReadErrorCode load(PlugIn &plugIn, const PlugInModifier &prefix, DataReader &reader) override;
 };
 
+// BugEatBug (Magic School Bus Explores Bugs) stores three more values after
+// the game modifier events.
+struct BugEatBugModifier : public PlugInModifierData {
+	PlugInTypeTaggedValue enableWhen;
+	PlugInTypeTaggedValue disableWhen;
+	PlugInTypeTaggedValue destination;	// Point, unused
+	PlugInTypeTaggedValue rate;			// Float, unused
+	PlugInTypeTaggedValue tickRate;		// Integer, ticks per second
+
+protected:
+	DataReadErrorCode load(PlugIn &plugIn, const PlugInModifier &prefix, DataReader &reader) override;
+};
+
 // DlgMgrClient data is written by the plug-in itself in big-endian order,
 // using a reduced set of value types.
 struct DlgMgrValue {

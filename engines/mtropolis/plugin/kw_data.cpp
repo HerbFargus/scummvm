@@ -110,6 +110,17 @@ DataReadErrorCode GameModifier::load(PlugIn &plugIn, const PlugInModifier &prefi
 	return kDataReadErrorNone;
 }
 
+DataReadErrorCode BugEatBugModifier::load(PlugIn &plugIn, const PlugInModifier &prefix, DataReader &reader) {
+	if (prefix.plugInRevision != 1)
+		return kDataReadErrorUnsupportedRevision;
+
+	if (!loadV2RevisionPrefix(prefix, reader) || !enableWhen.load(reader) || !disableWhen.load(reader)
+		|| !destination.load(reader) || !rate.load(reader) || !tickRate.load(reader))
+		return kDataReadErrorReadFailed;
+
+	return kDataReadErrorNone;
+}
+
 DlgMgrServerModifier::DlgMgrServerModifier() : version(0) {
 }
 

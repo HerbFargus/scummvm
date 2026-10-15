@@ -1303,6 +1303,112 @@ private:
 	Common::Rect _craters[kNumCraters];
 };
 
+// Bug Eat Bug from Magic School Bus Explores Bugs. Flies, mosquitoes, poison
+// bugs and a chance bug fly back and forth across the screen; clicking a
+// predator makes it strike and eat a flyer inside its AttackRect. Eating all
+// the flies and mosquitoes before the timer runs out wins the level. The
+// plug-in has no levels: the title's scripts place the bugs and set their
+// speeds, and the plug-in classifies the owner's children by their variables
+// (bugtype, bugspeed, gametime, gamescore) when the game starts.
+class BugEatBugModifier : public Modifier {
+public:
+	BugEatBugModifier();
+	~BugEatBugModifier();
+
+	bool load(const PlugInModifierLoaderContext &context, const Data::KW::BugEatBugModifier &data);
+
+	bool respondsToEvent(const Event &evt) const override;
+	VThreadState consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) override;
+	void disable(Runtime *runtime) override;
+
+	bool readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) override;
+	MiniscriptInstructionOutcome writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) override;
+
+#ifdef MTROPOLIS_DEBUG_ENABLE
+	const char *debugGetTypeName() const override { return "BugEatBug Modifier"; }
+	SupportStatus debugGetSupportStatus() const override { return kSupportStatusDone; }
+#endif
+
+private:
+	static const int kMaxFlyers = 25;
+	static const int kMaxStill = 5;	// Predators or distractions
+	static const int kNumSfx = 8;
+
+	enum WritableAttribute {
+		kAttribPaused,
+		kAttribRate,
+		kAttribDestination,
+	};
+
+	struct Flyer {
+		Common::WeakPtr<RuntimeObject> element;
+		int32 type;
+		int32 dx;	// Moving left when positive, 0 when caught
+		int32 x;	// Center
+		int32 y;
+		int32 cel;
+		int32 pred;	// Predator whose mouth height the flyer drifts to
+		bool dead;
+	};
+
+	struct Still {
+		Common::WeakPtr<RuntimeObject> element;
+		Common::Rect body;
+		Common::Rect mouth;	// Predators only
+		Common::Point mouthCenter;
+		int32 cel;
+		int32 animEnd;	// 1 idle, 0 showing the last cel
+		int32 cooldown;	// Predators only
+	};
+
+	struct WriteProxy {
+		static MiniscriptInstructionOutcome write(MiniscriptThread *thread, const DynamicValue &value, void *objectRef, uintptr ptrOrOffset);
+		static MiniscriptInstructionOutcome refAttrib(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib);
+		static MiniscriptInstructionOutcome refAttribIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib, const DynamicValue &index);
+	};
+
+	Common::SharedPtr<Modifier> shallowClone() const override;
+	const char *getDefaultName() const override;
+
+	void startGame(Runtime *runtime);
+	void stopGame();
+	void click(Runtime *runtime);
+	void tick(Runtime *runtime);
+	void animate(Runtime *runtime, Still &still);
+
+	int32 readVar(Structural *element, const char *name) const;
+	void placeCentered(Runtime *runtime, const Common::WeakPtr<RuntimeObject> &element, int32 x, int32 y);
+	void placeTopLeft(Runtime *runtime, const Common::WeakPtr<RuntimeObject> &element, int32 x, int32 y);
+	void setInt(Runtime *runtime, const Common::WeakPtr<RuntimeObject> &element, const char *attrib, int32 value);
+	void sendMessage(Runtime *runtime, const char *messageName);
+
+	Event _startWhen;
+	Event _stopWhen;
+	Common::Point _destination;
+	double _rate;
+	int32 _tickRate;
+
+	Common::SharedPtr<ScheduledEvent> _scheduledEvent;
+	bool _running;
+	bool _paused;
+
+	Flyer _flyers[kMaxFlyers];
+	int32 _numFlyers;
+	int32 _numEdible;	// Flies and mosquitoes not yet eaten
+	Still _preds[kMaxStill];
+	int32 _numPreds;
+	Still _distractions[kMaxStill];
+	int32 _numDistractions;
+
+	Common::WeakPtr<RuntimeObject> _timerElement;
+	int32 _timerCels;
+	int32 _timerTotal;
+	int32 _timerLeft;
+	int32 _timerWarn;
+	Common::WeakPtr<RuntimeObject> _scoreElement;
+	int32 _score;
+};
+
 // Lunar Lander clone from Magic School Bus Lands on Mars. The bus-lander falls
 // under gravity and the player fires the main and side thrusters with the
 // arrow keys, or by holding the mouse button on the side to move towards, to
@@ -2114,6 +2220,7 @@ private:
 	PlugInModifierFactory<ArtModifier, Data::KW::GameModifier> _artModifierFactory;
 	PlugInModifierFactory<SubModifier, Data::KW::GameModifier> _subModifierFactory;
 	PlugInModifierFactory<RoverRaceModifier, Data::KW::GameModifier> _roverRaceModifierFactory;
+	PlugInModifierFactory<BugEatBugModifier, Data::KW::BugEatBugModifier> _bugEatBugModifierFactory;
 	PlugInModifierFactory<LanderModifier, Data::KW::GameModifier> _landerModifierFactory;
 	PlugInModifierFactory<LLavaModifier, Data::KW::GameModifier> _lLavaModifierFactory;
 	PlugInModifierFactory<SvTownModifier, Data::KW::GameModifier> _svTownModifierFactory;
