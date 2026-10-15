@@ -2420,6 +2420,12 @@ void PointMotionModifier::trigger(Runtime *runtime) {
 		_curY = rect.top;
 	}
 
+	// Without a speed it would never arrive
+	if (!_durationMode && _speed <= 1e-6) {
+		stop(runtime, false);
+		return;
+	}
+
 	double now = static_cast<double>(runtime->getPlayTime());
 	bool done = _durationMode ? durationStep(now) : speedStep(now);
 
