@@ -3072,7 +3072,7 @@ MiniscriptInstructionOutcome WorldManagerInterface::writeRefAttribute(Miniscript
 #endif
 		DynamicValueWriteDiscardHelper::create(result);
 		return kMiniscriptInstructionOutcomeContinue;
-	} else if (attrib == "cursor") {
+	} else if (attrib == "cursor" || attrib == "cursorelement") {
 		DynamicValueWriteFuncHelper<WorldManagerInterface, &WorldManagerInterface::setCursor, true>::create(this, result);
 		return kMiniscriptInstructionOutcomeContinue;
 	}
@@ -3141,6 +3141,7 @@ MiniscriptInstructionOutcome WorldManagerInterface::setCursor(MiniscriptThread *
 	switch (value.getType())
 	{
 	case DynamicValueTypes::kNull:
+	case DynamicValueTypes::kString:	// A system cursor name, e.g. "systemArrow"
 		thread->getRuntime()->setCursorElement(Common::WeakPtr<VisualElement>());
 		return kMiniscriptInstructionOutcomeContinue;
 	case DynamicValueTypes::kObject: {
