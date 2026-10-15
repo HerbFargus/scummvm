@@ -3842,6 +3842,8 @@ void DlgMgrServerModifier::updateCurrentLine(Runtime *runtime) {
 
 	_lastFrame = frame;
 
+	Common::Array<int32> cues;
+
 	for (DlgMgrClientModifier::Track &track : client->getTracks()) {
 		if (track.isFinished)
 			continue;
@@ -3851,7 +3853,7 @@ void DlgMgrServerModifier::updateCurrentLine(Runtime *runtime) {
 		if (track.trackType == Data::KW::DlgMgrTrack::kTrackTypeCue) {
 			if (frame >= track.startFrame) {
 				track.isFinished = true;
-				client->sendCue(runtime, track.cueValue);
+				cues.push_back(track.cueValue);
 			}
 			continue;
 		}
@@ -3933,6 +3935,16 @@ void DlgMgrServerModifier::updateCurrentLine(Runtime *runtime) {
 		clearCaption(runtime);
 		client->onPlaybackFinished(runtime, true);
 	}
+
+	sendCuesBeforeDone(runtime, client, cues);
+}
+
+// Cue and done messages are sent immediately, which runs the last one sent
+// first, so they are sent backwards: the done message (already sent) arrives
+// after every cue, and the cues arrive in timeline order
+void DlgMgrServerModifier::sendCuesBeforeDone(Runtime *runtime, DlgMgrClientModifier *client, const Common::Array<int32> &cues) {
+	for (uint i = cues.size(); i > 0; i--)
+		client->sendCue(runtime, cues[i - 1]);
 }
 
 void DlgMgrServerModifier::stopCurrentLine(Runtime *runtime, bool resetTracks, bool notifyDone) {
@@ -3944,6 +3956,8 @@ void DlgMgrServerModifier::stopCurrentLine(Runtime *runtime, bool resetTracks, b
 	if (!client)
 		return;
 
+	Common::Array<int32> cues;
+
 	for (DlgMgrClientModifier::Track &track : client->getTracks()) {
 		Common::SharedPtr<Structural> target = track.target.lock();
 
@@ -3954,7 +3968,7 @@ void DlgMgrServerModifier::stopCurrentLine(Runtime *runtime, bool resetTracks, b
 		} else if (resetTracks) {
 			if (track.trackType == Data::KW::DlgMgrTrack::kTrackTypeCue) {
 				if (!track.isFinished)
-					client->sendCue(runtime, track.cueValue);
+					cues.push_back(track.cueValue);
 			} else {
 				if (track.trackType == Data::KW::DlgMgrTrack::kTrackTypeAnimation) {
 					int32 cel = dlgMgrCelForFrame(track, track.endFrame);
@@ -3972,6 +3986,7 @@ void DlgMgrServerModifier::stopCurrentLine(Runtime *runtime, bool resetTracks, b
 
 	clearCaption(runtime);
 	client->onPlaybackFinished(runtime, notifyDone);
+	sendCuesBeforeDone(runtime, client, cues);
 }
 
 void DlgMgrServerModifier::loadCaptions(Runtime *runtime) {

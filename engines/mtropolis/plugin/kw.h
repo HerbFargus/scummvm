@@ -769,6 +769,7 @@ private:
 	void startNextLine(Runtime *runtime);
 	void updateCurrentLine(Runtime *runtime);
 	void stopCurrentLine(Runtime *runtime, bool resetTracks, bool notifyDone);
+	void sendCuesBeforeDone(Runtime *runtime, DlgMgrClientModifier *client, const Common::Array<int32> &cues);
 	void flushQueue(Runtime *runtime, bool notifyDone);
 	void setPaused(Runtime *runtime, bool paused);
 	int32 getCurrentFrame(Runtime *runtime) const;
