@@ -2445,6 +2445,19 @@ void DlgMgrClientModifier::sendCue(Runtime *runtime, int32 cueValue) {
 	_cueSend.sendFromMessengerWithCustomData(runtime, this, nullptr, value, nullptr);
 }
 
+static Common::SharedPtr<Structural> dlgMgrFindDescendant(Structural *structural, uint32 guid) {
+	for (const Common::SharedPtr<Structural> &child : structural->getChildren()) {
+		if (child->getStaticGUID() == guid)
+			return child;
+
+		Common::SharedPtr<Structural> found = dlgMgrFindDescendant(child.get(), guid);
+		if (found)
+			return found;
+	}
+
+	return nullptr;
+}
+
 static Common::SharedPtr<Structural> dlgMgrResolvePath(Runtime *runtime, const Common::Array<uint32> &path, uint32 guid) {
 	Structural *current = runtime->getProject();
 
@@ -2466,10 +2479,11 @@ static Common::SharedPtr<Structural> dlgMgrResolvePath(Runtime *runtime, const C
 		current = next;
 	}
 
-	if (current->getStaticGUID() != guid)
-		return nullptr;
+	if (current->getStaticGUID() == guid)
+		return current->getSelfReference().lock().staticCast<Structural>();
 
-	return current->getSelfReference().lock().staticCast<Structural>();
+	// Deeply nested targets store a truncated path, so look below where it ends
+	return dlgMgrFindDescendant(current, guid);
 }
 
 void DlgMgrClientModifier::resolveTargets(Runtime *runtime) {
