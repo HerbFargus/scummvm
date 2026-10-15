@@ -2956,6 +2956,11 @@ void CompoundVariableModifier::visitInternalReferences(IStructuralReferenceVisit
 }
 
 bool CompoundVariableModifier::readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) {
+	if (attrib == "childobjectcount") {
+		result.setInt(_children.size());
+		return true;
+	}
+
 	Modifier *var = findChildByName(thread->getRuntime(), attrib);
 	if (var) {
 		// Shouldn't dereference the value here, some scripts (e.g. "<go dest> on MUI" in Obsidian) depend on it not being dereferenced

@@ -3486,7 +3486,9 @@ static bool childIndexFromScript(MiniscriptThread *thread, const DynamicValue &i
 }
 
 bool Structural::readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) {
-	if (attrib == "childelemcount") {
+	if (attrib == "childelemcount" || attrib == "childobjectcount") {
+		// childobjectcount goes with the childobject attribute (Magic School Bus Animals counts
+		// the penguin game's pieces with it)
 		result.setInt(_children.size());
 		return true;
 	} else if (attrib == "childmodcount") {
