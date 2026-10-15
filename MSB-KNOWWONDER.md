@@ -25,3 +25,38 @@ Anyone writing a real contribution should treat it as notes, not code to copy.
 | Balloon, Eyefollower, SmkJump | balloon.r32, eyefollow.r32, smkjump.r32 | Flight |
 | Art, LLava, SvTown, Sub | ArtAct.r32, LLava.r32, SvTown.r32, Sub.r32 | Volcano |
 | WhaleMaze | WhaleMaze.r32 | Whales |
+
+## Status
+
+Whales & Dolphins is playable from sign-in through the bus and most of its
+activities (map, periscope, monitor, Crew Pass, game show, Whale-A-Teria,
+rotation puzzle, eco poster), with dialogue, lip sync and closed captions.
+The other five titles are untested past startup.
+
+Implemented here: DlgMgrServer/Client (including captions from the .ccd
+files), KWSmacker, EditCtrl, FileMod, PointMotion, Open Title (with return
+to the opening title), and the mTropolis 2.0 data and Miniscript changes the
+games need. Their game-specific minigame modifiers are still stubs.
+
+## Notes for implementers
+
+- The titles of a game share player data through a Save and Restore file.
+  Each .mfx has its own GUIDs, so restored variables have to match by name.
+- Scripts check a save exists by opening it with the File modifier, so both
+  modifiers must use the same file names.
+- Miniscript jump offsets are signed; loops jump backwards.
+- Captions: the .ccd file is a hash table (bucket count, then
+  `textOffset, nameOffset, compareNames` per bucket, then the names and the
+  `SPEAKER<tab>text` strings). Keys are dialogue line names. The hash walks the
+  name backwards: `h += c * m; m *= isdigit(c) ? 5 : 13; m <<= 1`, from
+  `h = m = 1`. The speaker, two-line pages of text and a clear message are sent
+  to the active scene using the events in the DlgMgrServer data.
+- Point Motion: the u32 after the destination is two u16s, ease flags (1 out,
+  2 in, over 20% each) and mode (1 = duration, otherwise speed in px/s). The
+  int is the update rate in Hz.
+
+## Testing
+
+`mtropolis_test_input` names a script of input commands (see
+`TestInputScript` in mtropolis.cpp) so the games can be driven and
+screenshotted without a real mouse or keyboard.
