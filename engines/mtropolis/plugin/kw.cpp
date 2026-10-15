@@ -3923,6 +3923,1441 @@ const char *ArtModifier::getDefaultName() const {
 	return "Art";
 }
 
+// Hit boxes relative to an object's position, open intervals unless noted
+static const int16 kSubNoLimit = 32767;
+
+static const struct SubBox {
+	int16 cel;	// Or the tube worm slot
+	int16 x0;
+	int16 x1;
+	int16 y0;
+	int16 y1;
+	bool separate;	// Tested even if an earlier box for the cel hit
+} kSubVentBoxes[3][18] = {
+	{	// Tall
+		{3, -11, 45, 143, kSubNoLimit, false},
+		{4, -15, 51, 81, kSubNoLimit, false},
+		{5, -17, 57, 105, kSubNoLimit, false},
+		{5, -13, 53, 57, 106, false},
+		{6, -17, 61, 99, kSubNoLimit, false},
+		{6, -13, 55, 35, 100, false},
+		{7, -25, 65, 45, kSubNoLimit, true},
+		{7, -11, 57, -5, 46, true},
+		{8, -23, 63, 75, kSubNoLimit, false},
+		{8, -13, 55, -13, 76, false},
+		{9, -17, 65, 103, kSubNoLimit, false},
+		{9, -9, 59, 67, 104, false},
+	},
+	{	// Short
+		{3, -6, 48, 103, kSubNoLimit, false},
+		{4, -14, 52, 65, kSubNoLimit, false},
+		{5, -16, 56, 87, kSubNoLimit, false},
+		{5, -12, 50, 55, 88, false},
+		{6, -14, 60, 81, kSubNoLimit, false},
+		{6, -12, 54, 31, 82, false},
+		{7, -20, 64, 39, kSubNoLimit, true},
+		{7, -8, 56, -7, 40, true},
+		{8, -20, 60, 41, kSubNoLimit, false},
+		{8, -16, 54, 1, 42, false},
+		{9, -18, 60, 89, kSubNoLimit, false},
+		{9, -8, 54, 69, 90, false},
+	},
+	{	// Fat
+		{3, 17, 83, 79, kSubNoLimit, false},
+		{4, 7, 93, 67, kSubNoLimit, false},
+		{4, 17, 79, 41, 68, false},
+		{5, 3, 97, 55, kSubNoLimit, false},
+		{5, 13, 85, 33, 56, false},
+		{6, -9, 103, 59, kSubNoLimit, false},
+		{6, 3, 89, 33, 60, false},
+		{6, 21, 79, 9, 34, false},
+		{7, -7, 105, 83, kSubNoLimit, false},
+		{7, -21, 115, 43, 84, false},
+		{7, -5, 95, 13, 44, false},
+		{7, 13, 81, -7, 14, false},
+		{8, -15, 109, 75, kSubNoLimit, false},
+		{8, 1, 89, 37, 76, false},
+		{8, 17, 79, 7, 38, false},
+		{9, -3, 95, 75, kSubNoLimit, false},
+		{9, 9, 81, 47, 76, false},
+		{9, 19, 75, 27, 48, false},
+	},
+}, kSubSmokerBoxes[] = {
+	{3, 23, 81, 83, 123, false},
+	{3, 11, 91, 41, 84, false},
+	{4, 23, 81, 69, 123, false},
+	{4, 11, 91, 0, 70, false},
+	{5, 21, 81, 87, 123, false},
+	{5, -9, 120, 6, 88, false},
+	{6, -15, 132, 6, 93, false},
+	{7, -15, 132, 54, 90, false},
+	{7, 6, 135, -9, 55, false},
+	{8, -12, 78, 39, 96, false},
+	{8, 12, 129, -6, 82, false},
+	{9, -6, 120, 45, 75, false},
+	{9, 18, 120, -3, 46, false},
+	{10, 9, 117, 39, 63, false},
+	{10, 18, 90, 0, 40, false},
+}, kSubTubeWormBoxes[] = {
+	{1, -22, 44, 78, 111, false},
+	{1, -22, 68, 21, 63, false},
+	{1, 12, 116, -5, 49, false},
+	{1, 64, 127, 23, 65, false},
+	{1, 79, 146, 56, 89, false},
+	{2, -22, 41, 22, 64, false},
+	{2, -4, 83, -10, 37, false},
+	{2, 49, 106, 8, 53, false},
+	{2, 70, 138, 23, 59, false},
+	{3, -22, 76, 4, 47, false},
+	{3, 5, 62, -11, 39, false},
+	{3, 46, 101, 17, 61, false},
+	{3, 56, 121, 50, 77, false},
+	{4, -21, 48, 45, 81, false},
+	{4, -16, 39, 3, 45, false},
+	{4, 9, 66, -8, 39, false},
+	{4, 47, 132, 8, 55, false},
+}, kSubGemBoxes[] = {
+	{13, -36, 35, -22, 20, false},	// Cels 1-13
+	{14, -31, 32, -19, 20, false},
+	{15, -32, 32, -19, 17, false},
+	{16, -31, 29, -19, 14, false},
+	{17, -31, 29, -16, 14, false},
+	{18, -28, 29, -14, 13, false},
+	{19, -25, 26, -13, 11, false},
+	{20, -25, 23, -10, 8, false},
+}, kSubBubbleBoxes[] = {	// Closed intervals
+	{2, -14, 41, 35, 60, false},
+	{3, -16, 49, 12, 59, false},
+	{4, -15, 43, -8, 59, false},
+	{5, -19, 46, -7, 56, false},
+	{6, -18, 44, -3, 44, false},
+	{7, -15, 41, -5, 29, false},
+	{8, -12, 39, 7, 29, false},
+};
+
+static bool subInBox(const SubBox &box, int32 dx, int32 dy) {
+	return dx > box.x0 && dx < box.x1 && dy > box.y0 && dy < box.y1;
+}
+
+// Children of the owner element
+enum SubChild {
+	kSubChildSub = 1,
+	kSubChildLevels,
+	kSubChildSmallRocks,	// Then medium and large
+	kSubChildSplash = 6,
+	kSubChildTallVents,	// Then short and fat
+	kSubChildSmokers = 10,
+	kSubChildSquid,
+	kSubChildTubeWorms,
+	kSubChildStarFish,
+	kSubChildGems,
+	kSubChildBubbles,
+	kSubChildLine,
+};
+
+static const int32 kSubCelLeft = 1;
+static const int32 kSubCelRight = 10;
+static const int32 kSubCelShieldLeft = 9;
+static const int32 kSubCelShieldRight = 18;
+static const int32 kSubRestingRockCel = 11;
+static const int32 kSubGemGoneCel = 21;
+static const int32 kSubHidden = 600;
+
+SubModifier::SubModifier()
+	: _levelsLoaded(false), _running(false), _paused(true), _initialized(false), _level(1), _points(0), _timeCounter(0), _timeLimit(950),
+	  _rockSpawnCountdown(0), _rockSpawnIndex(0), _rockAnimInterval(3), _splashY(40), _state(kStateFree), _subX(0), _subY(0), _posX(0.0),
+	  _posY(0.0), _vx(0.0), _vy(0.0), _subCel(kSubCelRight), _spinTargetX(0), _spinLift(0), _stateCounter(0), _shieldTimer(0), _shieldBlinks(5),
+	  _mouseHeld(false), _mouseMode(true), _keyUp(false), _keyDown(false), _keyLeft(false), _keyRight(false), _squidReenterX(0), _lineCel(1) {
+	memset(_rocks, 0, sizeof(_rocks));
+	memset(_splashes, 0, sizeof(_splashes));
+	memset(_vents, 0, sizeof(_vents));
+	memset(_smokers, 0, sizeof(_smokers));
+	memset(&_squid, 0, sizeof(_squid));
+	memset(_tubeWormHolding, 0, sizeof(_tubeWormHolding));
+	memset(_gems, 0, sizeof(_gems));
+	memset(&_bubbles, 0, sizeof(_bubbles));
+}
+
+SubModifier::~SubModifier() {
+	stopGame();
+}
+
+bool SubModifier::load(const PlugInModifierLoaderContext &context, const Data::KW::GameModifier &data) {
+	return loadDlgMgrEvent(_startWhen, data.enableWhen) && loadDlgMgrEvent(_stopWhen, data.disableWhen);
+}
+
+// The levels are records in the plug-in's data section. The fields are 32-bit
+// but only the low 16 bits are used.
+bool SubModifier::loadLevels() {
+	if (_levelsLoaded)
+		return !_levels.empty();
+
+	_levelsLoaded = true;
+
+	Common::File f;
+	if (!f.open(Common::Path("mTrop_Resources/sub.r32")) && !f.open(Common::Path("sub.r32"))) {
+		warning("Sub: sub.r32 from the installed game is needed for the levels");
+		return false;
+	}
+
+	Common::Array<byte> image;
+	image.resize(f.size());
+	f.read(&image[0], image.size());
+
+	bool failed = false;
+	auto readS16 = [&](uint32 va) -> int16 {
+		uint32 offset = va - 0x10000000;
+		if (offset + 2 > image.size()) {
+			failed = true;
+			return 0;
+		}
+		return static_cast<int16>(READ_LE_UINT16(&image[offset]));
+	};
+	auto readPoint = [&](uint32 va) -> Common::Point {
+		return Common::Point(readS16(va), readS16(va + 4));
+	};
+	auto readHazard = [&](uint32 va) -> Hazard {
+		Hazard hazard;
+		hazard.x = readS16(va);
+		hazard.y = readS16(va + 4);
+		hazard.warn = readS16(va + 8);
+		hazard.idle = readS16(va + 12);
+		return hazard;
+	};
+
+	Common::Array<Level> levels;
+	levels.resize(kNumLevels + 1);
+	for (uint l = 1; l <= kNumLevels; l++) {
+		Level &level = levels[l];
+		uint32 base = 0x10011b2c + l * 0x5ec;
+
+		level.start = readPoint(base);
+		for (uint i = 0; i < 30; i++)
+			level.rockSpawn[i] = readPoint(base + 0x8 + i * 8);
+		level.initRocks = readS16(base + 0xf8);
+		level.rockInterval = readS16(base + 0xfc);
+		level.fallSpeed = readS16(base + 0x100);
+
+		int16 polyCount = readS16(base + 0x104);
+		if (polyCount < 0 || polyCount > 100)
+			failed = true;
+		for (int16 i = 0; i < polyCount && !failed; i++)
+			level.landscape.push_back(readPoint(base + 0x106 + i * 8));
+
+		for (uint type = 0; type < 3; type++) {
+			for (uint i = 0; i < 4; i++)
+				level.vents[type][i] = readHazard(base + 0x426 + type * 0x40 + i * 16);
+		}
+		for (uint i = 0; i < 8; i++)
+			level.smokers[i] = readHazard(base + 0x4e6 + i * 16);
+		level.squid = readHazard(base + 0x566);
+		level.squidSpeed = readS16(base + 0x576);
+		for (uint i = 0; i < 4; i++)
+			level.tubeWorms[i] = readPoint(base + 0x578 + i * 8);
+		for (uint i = 0; i < 3; i++)
+			level.starFish[i] = readPoint(base + 0x598 + i * 8);
+		for (uint i = 0; i < 3; i++) {
+			level.gems[i].pos = readPoint(base + 0x5b0 + i * 16);
+			level.gems[i].surfaceHold = readS16(base + 0x5b8 + i * 16);
+			level.gems[i].respawn = readS16(base + 0x5bc + i * 16);
+		}
+		level.bubbles = readPoint(base + 0x5e0);
+		level.bubblesPeriod = readS16(base + 0x5e8);
+	}
+
+	// Level 1 starts at (50, 375) with an 81 point landscape
+	if (failed || levels[1].start != Common::Point(50, 375) || levels[1].landscape.size() != 81 || levels[1].fallSpeed != 5) {
+		warning("Sub: sub.r32 isn't the expected version");
+		return false;
+	}
+
+	_levels.swap(levels);
+	return true;
+}
+
+bool SubModifier::respondsToEvent(const Event &evt) const {
+	return _startWhen.respondsTo(evt) || _stopWhen.respondsTo(evt) || evt.eventType == EventIDs::kParentDisabled
+		|| evt.eventType == EventIDs::kMouseDown || evt.eventType == EventIDs::kMouseUp;
+}
+
+VThreadState SubModifier::consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) {
+	const Event &evt = msg->getEvent();
+
+	if (_startWhen.respondsTo(evt)) {
+		setupLevel(runtime, 1);
+		_paused = true;
+
+		if (!_running) {
+			_running = true;
+			_keySignaller = runtime->getProject()->notifyOnKeyboardEvent(this);
+			_scheduledEvent = runtime->getScheduler().scheduleMethod<SubModifier, &SubModifier::tick>(runtime->getPlayTime() + 100, this);
+		}
+		return kVThreadReturn;
+	}
+
+	if (_stopWhen.respondsTo(evt) || evt.eventType == EventIDs::kParentDisabled) {
+		stopGame();
+		return kVThreadReturn;
+	}
+
+	// A click switches to mouse steering, but only the title unpauses
+	if (evt.eventType == EventIDs::kMouseDown) {
+		if (!_paused) {
+			_mouseHeld = true;
+			_mouseMode = true;
+		}
+	} else if (evt.eventType == EventIDs::kMouseUp) {
+		_mouseHeld = false;
+	}
+
+	return kVThreadReturn;
+}
+
+void SubModifier::onKeyboardEvent(Runtime *runtime, const KeyboardInputEvent &keyEvt) {
+	bool *flag = nullptr;
+	switch (keyEvt.getKeyState().keycode) {
+	case Common::KEYCODE_UP:
+	case Common::KEYCODE_KP8:
+		flag = &_keyUp;
+		break;
+	case Common::KEYCODE_DOWN:
+	case Common::KEYCODE_KP2:
+		flag = &_keyDown;
+		break;
+	case Common::KEYCODE_LEFT:
+	case Common::KEYCODE_KP4:
+		flag = &_keyLeft;
+		break;
+	case Common::KEYCODE_RIGHT:
+	case Common::KEYCODE_KP6:
+		flag = &_keyRight;
+		break;
+	default:
+		return;
+	}
+
+	if (keyEvt.getKeyEventType() == Common::EVENT_KEYUP) {
+		*flag = false;
+		return;
+	}
+
+	// The flag is set even while paused, but only switches to the keys while playing
+	if (!_paused)
+		_mouseMode = false;
+	*flag = true;
+}
+
+void SubModifier::disable(Runtime *runtime) {
+	stopGame();
+}
+
+void SubModifier::stopGame() {
+	_running = false;
+	if (_scheduledEvent) {
+		_scheduledEvent->cancel();
+		_scheduledEvent.reset();
+	}
+	if (_keySignaller) {
+		_keySignaller->removeReceiver(this);
+		_keySignaller.reset();
+	}
+}
+
+bool SubModifier::readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) {
+	if (attrib == "paused") {
+		result.setBool(_paused);
+		return true;
+	} else if (attrib == "gamelevel") {
+		result.setInt(_level);
+		return true;
+	} else if (attrib == "points") {
+		result.setInt(_points);
+		return true;
+	}
+
+	return Modifier::readAttribute(thread, result, attrib);
+}
+
+MiniscriptInstructionOutcome SubModifier::writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) {
+	WritableAttribute writable;
+	if (attrib == "paused")
+		writable = kAttribPaused;
+	else if (attrib == "gamelevel")
+		writable = kAttribGameLevel;
+	else
+		return Modifier::writeRefAttribute(thread, result, attrib);
+
+	result.pod.ifc = DynamicValueWriteInterfaceGlue<WriteProxy>::getInstance();
+	result.pod.objectRef = this;
+	result.pod.ptrOrOffset = writable;
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
+MiniscriptInstructionOutcome SubModifier::WriteProxy::write(MiniscriptThread *thread, const DynamicValue &assigned, void *objectRef, uintptr ptrOrOffset) {
+	SubModifier *self = static_cast<SubModifier *>(objectRef);
+
+	// Variables are passed by reference
+	DynamicValue value = assigned;
+	if (value.getType() == DynamicValueTypes::kObject) {
+		Common::SharedPtr<RuntimeObject> obj = value.getObject().object.lock();
+		if (obj && obj->isModifier() && static_cast<Modifier *>(obj.get())->isVariable())
+			static_cast<VariableModifier *>(obj.get())->varGetValue(value);
+	}
+
+	if (ptrOrOffset == kAttribGameLevel) {
+		int32 level = 0;
+		if (!value.roundToInt(level))
+			return kMiniscriptInstructionOutcomeFailed;
+		if (level >= 1 && level <= kNumLevels)
+			self->setupLevel(thread->getRuntime(), level);
+		return kMiniscriptInstructionOutcomeContinue;
+	}
+
+	if (ptrOrOffset == kAttribPaused) {
+		bool flag = false;
+		if (value.getType() == DynamicValueTypes::kBoolean)
+			flag = value.getBool();
+		else if (value.getType() == DynamicValueTypes::kInteger)
+			flag = (value.getInt() != 0);
+		else
+			return kMiniscriptInstructionOutcomeFailed;
+
+		// Unpausing only takes effect once a level is set up
+		if (self->_initialized || flag)
+			self->_paused = flag;
+	}
+
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
+MiniscriptInstructionOutcome SubModifier::WriteProxy::refAttrib(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib) {
+	return kMiniscriptInstructionOutcomeFailed;
+}
+
+MiniscriptInstructionOutcome SubModifier::WriteProxy::refAttribIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib, const DynamicValue &index) {
+	return kMiniscriptInstructionOutcomeFailed;
+}
+
+Structural *SubModifier::child(int index) const {
+	Structural *owner = findStructuralOwner();
+	if (!owner || index < 1 || index > static_cast<int>(owner->getChildren().size()))
+		return nullptr;
+	return owner->getChildren()[index - 1].get();
+}
+
+Structural *SubModifier::grandchild(int index, int subIndex) const {
+	Structural *container = child(index);
+	if (!container || subIndex < 1 || subIndex > static_cast<int>(container->getChildren().size()))
+		return nullptr;
+	return container->getChildren()[subIndex - 1].get();
+}
+
+void SubModifier::placeCentered(Runtime *runtime, Structural *element, int32 x, int32 y) {
+	if (!element || !element->isElement() || !static_cast<Element *>(element)->isVisual())
+		return;
+
+	const Common::Rect &rect = static_cast<VisualElement *>(element)->getRelativeRect();
+	placeTopLeft(runtime, element, x - rect.width() / 2, y - rect.height() / 2);
+}
+
+void SubModifier::placeTopLeft(Runtime *runtime, Structural *element, int32 x, int32 y) {
+	if (!element)
+		return;
+
+	DynamicValue pos;
+	pos.setPoint(Common::Point(x, y));
+	dlgMgrWriteAttribute(runtime, this, element, "position", pos);
+}
+
+void SubModifier::setCel(Runtime *runtime, Structural *element, int32 cel) {
+	dlgMgrSetInt(runtime, this, element, "cel", cel);
+}
+
+void SubModifier::sendMessage(Runtime *runtime, const char *messageName) {
+	uint32 messageID = 0;
+	if (!runtime->getProject()->findAuthorMessageID(messageName, messageID))
+		return;
+
+	Structural *owner = findStructuralOwner();
+	if (!owner)
+		return;
+
+	debug(2, "Sub: Sending '%s'", messageName);
+	Common::SharedPtr<MessageProperties> props(new MessageProperties(Event(EventIDs::kAuthorMessage, messageID), DynamicValue(), getSelfReference()));
+	Common::SharedPtr<MessageDispatch> dispatch(new MessageDispatch(props, owner, true, true, false));
+	runtime->queueMessage(dispatch);
+}
+
+// Even-odd test, as the original's polygon region
+bool SubModifier::inLandscape(int32 x, int32 y) const {
+	const Common::Array<Common::Point> &poly = _levels[_level].landscape;
+	bool inside = false;
+	for (uint i = 0, j = poly.size() - 1; i < poly.size(); j = i++) {
+		const Common::Point &a = poly[i];
+		const Common::Point &b = poly[j];
+		if ((a.y > y) != (b.y > y)) {
+			double crossX = a.x + static_cast<double>(y - a.y) * (b.x - a.x) / (b.y - a.y);
+			if (x < crossX)
+				inside = !inside;
+		}
+	}
+	return inside;
+}
+
+void SubModifier::setupLevel(Runtime *runtime, int32 levelNum) {
+	if (!loadLevels() || levelNum < 1 || levelNum > kNumLevels)
+		return;
+
+	const Level &level = _levels[levelNum];
+	_level = levelNum;
+	_points = 0;
+
+	// The second level of a pair continues the first one's clock
+	if (levelNum % 2 == 1)
+		_timeCounter = 0;
+
+	int tier = (levelNum <= 10) ? 0 : (levelNum <= 20) ? 1 : 2;
+	static const int32 kTimeLimits[3] = {950, 850, 800};
+	static const int32 kRockAnimIntervals[3] = {3, 5, 7};
+	static const int32 kShieldBlinks[3] = {5, 4, 3};
+	_timeLimit = kTimeLimits[tier];
+	_rockAnimInterval = kRockAnimIntervals[tier];
+	_shieldBlinks = kShieldBlinks[tier];
+	if (level.fallSpeed == 5)
+		_splashY = 40;
+	else if (level.fallSpeed == 6)
+		_splashY = 36;
+	else if (level.fallSpeed == 7)
+		_splashY = 42;
+
+	_keyUp = _keyDown = _keyLeft = _keyRight = false;
+
+	if (!findStructuralOwner())
+		return;
+
+	_vx = _vy = 0.0;
+	_subCel = kSubCelRight;
+	_posX = level.start.x;
+	_posY = level.start.y;
+	_subX = level.start.x;
+	_subY = level.start.y;
+	_state = kStateFree;
+	placeCentered(runtime, child(kSubChildSub), _subX, _subY);
+	setCel(runtime, child(kSubChildSub), _subCel);
+
+	for (int i = 1; i <= kNumLevels; i++)
+		placeTopLeft(runtime, grandchild(kSubChildLevels, i), 0, (i == levelNum) ? 0 : 650);
+
+	_rockSpawnCountdown = level.rockInterval;
+	_rockSpawnIndex = 0;
+
+	// The first few rocks of each size start as samples lying on the floor
+	for (int c = 0; c < 3; c++) {
+		for (int i = 0; i < 8; i++) {
+			Rock &rock = _rocks[c][i];
+			rock.animTimer = _rockAnimInterval;
+			if (i < level.initRocks) {
+				rock.x = level.rockSpawn[_rockSpawnIndex].x;
+				rock.y = rock.targetY = level.rockSpawn[_rockSpawnIndex].y;
+				rock.cel = kSubRestingRockCel;
+				rock.state = 3;
+				_rockSpawnIndex++;
+			} else {
+				rock.x = 0;
+				rock.y = kSubHidden;
+				rock.cel = 1;
+				rock.state = 4;
+			}
+			Structural *element = grandchild(kSubChildSmallRocks + c, i + 1);
+			placeCentered(runtime, element, rock.x, rock.y);
+			setCel(runtime, element, rock.cel);
+		}
+	}
+
+	for (int i = 0; i < 4; i++) {
+		_splashes[i].x = 0;
+		_splashes[i].y = kSubHidden;
+		_splashes[i].cel = 1;
+		_splashes[i].active = false;
+		placeTopLeft(runtime, grandchild(kSubChildSplash, i + 1), 0, kSubHidden);
+		setCel(runtime, grandchild(kSubChildSplash, i + 1), 1);
+	}
+
+	for (int type = 0; type < 3; type++) {
+		for (int i = 0; i < 4; i++) {
+			Vent &vent = _vents[type][i];
+			vent.x = level.vents[type][i].x;
+			vent.y = level.vents[type][i].y;
+			vent.timer = level.vents[type][i].idle;
+			vent.state = 0;
+			vent.cel = 1;
+			placeTopLeft(runtime, grandchild(kSubChildTallVents + type, i + 1), vent.x, vent.y);
+			setCel(runtime, grandchild(kSubChildTallVents + type, i + 1), 1);
+		}
+	}
+
+	for (int i = 0; i < 8; i++) {
+		Vent &smoker = _smokers[i];
+		smoker.x = level.smokers[i].x;
+		smoker.y = level.smokers[i].y;
+		smoker.timer = level.smokers[i].idle;
+		smoker.state = 0;
+		smoker.cel = 1;
+		placeTopLeft(runtime, grandchild(kSubChildSmokers, i + 1), smoker.x, smoker.y);
+		setCel(runtime, grandchild(kSubChildSmokers, i + 1), 1);
+	}
+
+	resetSquid(runtime);
+
+	for (int i = 0; i < 4; i++) {
+		_tubeWorms[i] = level.tubeWorms[i];
+		_tubeWormHolding[i] = false;
+		placeTopLeft(runtime, grandchild(kSubChildTubeWorms, i + 1), _tubeWorms[i].x, _tubeWorms[i].y);
+	}
+
+	for (int i = 0; i < 3; i++) {
+		_starFish[i] = level.starFish[i];
+		placeTopLeft(runtime, grandchild(kSubChildStarFish, i + 1), _starFish[i].x, _starFish[i].y);
+	}
+
+	for (int i = 0; i < 3; i++) {
+		Gem &gem = _gems[i];
+		gem.x = 0;
+		gem.y = kSubHidden;
+		gem.timerA = level.gems[i].respawn;
+		gem.timerB = 0;
+		gem.cel = 1;
+		placeTopLeft(runtime, grandchild(kSubChildGems, i + 1), 0, kSubHidden);
+		setCel(runtime, grandchild(kSubChildGems, i + 1), 1);
+	}
+
+	_bubbles.x = level.bubbles.x;
+	_bubbles.y = level.bubbles.y;
+	_bubbles.timer = level.bubblesPeriod;
+	_bubbles.cel = 1;
+	placeTopLeft(runtime, child(kSubChildBubbles), _bubbles.x, _bubbles.y);
+	setCel(runtime, child(kSubChildBubbles), 1);
+
+	_lineCel = 1;
+	placeTopLeft(runtime, child(kSubChildLine), 0, kSubHidden);
+	setCel(runtime, child(kSubChildLine), 1);
+
+	_initialized = true;
+}
+
+void SubModifier::resetSquid(Runtime *runtime) {
+	const Hazard &squid = _levels[_level].squid;
+	_squid.x = squid.x;
+	_squid.y = squid.y;
+	_squid.cel = 1;
+	_squid.timer = squid.idle;
+	_squid.state = 0;
+	placeTopLeft(runtime, child(kSubChildSquid), _squid.x, _squid.y);
+	setCel(runtime, child(kSubChildSquid), 1);
+}
+
+void SubModifier::tick(Runtime *runtime) {
+	_scheduledEvent.reset();
+	if (!_running)
+		return;
+
+	_scheduledEvent = runtime->getScheduler().scheduleMethod<SubModifier, &SubModifier::tick>(runtime->getPlayTime() + 100, this);
+
+	if (_paused || !_initialized)
+		return;
+
+	// The clock stops while the sub is lifted to the bus
+	if (_state != kStateLift) {
+		_timeCounter++;
+		if (_timeCounter % 10 == 0)
+			sendMessage(runtime, "Countdown");
+	}
+	if (_timeCounter >= _timeLimit)
+		sendMessage(runtime, "OutOfTime");
+
+	bool right = false;
+	bool left = false;
+	steer(runtime, right, left);
+
+	int32 nx = static_cast<int32>(_posX);
+	int32 ny = static_cast<int32>(_posY);
+	bool atLeftWall = (_posX < 36.0);
+	bool belowSurface = (_posY >= 56.0);
+	bool probeL = inLandscape(nx - 24, ny + 15);
+	bool probeR = inLandscape(nx + 24, ny + 15);
+	bool probeC = inLandscape(nx, ny + 15);
+
+	if (_posX > 602.0) {
+		resetSquid(runtime);
+		if (_level % 2 == 0) {
+			_state = kStateLift;
+			sendMessage(runtime, "PlaySFX9");
+			sendMessage(runtime, "Congrats");
+		} else {
+			_paused = true;
+			sendMessage(runtime, "PlaySFX10");
+			sendMessage(runtime, "Advance");
+		}
+	}
+
+	if (_state <= kStateBounce) {
+		if (atLeftWall || probeC)
+			_state = kStateBlocked;
+		else if (belowSurface)
+			_state = (probeL || probeR) ? kStateBounce : kStateFree;
+		else
+			_state = kStateSurface;
+	}
+
+	tickSubState(runtime, right, left, probeL, probeR, probeC, atLeftWall, belowSurface);
+
+	_subX = static_cast<int32>(_posX);
+	_subY = static_cast<int32>(_posY);
+	placeCentered(runtime, child(kSubChildSub), _subX, _subY);
+	if (right)
+		_subCel = kSubCelRight;
+	else if (left)
+		_subCel = kSubCelLeft;
+	setCel(runtime, child(kSubChildSub), _subCel);
+
+	spawnRock(runtime);
+	tickRocks(runtime);
+	if (_state != kStateSquid)
+		tickGems(runtime);
+	tickSplashes(runtime);
+	tickVents(runtime);
+	tickTubeWorms(runtime);
+	tickSmokers(runtime);
+	tickStarFish(runtime);
+	tickSquid(runtime);
+	tickBubbles(runtime);
+}
+
+// Accelerates toward the mouse while the button is held, or with the arrow keys
+void SubModifier::steer(Runtime *runtime, bool &right, bool &left) {
+	bool up = false;
+	bool down = false;
+
+	if (_mouseMode) {
+		const Common::Point &mouse = runtime->getCachedMousePosition();
+		double dx = mouse.x - _subX;
+		double dy = mouse.y - _subY;
+
+		// Divisions by zero count as steep, as in the original's floating point
+		if (dx > 0.0)
+			right = (dy == 0.0 || dx / fabs(dy) > 0.6);
+		else
+			left = (dx < 0.0 && (dy == 0.0 || -dx / fabs(dy) > 0.6));
+		bool steep = (dy != 0.0 && (dx == 0.0 || fabs(dy / dx) > 0.6));
+		if (dy < 0.0 && steep)
+			up = true;
+		else if (dy > 0.0 && steep)
+			down = true;
+	}
+
+	if (_keyRight)
+		right = true;
+	else if (_keyLeft)
+		left = true;
+	if (_keyUp)
+		up = true;
+	else if (_keyDown)
+		down = true;
+
+	// Reversing stops dead, then speeds up by 1 a tick
+	if (_mouseHeld || !_mouseMode) {
+		if (right)
+			_vx = (_vx < 0.0) ? 0.0 : MIN(_vx + 1.0, 7.0);
+		else if (left)
+			_vx = (_vx > 0.0) ? 0.0 : MAX(_vx - 1.0, -7.0);
+		if (up)
+			_vy = (_vy > 0.0) ? 0.0 : MAX(_vy - 1.0, -6.0);
+		else if (down)
+			_vy = (_vy < 0.0) ? 0.0 : MIN(_vy + 1.0, 6.0);
+	}
+
+	// Only fast horizontal motion slows down, so the sub keeps coasting
+	if (_vx > 2.5)
+		_vx -= 0.4;
+	else if (_vx < -2.5)
+		_vx += 0.4;
+
+	_posX += _vx;
+	_posY += _vy;
+}
+
+void SubModifier::bounce(bool probeL, bool probeR) {
+	float fx = static_cast<float>(_subX - _posX) * 1.5f;
+	float fy = static_cast<float>(_subY - _posY) * 1.5f;
+	if (probeL) {
+		if (fx < 0.0f)
+			fx = 0.0f;
+	} else if (probeR) {
+		if (fx > 0.0f)
+			fx = 0.0f;
+	}
+	_posX = _subX + fx;
+	_posY = _subY + fy;
+	_subX = static_cast<int32>(_posX);
+	_subY = static_cast<int32>(_posY);
+	_vx = _vy = 0.0;
+}
+
+void SubModifier::tickSubState(Runtime *runtime, bool &right, bool &left, bool probeL, bool probeR, bool probeC, bool atLeftWall, bool belowSurface) {
+	const Level &level = _levels[_level];
+
+	switch (_state) {
+	case kStateFree:
+		for (int i = 1; i <= 4; i++)
+			setCel(runtime, grandchild(kSubChildTubeWorms, i), 1);
+		_subX = static_cast<int32>(_posX);
+		_subY = static_cast<int32>(_posY);
+		break;
+
+	case kStateSurface:
+		_subX = static_cast<int32>(_posX);
+		_posY = _subY;
+		break;
+
+	case kStateBlocked:
+		_posX = _subX;
+		_posY = _subY;
+		break;
+
+	case kStateBounce:
+		sendMessage(runtime, "PlaySFX4");
+		bounce(probeL, probeR);
+		break;
+
+	case kStateSquid:
+		if (_squid.state == 2) {
+			// Carried off by the squid, off screen
+			int32 prevY = _subY;
+			_subCel = kSubCelRight;
+			setCel(runtime, child(kSubChildSub), _subCel);
+			_vx = _vy = 0.0;
+			_posX = 0.0;
+			_posY = kSubHidden;
+			_squidReenterX = 0;
+			_subX = 0;
+			_subY = kSubHidden;
+			placeCentered(runtime, child(kSubChildSub), _subX, _subY);
+			if (prevY < kSubHidden || _squid.cel == 4) {
+				_squid.cel = 4;
+				setCel(runtime, child(kSubChildSquid), 4);
+			}
+		} else if (_subX < level.start.x) {
+			// The squid is gone, the sub comes back in from the left
+			_squidReenterX += 3;
+			_posX = _squidReenterX;
+			_posY = _squid.y;
+			_subX = static_cast<int32>(_posX);
+			_subY = static_cast<int32>(_posY);
+			placeCentered(runtime, child(kSubChildSub), _subX, _subY);
+			right = left = false;
+		} else {
+			right = true;
+			_state = kStateFree;
+		}
+		break;
+
+	case kStateSpin: {
+		// Three turns through the spin cels, drifting toward the smoker and up
+		int32 cel = _subCel;
+		right = left = false;
+		_subCel = cel + 1;
+		if (_stateCounter < 1) {
+			_state = kStateFree;
+			_vx = _vy = 0.0;
+			if (cel == kSubCelLeft)
+				left = true;
+			else if (cel == kSubCelRight)
+				right = true;
+		} else {
+			int32 d = _subX - _spinTargetX;
+			_vx = (d < -15) ? 15 : (d < -10) ? 10 : (d < 0) ? 3 : (d < 11) ? -3 : (d < 16) ? -10 : -15;
+			_vy = 1 - _spinLift;
+			_posX = _subX + _vx;
+			_posY = _subY + _vy;
+			if (cel == 8 || cel == 17) {
+				_stateCounter--;
+				_subCel = cel - 7;
+				setCel(runtime, child(kSubChildSub), _subCel);
+			} else {
+				setCel(runtime, child(kSubChildSub), cel);
+			}
+		}
+		break;
+	}
+
+	case kStateHit:
+		_stateCounter--;
+		if (_stateCounter < 1) {
+			sendMessage(runtime, "GameOver");
+			_state = kStateFree;
+		} else {
+			right = left = false;
+			_subCel = kSubCelRight;
+			setCel(runtime, child(kSubChildSub), _subCel);
+			_vx = _vy = 0.0;
+			_posX = level.start.x;
+			_posY = level.start.y;
+			_subX = level.start.x;
+			_subY = level.start.y;
+			placeCentered(runtime, child(kSubChildSub), _subX, _subY);
+		}
+		break;
+
+	case kStateTubeWorm:
+		for (int i = 0; i < 4; i++) {
+			if (!_tubeWormHolding[i]) {
+				// Detected again with the tube worms below
+				_state = kStateFree;
+				continue;
+			}
+
+			_subCel = (_subCel < kSubCelRight) ? kSubCelLeft : kSubCelRight;
+			setCel(runtime, child(kSubChildSub), _subCel);
+			setCel(runtime, grandchild(kSubChildTubeWorms, i + 1), 2);
+			_vx = _vy = 0.0;
+
+			int32 dx = _subX - _tubeWorms[i].x;
+			if (dx < 52)
+				_posX += 20.0;
+			else if (dx < 62)
+				_posX += 1.0;
+			if (dx >= 73)
+				_posX -= 10.0;
+			else if (dx > 62)
+				_posX -= 1.0;
+
+			int32 dy = _subY - _tubeWorms[i].y;
+			if (dy < 52)
+				_posY += 20.0;
+			else if (dy < 82)
+				_posY += 10.0;
+			else if (dy < 92)
+				_posY += 1.0;
+		}
+		break;
+
+	case kStateLift:
+		// Pulled up into the bus by the line
+		_posX = 597.0;
+		_posY -= _vy;
+		_vx = _vy = 0.0;
+		if (_lineCel < 3) {
+			placeTopLeft(runtime, child(kSubChildLine), 572, 12);
+			_lineCel++;
+			setCel(runtime, child(kSubChildLine), _lineCel);
+		}
+		if (_subY != kSubHidden) {
+			if (_subY < 95)
+				_posY += 10.0;
+			else if (_subY < 105)
+				_posY += 1.0;
+			else if (_subY == 105)
+				_posY = 105.0;
+			else if (_subY < 116)
+				_posY -= 1.0;
+			else
+				_posY -= 10.0;
+		}
+		if (_subY == 105) {
+			_lineCel = 4;
+			setCel(runtime, child(kSubChildLine), _lineCel);
+			_posX = 0.0;
+			_posY = kSubHidden;
+		}
+		if (_subY == kSubHidden) {
+			if (_lineCel < 8) {
+				_lineCel++;
+				setCel(runtime, child(kSubChildLine), _lineCel);
+			} else {
+				_paused = true;
+				sendMessage(runtime, "Advance");
+			}
+		}
+		break;
+
+	case kStateShield:
+		_shieldTimer--;
+		if (probeL || probeR)
+			bounce(probeL, probeR);
+		else if (atLeftWall || probeC) {
+			_posX = _subX;
+			_posY = _subY;
+		} else if (belowSurface) {
+			_subX = static_cast<int32>(_posX);
+			_subY = static_cast<int32>(_posY);
+		} else {
+			_subX = static_cast<int32>(_posX);
+			_posY = _subY;
+		}
+
+		if (_shieldTimer < 1) {
+			// Blinks out one step a tick
+			if (_shieldBlinks < 1) {
+				if (_subCel == kSubCelShieldRight)
+					_subCel = kSubCelRight;
+				else if (_subCel == kSubCelShieldLeft)
+					_subCel = kSubCelLeft;
+				_shieldBlinks = (_level < 11) ? 5 : (_level <= 20) ? 4 : 3;
+				_state = kStateFree;
+			} else {
+				if (_subCel == kSubCelShieldRight)
+					_subCel = kSubCelRight;
+				else if (_subCel == kSubCelRight) {
+					_subCel = kSubCelShieldRight;
+					_shieldBlinks--;
+				}
+				if (_subCel == kSubCelShieldLeft)
+					_subCel = kSubCelLeft;
+				else if (_subCel == kSubCelLeft) {
+					_subCel = kSubCelShieldLeft;
+					_shieldBlinks--;
+				}
+			}
+		} else if (right)
+			_subCel = kSubCelShieldRight;
+		else if (left)
+			_subCel = kSubCelShieldLeft;
+		else if (_subCel == kSubCelRight)
+			_subCel = kSubCelShieldRight;
+		else if (_subCel == kSubCelLeft)
+			_subCel = kSubCelShieldLeft;
+		right = left = false;
+		break;
+
+	default:
+		break;
+	}
+}
+
+void SubModifier::hit(Runtime *runtime, const char *sfx) {
+	_state = kStateHit;
+	_stateCounter = 6;
+	sendMessage(runtime, sfx);
+}
+
+void SubModifier::spawnRock(Runtime *runtime) {
+	const Level &level = _levels[_level];
+
+	_rockSpawnCountdown--;
+	if (_rockSpawnCountdown >= 1)
+		return;
+
+	_rockSpawnCountdown = level.rockInterval;
+	int c = runtime->getRandom()->getRandomNumber(2);
+	if (_rockSpawnIndex > 29)
+		_rockSpawnIndex = 0;
+
+	// Drops from the surface to a resting place, if a rock of that size is free
+	for (int i = 0; i < 8; i++) {
+		Rock &rock = _rocks[c][i];
+		if (rock.state != 4)
+			continue;
+
+		rock.x = level.rockSpawn[_rockSpawnIndex].x;
+		rock.y = 0;
+		rock.targetY = level.rockSpawn[_rockSpawnIndex].y;
+		rock.state = 1;
+		_rockSpawnIndex++;
+		placeCentered(runtime, grandchild(kSubChildSmallRocks + c, i + 1), rock.x, rock.y);
+		break;
+	}
+}
+
+void SubModifier::tickRocks(Runtime *runtime) {
+	const Level &level = _levels[_level];
+
+	for (int c = 0; c < 3; c++) {
+		for (int i = 0; i < 8; i++) {
+			Rock &rock = _rocks[c][i];
+			Structural *element = grandchild(kSubChildSmallRocks + c, i + 1);
+
+			if (rock.state == 1 || rock.state == 3) {
+				if (rock.y < 46) {
+					if (rock.y == _splashY) {
+						for (int s = 0; s < 4; s++) {
+							Splash &splash = _splashes[s];
+							if (!splash.active) {
+								splash.x = rock.x;
+								splash.y = 50;
+								splash.active = true;
+								placeCentered(runtime, grandchild(kSubChildSplash, s + 1), splash.x, splash.y);
+								break;
+							}
+						}
+					}
+				} else {
+					// Turns into a sample as it sinks
+					rock.animTimer--;
+					if (rock.animTimer < 1 && rock.cel < kSubRestingRockCel) {
+						rock.animTimer = _rockAnimInterval;
+						rock.cel++;
+						setCel(runtime, element, rock.cel);
+					}
+				}
+
+				if (rock.y < rock.targetY) {
+					rock.y += level.fallSpeed;
+					placeCentered(runtime, element, rock.x, rock.y);
+				} else
+					rock.state = 3;
+			}
+
+			if (rock.state == 4 || _state == kStateSpin || _state == kStateLift)
+				continue;
+
+			int32 dx = _subX - rock.x;
+			int32 dy = _subY - rock.y;
+			if (rock.cel == kSubRestingRockCel) {
+				if (dx > -31 && dx < 33 && dy > -13 && dy < 21) {
+					placeCentered(runtime, element, 0, kSubHidden);
+					rock.state = 4;
+					rock.cel = 1;
+					setCel(runtime, element, 1);
+					_vx = _vy = 0.0;
+					_points += 50;
+					sendMessage(runtime, "PlaySFX3");
+					sendMessage(runtime, "UpdateScore");
+				}
+			} else if (_state != kStateShield) {
+				bool hitSub;
+				if (rock.cel <= 2)
+					hitSub = (dx > -37 && dx < 37 && dy > -15 && dy < 27);
+				else if (rock.cel <= 7)
+					hitSub = (dx > -39 && dx < 35 && dy > -19 && dy < 25);
+				else
+					hitSub = (dx > -35 && dx < 33 && dy > -17 && dy < 21);
+				if (hitSub)
+					hit(runtime, "PlaySFX8");
+			}
+		}
+	}
+}
+
+void SubModifier::tickGems(Runtime *runtime) {
+	const Level &level = _levels[_level];
+
+	for (int i = 0; i < 3; i++) {
+		Gem &gem = _gems[i];
+		const GemSpawn &spawn = level.gems[i];
+		Structural *element = grandchild(kSubChildGems, i + 1);
+
+		gem.timerA--;
+		gem.timerB--;
+
+		if (gem.y < kSubHidden) {
+			// Drops to the surface, floats there for a while, then sinks and fades
+			bool reset = false;
+			if (gem.y < 46 || gem.timerA > 0) {
+				if (gem.y == _splashY) {
+					gem.timerB = spawn.surfaceHold;
+					gem.y += level.fallSpeed;
+					placeCentered(runtime, element, gem.x, gem.y);
+				}
+			} else if (gem.cel < kSubGemGoneCel) {
+				gem.timerA = 3;
+				gem.cel++;
+				setCel(runtime, element, gem.cel);
+			} else
+				reset = true;
+
+			if (gem.cel >= kSubGemGoneCel)
+				reset = true;
+			else if (gem.timerB < 1) {
+				gem.y += level.fallSpeed;
+				placeCentered(runtime, element, gem.x, gem.y);
+			}
+
+			if (reset) {
+				gem.timerA = spawn.respawn;
+				gem.cel = 1;
+				gem.x = 0;
+				gem.y = kSubHidden;
+				placeCentered(runtime, element, 0, kSubHidden);
+				setCel(runtime, element, 1);
+			}
+		} else if (gem.timerA < 1) {
+			gem.x = spawn.pos.x;
+			gem.y = spawn.pos.y;
+			placeCentered(runtime, element, gem.x, gem.y);
+		}
+
+		if (gem.cel < 1 || gem.cel > 20 || (gem.cel <= 13 && gem.y >= kSubHidden))
+			continue;
+
+		const SubBox &box = kSubGemBoxes[MAX<int32>(gem.cel - 13, 0)];
+		if (subInBox(box, _subX - gem.x, _subY - gem.y)) {
+			gem.timerA = spawn.respawn;
+			gem.cel = 1;
+			gem.x = 0;
+			gem.y = kSubHidden;
+			placeCentered(runtime, element, 0, kSubHidden);
+			setCel(runtime, element, 1);
+			_points += 100;
+			sendMessage(runtime, "PlaySFX2");
+			sendMessage(runtime, "UpdateScore");
+		}
+	}
+}
+
+void SubModifier::tickSplashes(Runtime *runtime) {
+	for (int i = 0; i < 4; i++) {
+		Splash &splash = _splashes[i];
+		if (!splash.active)
+			continue;
+
+		Structural *element = grandchild(kSubChildSplash, i + 1);
+		if (splash.cel < 9) {
+			splash.cel++;
+			setCel(runtime, element, splash.cel);
+		} else {
+			splash.cel = 1;
+			setCel(runtime, element, 1);
+			placeCentered(runtime, element, 0, kSubHidden);
+			splash.active = false;
+		}
+	}
+}
+
+void SubModifier::tickVents(Runtime *runtime) {
+	const Level &level = _levels[_level];
+
+	for (int type = 0; type < 3; type++) {
+		for (int i = 0; i < 4; i++) {
+			Vent &vent = _vents[type][i];
+			const Hazard &data = level.vents[type][i];
+			Structural *element = grandchild(kSubChildTallVents + type, i + 1);
+
+			// Idle, then a warning on cel 2, then the eruption at a cel a tick
+			vent.timer--;
+			if (vent.state == 0) {
+				if (vent.timer < 1 && vent.y < kSubHidden) {
+					vent.timer = data.warn;
+					vent.state = 1;
+					vent.cel = 2;
+					setCel(runtime, element, 2);
+				}
+			} else if (vent.timer < 1) {
+				if (vent.cel < 11) {
+					vent.cel++;
+					setCel(runtime, element, vent.cel);
+				} else {
+					vent.cel = 1;
+					setCel(runtime, element, 1);
+					vent.timer = data.idle;
+					vent.state = 0;
+				}
+			}
+
+			if (vent.state != 1 || _state == kStateShield)
+				continue;
+
+			int32 dx = _subX - vent.x;
+			int32 dy = _subY - vent.y;
+			for (const SubBox &box : kSubVentBoxes[type]) {
+				if (box.cel != vent.cel || !subInBox(box, dx, dy))
+					continue;
+				hit(runtime, "PlaySFX7");
+				if (!box.separate)
+					break;
+			}
+		}
+	}
+}
+
+void SubModifier::tickTubeWorms(Runtime *runtime) {
+	if (_state == kStateTubeWorm)
+		return;
+
+	if (_state == kStateShield) {
+		for (int i = 1; i <= 4; i++)
+			setCel(runtime, grandchild(kSubChildTubeWorms, i), 1);
+		return;
+	}
+
+	if (_state == kStateHit || _subY >= kSubHidden)
+		return;
+
+	for (int i = 0; i < 4; i++) {
+		int32 dx = _subX - _tubeWorms[i].x;
+		int32 dy = _subY - _tubeWorms[i].y;
+		_tubeWormHolding[i] = false;
+		for (const SubBox &box : kSubTubeWormBoxes) {
+			if (box.cel == i + 1 && subInBox(box, dx, dy)) {
+				_state = kStateTubeWorm;
+				_tubeWormHolding[i] = true;
+				break;
+			}
+		}
+	}
+}
+
+void SubModifier::tickSmokers(Runtime *runtime) {
+	const Level &level = _levels[_level];
+
+	for (int i = 0; i < 8; i++) {
+		Vent &smoker = _smokers[i];
+		const Hazard &data = level.smokers[i];
+		Structural *element = grandchild(kSubChildSmokers, i + 1);
+
+		smoker.timer--;
+		if (smoker.timer < 1) {
+			if (smoker.state == 0) {
+				smoker.cel = 2;
+				setCel(runtime, element, 2);
+				smoker.timer = data.warn;
+				smoker.state = 1;
+			} else if (smoker.state == 1) {
+				if (smoker.cel < 11 && smoker.y < kSubHidden) {
+					smoker.cel++;
+					setCel(runtime, element, smoker.cel);
+				} else {
+					smoker.cel = 1;
+					setCel(runtime, element, 1);
+					smoker.timer = data.idle;
+					smoker.state = 0;
+				}
+			}
+		}
+
+		if (smoker.state != 1 || _state == kStateLift || _state == kStateShield)
+			continue;
+
+		int32 dx = _subX - smoker.x;
+		int32 dy = _subY - smoker.y;
+		for (const SubBox &box : kSubSmokerBoxes) {
+			if (box.cel == smoker.cel && subInBox(box, dx, dy)) {
+				// Spins the sub and blows it up toward the surface
+				_state = kStateSpin;
+				sendMessage(runtime, "PlaySFX5");
+				_spinLift = (_subY - 36) / 24;
+				_spinTargetX = smoker.x + 58;
+				_stateCounter = 3;
+				break;
+			}
+		}
+	}
+}
+
+void SubModifier::tickStarFish(Runtime *runtime) {
+	if (_subY >= kSubHidden)
+		return;
+
+	for (int i = 0; i < 3; i++) {
+		int32 dx = _subX - _starFish[i].x;
+		int32 dy = _subY - _starFish[i].y;
+		if (dx > -18 && dx < 66 && dy > -5 && dy < 28) {
+			_starFish[i] = Common::Point(0, kSubHidden);
+			placeCentered(runtime, grandchild(kSubChildStarFish, i + 1), 0, kSubHidden);
+			_vx = _vy = 0.0;
+			sendMessage(runtime, "PlaySFX1");
+			sendMessage(runtime, "ExtraChance");
+		}
+	}
+}
+
+void SubModifier::tickSquid(Runtime *runtime) {
+	const Level &level = _levels[_level];
+	Structural *element = child(kSubChildSquid);
+
+	// Waits, peeks in at the right edge, then swims across. No rocks fall while it's out.
+	_squid.timer--;
+	if (_squid.state == 0) {
+		if (_squid.timer < 1 && _squid.y < kSubHidden) {
+			_squid.timer = level.squid.warn;
+			_squid.state = 1;
+		}
+	} else if (_squid.state == 1) {
+		_rockSpawnCountdown++;
+		if (_squid.timer < 1 && _squid.y < kSubHidden)
+			_squid.state = 2;
+		else {
+			_squid.x = 580;
+			placeTopLeft(runtime, element, _squid.x, _squid.y);
+		}
+	} else if (_squid.state == 2) {
+		_rockSpawnCountdown++;
+		if (_squid.timer < 1) {
+			if (_squid.x < -224) {
+				_squid.cel = 1;
+				setCel(runtime, element, 1);
+				_squid.timer = level.squid.idle;
+				_squid.state = 0;
+			} else if (_squid.cel < 4) {
+				_squid.x -= level.squidSpeed;
+				placeTopLeft(runtime, element, _squid.x, _squid.y);
+				_squid.cel = (_squid.cel < 3) ? _squid.cel + 1 : 1;
+				setCel(runtime, element, _squid.cel);
+			} else {
+				// Carrying the sub, faster
+				_squid.x -= level.squidSpeed + 9;
+				placeTopLeft(runtime, element, _squid.x, _squid.y);
+				_squid.cel = (_squid.cel < 8) ? _squid.cel + 1 : 6;
+				setCel(runtime, element, _squid.cel);
+			}
+		}
+	}
+
+	if (_state == kStateLift || _state == kStateShield || _squid.state == 1)
+		return;
+
+	int32 dx = _subX - _squid.x;
+	int32 dy = _subY - _squid.y;
+	if (dx > -14 && dx < 226 && dy > 8 && dy < 41) {
+		sendMessage(runtime, "StopSFX5");
+		sendMessage(runtime, "PlaySFX6");
+		_state = kStateSquid;
+	}
+}
+
+void SubModifier::tickBubbles(Runtime *runtime) {
+	const Level &level = _levels[_level];
+	Structural *element = child(kSubChildBubbles);
+
+	_bubbles.timer--;
+	if (_bubbles.timer < 1) {
+		if (_bubbles.cel < 9) {
+			_bubbles.cel++;
+			setCel(runtime, element, _bubbles.cel);
+		} else {
+			_bubbles.cel = 1;
+			setCel(runtime, element, 1);
+			_bubbles.timer = level.bubblesPeriod;
+		}
+	}
+
+	if (_state == kStateSquid)
+		return;
+
+	// Inside the bubbles, the sub is shielded for 15 seconds
+	int32 dx = _subX - _bubbles.x;
+	int32 dy = _subY - _bubbles.y;
+	for (const SubBox &box : kSubBubbleBoxes) {
+		if (box.cel == _bubbles.cel && dx >= box.x0 && dx <= box.x1 && dy >= box.y0 && dy <= box.y1) {
+			_state = kStateShield;
+			_shieldTimer = 150;
+			break;
+		}
+	}
+}
+
+Common::SharedPtr<Modifier> SubModifier::shallowClone() const {
+	Common::SharedPtr<SubModifier> clone(new SubModifier(*this));
+	clone->_scheduledEvent.reset();
+	clone->_keySignaller.reset();
+	clone->_running = false;
+	clone->_initialized = false;
+	return clone;
+}
+
+const char *SubModifier::getDefaultName() const {
+	return "Sub";
+}
+
 // Lane centre lines from the bottom lane up, the level 1 timers of each lane's
 // third geyser, and which of the 3 backgrounds each level shows
 static const int16 kLLavaLaneY[5] = {340, 285, 230, 175, 120};
@@ -7801,7 +9236,7 @@ const char *DlgMgrClientModifier::getDefaultName() const {
 
 KnowWonderPlugIn::KnowWonderPlugIn()
 	: _strUtilModifierFactory(this), _dlgMgrServerModifierFactory(this), _dlgMgrClientModifierFactory(this),
-	  _kwSmackerModifierFactory(this), _editCtrlModifierFactory(this), _gameModifierFactory(this), _whaleMazeModifierFactory(this), _eyefollowerModifierFactory(this), _smkJumpModifierFactory(this), _balloonModifierFactory(this), _artModifierFactory(this), _svTownModifierFactory(this), _lLavaModifierFactory(this) {
+	  _kwSmackerModifierFactory(this), _editCtrlModifierFactory(this), _gameModifierFactory(this), _whaleMazeModifierFactory(this), _eyefollowerModifierFactory(this), _smkJumpModifierFactory(this), _balloonModifierFactory(this), _artModifierFactory(this), _svTownModifierFactory(this), _lLavaModifierFactory(this), _subModifierFactory(this) {
 }
 
 KnowWonderPlugIn::~KnowWonderPlugIn() {
@@ -7825,7 +9260,7 @@ void KnowWonderPlugIn::registerModifiers(IPlugInModifierRegistrar *registrar) co
 
 	// Mini-game modifiers from separate Magic School Bus plug-ins
 	static const char *const gameModifierNames[] = {
-		"AntMaze", "Lander", "RoverRace", "Sub"
+		"AntMaze", "Lander", "RoverRace"
 	};
 	for (const char *name : gameModifierNames)
 		registrar->registerPlugInModifier(name, &_gameModifierFactory);
@@ -7837,6 +9272,7 @@ void KnowWonderPlugIn::registerModifiers(IPlugInModifierRegistrar *registrar) co
 	registrar->registerPlugInModifier("Art", &_artModifierFactory);
 	registrar->registerPlugInModifier("SvTown", &_svTownModifierFactory);
 	registrar->registerPlugInModifier("LLava", &_lLavaModifierFactory);
+	registrar->registerPlugInModifier("Sub", &_subModifierFactory);
 }
 
 } // End of namespace KW

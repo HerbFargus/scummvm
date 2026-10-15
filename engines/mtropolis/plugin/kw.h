@@ -804,6 +804,211 @@ private:
 	int32 _grassCelAttr;
 };
 
+// Sub race from Magic School Bus Volcano Adventure. The player steers the
+// submarine left to right over an undersea landscape against the clock,
+// collecting rock samples, gems and starfish while dodging falling rocks, heat
+// vents, black smokers, tube worms and a squid. The levels are read from the
+// original sub.r32 plug-in.
+class SubModifier : public Modifier, public IKeyboardEventReceiver {
+public:
+	SubModifier();
+	~SubModifier();
+
+	bool load(const PlugInModifierLoaderContext &context, const Data::KW::GameModifier &data);
+
+	bool respondsToEvent(const Event &evt) const override;
+	VThreadState consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) override;
+	void disable(Runtime *runtime) override;
+
+	bool readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) override;
+	MiniscriptInstructionOutcome writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) override;
+
+	void onKeyboardEvent(Runtime *runtime, const KeyboardInputEvent &keyEvt) override;
+
+#ifdef MTROPOLIS_DEBUG_ENABLE
+	const char *debugGetTypeName() const override { return "Sub Modifier"; }
+	SupportStatus debugGetSupportStatus() const override { return kSupportStatusPartial; }
+#endif
+
+private:
+	static const int kNumLevels = 30;
+
+	enum SubState {
+		kStateFree,
+		kStateSurface,
+		kStateBlocked,
+		kStateBounce,
+		kStateSquid,
+		kStateSpin,
+		kStateHit,
+		kStateTubeWorm,
+		kStateLift,
+		kStateShield,
+	};
+
+	enum WritableAttribute {
+		kAttribPaused,
+		kAttribGameLevel,
+	};
+
+	// Vents, smokers and the squid: top-left position, ticks of warning and ticks between eruptions
+	struct Hazard {
+		int16 x;
+		int16 y;
+		int16 warn;
+		int16 idle;
+	};
+
+	struct GemSpawn {
+		Common::Point pos;
+		int16 surfaceHold;
+		int16 respawn;
+	};
+
+	struct Level {
+		Common::Point start;
+		Common::Point rockSpawn[30];
+		int16 initRocks;
+		int16 rockInterval;
+		int16 fallSpeed;
+		Common::Array<Common::Point> landscape;
+		Hazard vents[3][4];	// Tall, short, fat
+		Hazard smokers[8];
+		Hazard squid;	// warn is the time peeking in
+		int16 squidSpeed;
+		Common::Point tubeWorms[4];
+		Common::Point starFish[3];
+		GemSpawn gems[3];
+		Common::Point bubbles;
+		int16 bubblesPeriod;
+	};
+
+	struct Rock {
+		int32 x;
+		int32 y;
+		int32 targetY;
+		int32 animTimer;
+		int32 cel;
+		int32 state;	// 1 sinking, 3 landed, 4 free
+	};
+
+	struct Splash {
+		int32 x;
+		int32 y;
+		int32 cel;
+		bool active;
+	};
+
+	struct Vent {
+		int32 x;
+		int32 y;
+		int32 timer;
+		int32 cel;
+		int32 state;	// 0 idle, 1 erupting
+	};
+
+	struct Gem {
+		int32 x;
+		int32 y;
+		int32 timerA;
+		int32 timerB;
+		int32 cel;
+	};
+
+	struct WriteProxy {
+		static MiniscriptInstructionOutcome write(MiniscriptThread *thread, const DynamicValue &value, void *objectRef, uintptr ptrOrOffset);
+		static MiniscriptInstructionOutcome refAttrib(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib);
+		static MiniscriptInstructionOutcome refAttribIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib, const DynamicValue &index);
+	};
+
+	Common::SharedPtr<Modifier> shallowClone() const override;
+	const char *getDefaultName() const override;
+
+	bool loadLevels();
+	void setupLevel(Runtime *runtime, int32 level);
+	void tick(Runtime *runtime);
+	void stopGame();
+
+	void steer(Runtime *runtime, bool &right, bool &left);
+	void tickSubState(Runtime *runtime, bool &right, bool &left, bool probeL, bool probeR, bool probeC, bool atLeftWall, bool belowSurface);
+	void bounce(bool probeL, bool probeR);
+	void hit(Runtime *runtime, const char *sfx);
+	void spawnRock(Runtime *runtime);
+	void tickRocks(Runtime *runtime);
+	void tickGems(Runtime *runtime);
+	void tickSplashes(Runtime *runtime);
+	void tickVents(Runtime *runtime);
+	void tickTubeWorms(Runtime *runtime);
+	void tickSmokers(Runtime *runtime);
+	void tickStarFish(Runtime *runtime);
+	void tickSquid(Runtime *runtime);
+	void tickBubbles(Runtime *runtime);
+	void resetSquid(Runtime *runtime);
+	bool inLandscape(int32 x, int32 y) const;
+
+	Structural *child(int index) const;
+	Structural *grandchild(int index, int subIndex) const;
+	void placeCentered(Runtime *runtime, Structural *element, int32 x, int32 y);
+	void placeTopLeft(Runtime *runtime, Structural *element, int32 x, int32 y);
+	void setCel(Runtime *runtime, Structural *element, int32 cel);
+	void sendMessage(Runtime *runtime, const char *messageName);
+
+	Event _startWhen;
+	Event _stopWhen;
+
+	Common::Array<Level> _levels;	// Index 0 is unused
+	bool _levelsLoaded;
+
+	Common::SharedPtr<ScheduledEvent> _scheduledEvent;
+	Common::SharedPtr<KeyboardEventSignaller> _keySignaller;
+	bool _running;
+	bool _paused;
+	bool _initialized;
+
+	int32 _level;
+	int32 _points;
+	int32 _timeCounter;
+	int32 _timeLimit;
+	int32 _rockSpawnCountdown;
+	int32 _rockSpawnIndex;
+	int32 _rockAnimInterval;
+	int32 _splashY;
+
+	SubState _state;
+	int32 _subX;
+	int32 _subY;
+	double _posX;
+	double _posY;
+	double _vx;
+	double _vy;
+	int32 _subCel;
+	int32 _spinTargetX;
+	int32 _spinLift;
+	int32 _stateCounter;
+	int32 _shieldTimer;
+	int32 _shieldBlinks;
+
+	bool _mouseHeld;
+	bool _mouseMode;
+	bool _keyUp;
+	bool _keyDown;
+	bool _keyLeft;
+	bool _keyRight;
+
+	Rock _rocks[3][8];	// Small, medium, large
+	Splash _splashes[4];
+	Vent _vents[3][4];	// Tall, short, fat
+	Vent _smokers[8];
+	Vent _squid;	// state 1 peeking, 2 swimming
+	int32 _squidReenterX;
+	Common::Point _tubeWorms[4];
+	bool _tubeWormHolding[4];
+	Common::Point _starFish[3];
+	Gem _gems[3];
+	Vent _bubbles;
+	int32 _lineCel;
+};
+
 // Lava lake crossing from Magic School Bus Volcano Adventure, a Frogger-style
 // game. The bus hops from the top bank to the bottom one across five lanes of
 // lava, riding junk that drifts along the moving lanes and stepping on stones
@@ -1486,6 +1691,7 @@ private:
 	PlugInModifierFactory<SmkJumpModifier, Data::KW::GameModifier> _smkJumpModifierFactory;
 	PlugInModifierFactory<BalloonModifier, Data::KW::GameModifier> _balloonModifierFactory;
 	PlugInModifierFactory<ArtModifier, Data::KW::GameModifier> _artModifierFactory;
+	PlugInModifierFactory<SubModifier, Data::KW::GameModifier> _subModifierFactory;
 	PlugInModifierFactory<LLavaModifier, Data::KW::GameModifier> _lLavaModifierFactory;
 	PlugInModifierFactory<SvTownModifier, Data::KW::GameModifier> _svTownModifierFactory;
 
