@@ -2276,6 +2276,27 @@ MiniscriptInstructionOutcome ListCreate::execute(MiniscriptThread *thread) const
 	return kMiniscriptInstructionOutcomeContinue;
 }
 
+// Converts a list of variables to a list of their values, or returns null if it isn't one
+static Common::SharedPtr<DynamicList> listOfVariableValues(const DynamicList &list) {
+	if (list.getType() != DynamicValueTypes::kObject)
+		return nullptr;
+
+	Common::SharedPtr<DynamicList> valueList(new DynamicList());
+	const Common::Array<ObjectReference> &refs = list.getObjectReference();
+	for (size_t i = 0; i < refs.size(); i++) {
+		Common::SharedPtr<RuntimeObject> obj = refs[i].object.lock();
+		if (!obj || !obj->isModifier() || !static_cast<Modifier *>(obj.get())->isVariable())
+			return nullptr;
+
+		DynamicValue value;
+		static_cast<VariableModifier *>(obj.get())->varGetValue(value);
+		if (!valueList->setAtIndex(i, value))
+			return nullptr;
+	}
+
+	return valueList;
+}
+
 MiniscriptInstructionOutcome ListAppend::execute(MiniscriptThread *thread) const {
 	if (thread->getStackSize() < 2) {
 		thread->error("Stack underflow");
@@ -2294,6 +2315,16 @@ MiniscriptInstructionOutcome ListAppend::execute(MiniscriptThread *thread) const
 	if (listRef.refCount() != 2) {
 		listRef = listRef->clone();
 		lsDest.value.setList(listRef);
+	}
+
+	// A list started with variables holds their values once something else is added to it, as with
+	// list creation (Magic School Bus Animals lists integer variables with numbers in its scat game)
+	if (listRef->getType() == DynamicValueTypes::kObject && rs.value.getType() != DynamicValueTypes::kObject) {
+		Common::SharedPtr<DynamicList> valueList = listOfVariableValues(*listRef);
+		if (valueList) {
+			listRef = valueList;
+			lsDest.value.setList(listRef);
+		}
 	}
 
 	if (!listRef->setAtIndex(listRef->getSize(), rs.value)) {
