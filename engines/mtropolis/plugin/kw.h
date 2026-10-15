@@ -361,6 +361,185 @@ private:
 	Common::SharedPtr<KeyboardEventSignaller> _keySignaller;
 };
 
+// Turns its element's first child (a pair of eyes) toward the mouse by cel
+class EyefollowerModifier : public Modifier {
+public:
+	EyefollowerModifier();
+	EyefollowerModifier(const EyefollowerModifier &other);
+	~EyefollowerModifier();
+
+	bool load(const PlugInModifierLoaderContext &context, const Data::KW::GameModifier &data);
+
+	bool respondsToEvent(const Event &evt) const override;
+	VThreadState consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) override;
+	void disable(Runtime *runtime) override;
+
+#ifdef MTROPOLIS_DEBUG_ENABLE
+	const char *debugGetTypeName() const override { return "Eyefollower Modifier"; }
+	SupportStatus debugGetSupportStatus() const override { return kSupportStatusDone; }
+#endif
+
+private:
+	Common::SharedPtr<Modifier> shallowClone() const override;
+	const char *getDefaultName() const override;
+
+	void stop();
+	void tick(Runtime *runtime);
+	Structural *getEyes() const;
+	static int32 celForMouse(const Common::Point &eyes, const Common::Point &mouse);
+
+	Event _startWhen;
+	Event _stopWhen;
+
+	Common::Point _eyesPos;
+	int32 _cel;
+	Common::SharedPtr<ScheduledEvent> _scheduledEvent;
+};
+
+
+// Smokejumper mini-game from Magic School Bus Discovers Flight. The plane
+// follows the mouse over scrolling ground, dropping water on fires, refilling
+// from lakes and avoiding obstructions until it lands on the runway. The
+// levels are read from the original smkjump.r32 plug-in.
+class SmkJumpModifier : public Modifier {
+public:
+	SmkJumpModifier();
+	~SmkJumpModifier();
+
+	bool load(const PlugInModifierLoaderContext &context, const Data::KW::GameModifier &data);
+
+	bool respondsToEvent(const Event &evt) const override;
+	VThreadState consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) override;
+	void disable(Runtime *runtime) override;
+
+	bool readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) override;
+	MiniscriptInstructionOutcome writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) override;
+
+#ifdef MTROPOLIS_DEBUG_ENABLE
+	const char *debugGetTypeName() const override { return "SmkJump Modifier"; }
+	SupportStatus debugGetSupportStatus() const override { return kSupportStatusPartial; }
+#endif
+
+private:
+	enum ListType {
+		kListTrees,
+		kListLakes,
+		kListFires,
+		kListObstructions,
+		kListBonuses,
+		kListAmbient,
+
+		kListCount,
+	};
+
+	struct Object {
+		double x;
+		double dist;	// Distance up from the bottom of the screen, scrolled down each tick
+		int32 type;
+		int32 value;
+	};
+
+	struct Level {
+		Common::Point planeStart;
+		int32 fuel;
+		int32 water;
+		Common::Array<Object> lists[kListCount];
+		Object runway;
+	};
+
+	enum WritableAttribute {
+		kAttribPaused,
+		kAttribGameLevel,
+		kAttribIntroDlg,
+	};
+
+	struct WriteProxy {
+		static MiniscriptInstructionOutcome write(MiniscriptThread *thread, const DynamicValue &value, void *objectRef, uintptr ptrOrOffset);
+		static MiniscriptInstructionOutcome refAttrib(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib);
+		static MiniscriptInstructionOutcome refAttribIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib, const DynamicValue &index);
+	};
+
+	Common::SharedPtr<Modifier> shallowClone() const override;
+	const char *getDefaultName() const override;
+
+	bool loadLevels();
+	void setupLevel(Runtime *runtime, int32 level);
+	void tick(Runtime *runtime);
+	void stopGame();
+
+	bool tickStates(Runtime *runtime);
+	void steer(Runtime *runtime, const Common::Point &mouse);
+	void tickFuel(Runtime *runtime);
+	void scrollObjects(Runtime *runtime);
+	bool checkCollisions(Runtime *runtime);
+	void startDrop(Runtime *runtime);
+	void loseAPlane(Runtime *runtime);
+
+	Structural *child(int index) const;
+	Structural *grandchild(int index, int subIndex) const;
+	Structural *listElement(int list, uint index) const;
+	void place(Runtime *runtime, Structural *element, int32 x, int32 y);
+	void hide(Runtime *runtime, Structural *element);
+	void setInt(Runtime *runtime, Structural *element, const char *attrib, int32 value);
+	void setBool(Runtime *runtime, Structural *element, const char *attrib, bool value);
+	void sendMessage(Runtime *runtime, const char *messageName);
+	void placePlane(Runtime *runtime);
+
+	Event _startWhen;
+	Event _stopWhen;
+
+	Common::Array<Level> _levels;	// Index 0 is unused
+	bool _levelsLoaded;
+
+	Runtime *_runtime;
+	Common::SharedPtr<ScheduledEvent> _scheduledEvent;
+	bool _running;
+	bool _initialized;
+	bool _paused;
+	bool _introDlg;
+
+	int32 _level;
+	Common::Array<Object> _lists[kListCount];
+	Common::Array<bool> _fireLit;
+	Object _runway;
+
+	int32 _points;
+	int32 _fuel;
+	int32 _water;
+	int32 _extraPlanes;
+	int32 _iconCount;
+	bool _newGame;
+
+	double _planeX;
+	double _planeY;
+	int32 _bank;		// 0 level, 1 left, 2 right
+	double _speed;
+	double _climbOffset;
+
+	bool _intro;
+	int32 _introCount;
+	bool _dropHeld;
+	int32 _dropCooldown;
+	int32 _refillCooldown;
+	int32 _fuelTicks;
+	int32 _combo;
+	bool _overLake;
+	bool _fuelLow;
+	bool _emptyHintPlayed;
+	bool _fuelHintPlayed;
+
+	int32 _dropTicks;	// Water drop animation, 0 when not dropping
+	double _dropX;
+	double _dropY;
+	bool _approach;
+	int32 _landingTicks;
+	int32 _crashTicks;
+	bool _levelDone;
+
+	double _progressCountdown;
+	int32 _progressCel;
+};
+
 class DlgMgrClientModifier;
 class KnowWonderPlugIn;
 
@@ -586,6 +765,8 @@ private:
 	PlugInModifierFactory<EditCtrlModifier, Data::KW::EditCtrlModifier> _editCtrlModifierFactory;
 	PlugInModifierFactory<GameModifier, Data::KW::GameModifier> _gameModifierFactory;
 	PlugInModifierFactory<WhaleMazeModifier, Data::KW::GameModifier> _whaleMazeModifierFactory;
+	PlugInModifierFactory<EyefollowerModifier, Data::KW::GameModifier> _eyefollowerModifierFactory;
+	PlugInModifierFactory<SmkJumpModifier, Data::KW::GameModifier> _smkJumpModifierFactory;
 
 	Common::WeakPtr<RuntimeObject> _dlgMgrServer;
 };

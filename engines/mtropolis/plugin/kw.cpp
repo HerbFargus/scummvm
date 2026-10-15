@@ -1576,6 +1576,985 @@ const char *WhaleMazeModifier::getDefaultName() const {
 	return "WhaleMaze";
 }
 
+EyefollowerModifier::EyefollowerModifier() : _cel(0) {
+}
+
+EyefollowerModifier::EyefollowerModifier(const EyefollowerModifier &other)
+	: Modifier(other), _startWhen(other._startWhen), _stopWhen(other._stopWhen), _cel(0) {
+}
+
+EyefollowerModifier::~EyefollowerModifier() {
+	stop();
+}
+
+bool EyefollowerModifier::load(const PlugInModifierLoaderContext &context, const Data::KW::GameModifier &data) {
+	return loadDlgMgrEvent(_startWhen, data.enableWhen) && loadDlgMgrEvent(_stopWhen, data.disableWhen);
+}
+
+bool EyefollowerModifier::respondsToEvent(const Event &evt) const {
+	return _startWhen.respondsTo(evt) || _stopWhen.respondsTo(evt) || evt.eventType == EventIDs::kParentDisabled;
+}
+
+VThreadState EyefollowerModifier::consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) {
+	const Event &evt = msg->getEvent();
+	if (_stopWhen.respondsTo(evt) || evt.eventType == EventIDs::kParentDisabled) {
+		stop();
+		return kVThreadReturn;
+	}
+
+	if (_startWhen.respondsTo(evt) && !_scheduledEvent) {
+		Structural *eyes = getEyes();
+		if (!eyes)
+			return kVThreadReturn;
+
+		// The eyes' position is only read when starting
+		_eyesPos = static_cast<VisualElement *>(eyes)->getGlobalPosition();
+		_cel = 1;
+		dlgMgrSetInt(runtime, this, eyes, "cel", 1);
+		_scheduledEvent = runtime->getScheduler().scheduleMethod<EyefollowerModifier, &EyefollowerModifier::tick>(runtime->getPlayTime() + 83, this);
+	}
+
+	return kVThreadReturn;
+}
+
+void EyefollowerModifier::disable(Runtime *runtime) {
+	stop();
+}
+
+void EyefollowerModifier::stop() {
+	if (_scheduledEvent) {
+		_scheduledEvent->cancel();
+		_scheduledEvent.reset();
+	}
+}
+
+Structural *EyefollowerModifier::getEyes() const {
+	Structural *owner = findStructuralOwner();
+	if (!owner || owner->getChildren().empty())
+		return nullptr;
+
+	Structural *eyes = owner->getChildren()[0].get();
+	if (!eyes->isElement() || !static_cast<Element *>(eyes)->isVisual())
+		return nullptr;
+
+	return eyes;
+}
+
+// Cels go around clockwise from looking straight up
+int32 EyefollowerModifier::celForMouse(const Common::Point &eyes, const Common::Point &mouse) {
+	double dx = mouse.x - eyes.x;
+	double dy = eyes.y - mouse.y;	// Up is positive
+	double slope = (dx != 0.0) ? dy / dx : (dy >= 0.0 ? 1000.0 : -1000.0);
+
+	if (eyes.x < mouse.x) {
+		if (dy > 0.0)
+			return (slope > 1.25) ? 1 : (slope > 0.4) ? 2 : (slope > 0.15) ? 3 : 4;
+		return (-slope > 1.25) ? 8 : (-slope > 0.4) ? 7 : (-slope > 0.15) ? 6 : 5;
+	}
+
+	if (dx == 0.0)
+		return (dy > 0.0) ? 1 : 8;
+
+	if (dy > 0.0)
+		return (-slope > 1.25) ? 1 : (-slope > 0.4) ? 16 : (-slope > 0.15) ? 15 : (-slope > 0.05) ? 14 : 13;
+	return (slope > 1.25) ? 8 : (slope > 0.4) ? 9 : (slope > 0.15) ? 10 : (slope > 0.05) ? 11 : 12;
+}
+
+void EyefollowerModifier::tick(Runtime *runtime) {
+	_scheduledEvent = runtime->getScheduler().scheduleMethod<EyefollowerModifier, &EyefollowerModifier::tick>(runtime->getPlayTime() + 83, this);
+
+	Structural *eyes = getEyes();
+	if (!eyes)
+		return;
+
+	int32 cel = celForMouse(_eyesPos, runtime->getCachedMousePosition());
+	if (cel != _cel) {
+		_cel = cel;
+		dlgMgrSetInt(runtime, this, eyes, "cel", cel);
+	}
+}
+
+Common::SharedPtr<Modifier> EyefollowerModifier::shallowClone() const {
+	return Common::SharedPtr<Modifier>(new EyefollowerModifier(*this));
+}
+
+const char *EyefollowerModifier::getDefaultName() const {
+	return "Eyefollower";
+}
+
+SmkJumpModifier::SmkJumpModifier()
+	: _levelsLoaded(false), _runtime(nullptr), _running(false), _initialized(false), _paused(true), _introDlg(false), _level(1),
+	  _points(0), _fuel(0), _water(0), _extraPlanes(0), _iconCount(0), _newGame(true), _planeX(0.0), _planeY(0.0), _bank(0),
+	  _speed(0.0), _climbOffset(0.0), _intro(false), _introCount(0), _dropHeld(false), _dropCooldown(0), _refillCooldown(0),
+	  _fuelTicks(0), _combo(0), _overLake(false), _fuelLow(false), _emptyHintPlayed(false), _fuelHintPlayed(false), _dropTicks(0),
+	  _dropX(0.0), _dropY(0.0), _approach(false), _landingTicks(0), _crashTicks(0), _levelDone(false), _progressCountdown(0.0),
+	  _progressCel(1) {
+	_runway = Object();
+}
+
+SmkJumpModifier::~SmkJumpModifier() {
+	stopGame();
+}
+
+bool SmkJumpModifier::load(const PlugInModifierLoaderContext &context, const Data::KW::GameModifier &data) {
+	return loadDlgMgrEvent(_startWhen, data.enableWhen) && loadDlgMgrEvent(_stopWhen, data.disableWhen);
+}
+
+// The levels are tables in the plug-in's data section
+bool SmkJumpModifier::loadLevels() {
+	if (_levelsLoaded)
+		return !_levels.empty();
+
+	_levelsLoaded = true;
+
+	Common::File f;
+	if (!f.open(Common::Path("mTrop_Resources/smkjump.r32")) && !f.open(Common::Path("smkjump.r32"))) {
+		warning("SmkJump: smkjump.r32 from the installed game is needed for the levels");
+		return false;
+	}
+
+	Common::Array<byte> image;
+	image.resize(f.size());
+	f.read(&image[0], image.size());
+
+	const uint32 kImageBase = 0x10000000;
+	auto offsetOf = [&](uint32 va, uint32 size) -> int64 {
+		uint32 offset = va - kImageBase;
+		return (offset + size <= image.size()) ? offset : -1;
+	};
+
+	bool failed = false;
+	auto readS32 = [&](uint32 va) -> int32 {
+		int64 offset = offsetOf(va, 4);
+		if (offset < 0) {
+			failed = true;
+			return 0;
+		}
+		return static_cast<int32>(READ_LE_UINT32(&image[offset]));
+	};
+	auto readDouble = [&](uint32 va) -> double {
+		int64 offset = offsetOf(va, 8);
+		if (offset < 0) {
+			failed = true;
+			return 0.0;
+		}
+		uint64 bits = READ_LE_UINT64(&image[offset]);
+		double value;
+		memcpy(&value, &bits, sizeof(value));
+		return value;
+	};
+	auto readObject = [&](uint32 va) -> Object {
+		Object obj;
+		obj.x = readDouble(va);
+		obj.dist = readDouble(va + 8);
+		obj.type = readS32(va + 16);
+		obj.value = readS32(va + 20);
+		return obj;
+	};
+
+	static const uint32 kListOffsets[kListCount] = {0x000, 0x5a0, 0x708, 0xac8, 0xdc8, 0xfc0};
+	static const uint32 kListSizes[kListCount] = {60, 15, 40, 32, 21, 20};
+
+	Common::Array<Level> levels;
+	levels.resize(16);
+	for (uint l = 1; l <= 15; l++) {
+		Level &level = levels[l];
+		uint32 base = 0x1000cf2c + l * 0x11cc;
+
+		level.planeStart = Common::Point(readS32(base), readS32(base + 4));
+		level.fuel = static_cast<int32>(readDouble(base + 8));
+		level.water = readS32(base + 16);
+
+		for (uint list = 0; list < kListCount; list++) {
+			for (uint i = 1; i <= kListSizes[list]; i++)
+				level.lists[list].push_back(readObject(base - 4 + kListOffsets[list] + i * 0x18));
+		}
+
+		level.runway = readObject(base - 4 + 0x11b8);
+	}
+
+	// Level 1 starts the plane at (320, 240) with 20 fuel
+	if (failed || levels[1].planeStart != Common::Point(320, 240) || levels[1].fuel != 20) {
+		warning("SmkJump: smkjump.r32 isn't the expected version");
+		return false;
+	}
+
+	_levels.swap(levels);
+	return true;
+}
+
+bool SmkJumpModifier::respondsToEvent(const Event &evt) const {
+	return _startWhen.respondsTo(evt) || _stopWhen.respondsTo(evt) || evt.eventType == EventIDs::kParentDisabled
+		|| evt.eventType == EventIDs::kMouseDown || evt.eventType == EventIDs::kMouseUp;
+}
+
+VThreadState SmkJumpModifier::consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) {
+	const Event &evt = msg->getEvent();
+
+	if (_stopWhen.respondsTo(evt) || evt.eventType == EventIDs::kParentDisabled) {
+		stopGame();
+		return kVThreadReturn;
+	}
+
+	if (_startWhen.respondsTo(evt)) {
+		_runtime = runtime;
+		_newGame = true;
+		_introDlg = true;
+		_emptyHintPlayed = false;
+		_fuelHintPlayed = false;
+		setupLevel(runtime, 1);
+		_paused = true;
+
+		if (!_running) {
+			_running = true;
+			// The original ticks every 71 milliseconds
+			_scheduledEvent = runtime->getScheduler().scheduleMethod<SmkJumpModifier, &SmkJumpModifier::tick>(runtime->getPlayTime() + 71, this);
+		}
+		return kVThreadReturn;
+	}
+
+	if (evt.eventType == EventIDs::kMouseDown) {
+		if (_paused && _initialized)
+			_paused = false;
+		else
+			_dropHeld = true;
+
+		// A click skips the intro
+		if (_intro && !_introDlg)
+			_introCount = 0;
+	} else if (evt.eventType == EventIDs::kMouseUp)
+		_dropHeld = false;
+
+	return kVThreadReturn;
+}
+
+void SmkJumpModifier::disable(Runtime *runtime) {
+	stopGame();
+}
+
+void SmkJumpModifier::stopGame() {
+	_running = false;
+	if (_scheduledEvent) {
+		_scheduledEvent->cancel();
+		_scheduledEvent.reset();
+	}
+}
+
+bool SmkJumpModifier::readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) {
+	if (attrib == "paused") {
+		result.setBool(_paused);
+		return true;
+	} else if (attrib == "gamelevel") {
+		result.setInt(_level);
+		return true;
+	} else if (attrib == "points") {
+		result.setInt(_points);
+		return true;
+	}
+
+	return Modifier::readAttribute(thread, result, attrib);
+}
+
+MiniscriptInstructionOutcome SmkJumpModifier::writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) {
+	WritableAttribute writable;
+	if (attrib == "paused")
+		writable = kAttribPaused;
+	else if (attrib == "gamelevel")
+		writable = kAttribGameLevel;
+	else if (attrib == "introdlg")
+		writable = kAttribIntroDlg;
+	else
+		return Modifier::writeRefAttribute(thread, result, attrib);
+
+	result.pod.ifc = DynamicValueWriteInterfaceGlue<WriteProxy>::getInstance();
+	result.pod.objectRef = this;
+	result.pod.ptrOrOffset = writable;
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
+MiniscriptInstructionOutcome SmkJumpModifier::WriteProxy::write(MiniscriptThread *thread, const DynamicValue &assigned, void *objectRef, uintptr ptrOrOffset) {
+	SmkJumpModifier *self = static_cast<SmkJumpModifier *>(objectRef);
+
+	// Variables are passed by reference
+	DynamicValue value = assigned;
+	if (value.getType() == DynamicValueTypes::kObject) {
+		Common::SharedPtr<RuntimeObject> obj = value.getObject().object.lock();
+		if (obj && obj->isModifier() && static_cast<Modifier *>(obj.get())->isVariable())
+			static_cast<VariableModifier *>(obj.get())->varGetValue(value);
+	}
+
+	if (ptrOrOffset == kAttribGameLevel) {
+		int32 level = 0;
+		if (!value.roundToInt(level))
+			return kMiniscriptInstructionOutcomeFailed;
+		if (level >= 1 && level < 16)
+			self->setupLevel(thread->getRuntime(), level);
+		return kMiniscriptInstructionOutcomeContinue;
+	}
+
+	bool flag = false;
+	if (value.getType() == DynamicValueTypes::kBoolean)
+		flag = value.getBool();
+	else if (value.getType() == DynamicValueTypes::kInteger)
+		flag = (value.getInt() != 0);
+	else
+		return kMiniscriptInstructionOutcomeFailed;
+
+	if (ptrOrOffset == kAttribPaused) {
+		// Pausing only takes effect once a level is set up
+		if (self->_initialized || !flag)
+			self->_paused = flag;
+	} else
+		self->_introDlg = flag;
+
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
+MiniscriptInstructionOutcome SmkJumpModifier::WriteProxy::refAttrib(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib) {
+	return kMiniscriptInstructionOutcomeFailed;
+}
+
+MiniscriptInstructionOutcome SmkJumpModifier::WriteProxy::refAttribIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib, const DynamicValue &index) {
+	return kMiniscriptInstructionOutcomeFailed;
+}
+
+// Children of the owner element: 1 plane, 2 runway, 3-8 object lists, 9 water meter, 10 fuel gauge,
+// 12 extra plane icons, 13 crash, 14 shadow, 15 water drop, 16 landing, 17 level bars, 18 fuel light,
+// 19 progress, 20 water light, 21 level banner
+Structural *SmkJumpModifier::child(int index) const {
+	Structural *owner = findStructuralOwner();
+	if (!owner || index < 1 || index > static_cast<int>(owner->getChildren().size()))
+		return nullptr;
+	return owner->getChildren()[index - 1].get();
+}
+
+Structural *SmkJumpModifier::grandchild(int index, int subIndex) const {
+	Structural *container = child(index);
+	if (!container || subIndex < 1 || subIndex > static_cast<int>(container->getChildren().size()))
+		return nullptr;
+	return container->getChildren()[subIndex - 1].get();
+}
+
+Structural *SmkJumpModifier::listElement(int list, uint index) const {
+	return grandchild(3 + list, index + 1);
+}
+
+void SmkJumpModifier::place(Runtime *runtime, Structural *element, int32 x, int32 y) {
+	if (!element || !element->isElement() || !static_cast<Element *>(element)->isVisual())
+		return;
+
+	// Placed centered on the point
+	const Common::Rect &rect = static_cast<VisualElement *>(element)->getRelativeRect();
+	DynamicValue pos;
+	pos.setPoint(Common::Point(x - rect.width() / 2, y - rect.height() / 2));
+	dlgMgrWriteAttribute(runtime, this, element, "position", pos);
+}
+
+void SmkJumpModifier::hide(Runtime *runtime, Structural *element) {
+	if (!element)
+		return;
+
+	DynamicValue pos;
+	pos.setPoint(Common::Point(-1, 600));
+	dlgMgrWriteAttribute(runtime, this, element, "position", pos);
+}
+
+void SmkJumpModifier::setInt(Runtime *runtime, Structural *element, const char *attrib, int32 value) {
+	dlgMgrSetInt(runtime, this, element, attrib, value);
+}
+
+void SmkJumpModifier::setBool(Runtime *runtime, Structural *element, const char *attrib, bool value) {
+	dlgMgrSetBool(runtime, this, element, attrib, value);
+}
+
+void SmkJumpModifier::sendMessage(Runtime *runtime, const char *messageName) {
+	uint32 messageID = 0;
+	if (!runtime->getProject()->findAuthorMessageID(messageName, messageID))
+		return;
+
+	Structural *owner = findStructuralOwner();
+	if (!owner)
+		return;
+
+	Common::SharedPtr<MessageProperties> props(new MessageProperties(Event(EventIDs::kAuthorMessage, messageID), DynamicValue(), getSelfReference()));
+	Common::SharedPtr<MessageDispatch> dispatch(new MessageDispatch(props, owner, true, true, false));
+	runtime->queueMessage(dispatch);
+}
+
+void SmkJumpModifier::placePlane(Runtime *runtime) {
+	int32 x = static_cast<int32>(round(_planeX));
+	int32 y = static_cast<int32>(round(_planeY));
+	place(runtime, child(1), x, y);
+	place(runtime, child(14), x + 18, y + 15);
+}
+
+void SmkJumpModifier::setupLevel(Runtime *runtime, int32 levelNum) {
+	_runtime = runtime;
+	if (!loadLevels() || levelNum < 1 || levelNum > 15)
+		return;
+
+	const Level &level = _levels[levelNum];
+	_level = levelNum;
+
+	if (levelNum <= 5) {
+		_speed = 2.6;
+		_climbOffset = 0.2;
+		_iconCount = 4;
+	} else if (levelNum <= 10) {
+		_speed = 3.0;
+		_climbOffset = 0.4;
+		_iconCount = 3;
+	} else {
+		_speed = 3.9;
+		_climbOffset = 0.7;
+		_iconCount = 2;
+	}
+
+	_planeX = level.planeStart.x;
+	_planeY = level.planeStart.y;
+	_bank = 0;
+	_fuel = level.fuel;
+	_water = level.water;
+	_dropCooldown = 6;
+	_refillCooldown = 16;
+	_fuelTicks = 25;
+	_combo = 0;
+	_dropTicks = 0;
+	_approach = false;
+	_landingTicks = 0;
+	_crashTicks = 0;
+	_levelDone = false;
+	_overLake = false;
+	_fuelLow = false;
+	_dropHeld = false;
+	_intro = true;
+	_introCount = 28;
+	_paused = true;
+
+	for (uint list = 0; list < kListCount; list++) {
+		_lists[list] = level.lists[list];
+		for (uint i = 0; i < _lists[list].size(); i++)
+			hide(runtime, listElement(list, i));
+	}
+
+	// Fires burn in a loop until they're put out
+	_fireLit.clear();
+	_fireLit.resize(_lists[kListFires].size());
+	for (uint i = 0; i < _lists[kListFires].size(); i++) {
+		Structural *fire = listElement(kListFires, i);
+		bool lit = (_lists[kListFires][i].dist > 0.0);
+		_fireLit[i] = lit;
+		setInt(runtime, fire, "cel", 1);
+		DynamicValue range;
+		range.setString("loop");
+		dlgMgrWriteAttribute(runtime, this, fire, "range", range);
+		setBool(runtime, fire, "paused", !lit);
+	}
+
+	_runway = level.runway;
+	hide(runtime, child(2));
+	_progressCel = 1;
+	_progressCountdown = (_runway.dist - 480.0) * 0.05;
+	setInt(runtime, child(19), "cel", 1);
+
+	placePlane(runtime);
+	setInt(runtime, child(1), "cel", 1);
+	setInt(runtime, child(14), "cel", 1);
+	hide(runtime, child(13));
+	hide(runtime, child(15));
+	hide(runtime, child(16));
+
+	setInt(runtime, child(9), "cel", _water + 1);
+	setInt(runtime, child(10), "cel", _fuel);
+	setBool(runtime, child(18), "paused", true);
+	setInt(runtime, child(18), "cel", 1);
+	setInt(runtime, child(20), "cel", 1);
+
+	// Difficulty bars, and the level banner and badge
+	int bar = (levelNum < 5) ? 1 : (levelNum < 10) ? 2 : (levelNum < 15) ? 3 : 0;
+	for (int i = 1; i <= 3; i++) {
+		if (i == bar) {
+			DynamicValue pos;
+			pos.setPoint(Common::Point(255, 13));
+			dlgMgrWriteAttribute(runtime, this, grandchild(17, i), "position", pos);
+		} else
+			hide(runtime, grandchild(17, i));
+	}
+
+	DynamicValue bannerPos;
+	bannerPos.setPoint(Common::Point(151, 160));
+	dlgMgrWriteAttribute(runtime, this, grandchild(21, 1), "position", bannerPos);
+	setInt(runtime, grandchild(21, 2), "cel", levelNum % 5);
+	DynamicValue badgePos;
+	badgePos.setPoint(Common::Point(391, 198));
+	dlgMgrWriteAttribute(runtime, this, grandchild(21, 2), "position", badgePos);
+
+	if (_newGame) {
+		_points = 0;
+		sendMessage(runtime, "UpdateScore");
+
+		static const int16 kIconPositions[4][2] = {{521, 76}, {550, 90}, {521, 108}, {551, 122}};
+		_extraPlanes = 0;
+		for (int i = 0; i < 4; i++) {
+			Structural *icon = grandchild(12, i + 1);
+			if (i < _iconCount) {
+				DynamicValue pos;
+				pos.setPoint(Common::Point(kIconPositions[i][0], kIconPositions[i][1]));
+				dlgMgrWriteAttribute(runtime, this, icon, "position", pos);
+				_extraPlanes++;
+			} else
+				hide(runtime, icon);
+		}
+		_newGame = false;
+	}
+
+	_initialized = true;
+}
+
+void SmkJumpModifier::tick(Runtime *runtime) {
+	_scheduledEvent.reset();
+	if (!_running)
+		return;
+
+	_scheduledEvent = runtime->getScheduler().scheduleMethod<SmkJumpModifier, &SmkJumpModifier::tick>(runtime->getPlayTime() + 71, this);
+
+	if (!_initialized)
+		return;
+
+	// After landing, the fuel left is counted into the score
+	if (_levelDone) {
+		if (_fuel > 0) {
+			_points += 10;
+			sendMessage(runtime, "UpdateScore");
+			setInt(runtime, child(10), "cel", _fuel);
+			_fuel--;
+			return;
+		}
+
+		_levelDone = false;
+		_paused = true;
+		sendMessage(runtime, "levelwon");
+		if (_level < 15 && _level != 5 && _level != 10)
+			setupLevel(runtime, _level + 1);
+		else
+			sendMessage(runtime, "YouWin");
+		return;
+	}
+
+	if (_intro && !_introDlg) {
+		if (_introCount-- > 0)
+			return;
+
+		_intro = false;
+		_paused = false;
+		hide(runtime, grandchild(21, 1));
+		hide(runtime, grandchild(21, 2));
+		return;
+	}
+
+	// The game waits while the mouse is outside the play area
+	const Common::Point &mouse = runtime->getCachedMousePosition();
+	if (_paused || _introDlg || mouse.y < 11 || mouse.y > 429 || mouse.x < 11 || mouse.x > 629)
+		return;
+
+	if (tickStates(runtime))
+		return;
+
+	steer(runtime, mouse);
+
+	if (_dropCooldown > 0)
+		_dropCooldown--;
+	if (_refillCooldown > 0)
+		_refillCooldown--;
+	if (_combo > 0)
+		_combo--;
+
+	tickFuel(runtime);
+	if (_crashTicks > 0)
+		return;
+
+	// The progress bar fills as the runway approaches
+	if (_progressCountdown <= 0.0) {
+		if (_progressCel < 20)
+			setInt(runtime, child(19), "cel", ++_progressCel);
+		_progressCountdown = (_levels[_level].runway.dist - 480.0) * 0.05;
+	} else
+		_progressCountdown -= _speed;
+
+	scrollObjects(runtime);
+	checkCollisions(runtime);
+}
+
+// The drop, approach, landing and crash animations. Returns true if the tick is over.
+bool SmkJumpModifier::tickStates(Runtime *runtime) {
+	if (_dropTicks > 0) {
+		Structural *drop = child(15);
+		if (++_dropTicks >= 8) {
+			_dropTicks = 0;
+			hide(runtime, drop);
+		} else {
+			_dropY += _speed * 1.5;
+			place(runtime, drop, static_cast<int32>(_dropX), static_cast<int32>(_dropY));
+			setInt(runtime, drop, "cel", _dropTicks);
+		}
+	}
+
+	if (_approach) {
+		if (_planeX != _runway.x) {
+			_planeX = _runway.x;
+			place(runtime, child(1), static_cast<int32>(_runway.x) + 15, static_cast<int32>(_planeY));
+			place(runtime, child(14), static_cast<int32>(_runway.x) + 33, static_cast<int32>(_planeY) + 15);
+			if (_bank != 0) {
+				_bank = 0;
+				setInt(runtime, child(1), "cel", 1);
+				setInt(runtime, child(14), "cel", 1);
+			}
+		}
+
+		if (fabs(_planeX - _runway.x) < 20.0 && fabs(_planeY - (480.0 - _runway.dist)) < 40.0) {
+			_approach = false;
+			_landingTicks = 1;
+			_speed = 3.0;
+			hide(runtime, child(1));
+			hide(runtime, child(14));
+			place(runtime, child(16), static_cast<int32>(_planeX) + 15, static_cast<int32>(_planeY));
+			setInt(runtime, child(16), "cel", 1);
+		}
+	}
+
+	if (_landingTicks > 0) {
+		if (++_landingTicks >= 26) {
+			_landingTicks = 0;
+			hide(runtime, child(16));
+			_newGame = (_level > 14 || _level == 5 || _level == 10);
+			_levelDone = true;
+			return true;
+		}
+		if (_landingTicks < 6)
+			setInt(runtime, child(16), "cel", _landingTicks);
+		return true;
+	}
+
+	if (_crashTicks > 0) {
+		if (_crashTicks == 1) {
+			hide(runtime, child(1));
+			hide(runtime, child(14));
+			place(runtime, child(13), static_cast<int32>(_planeX) + 10, static_cast<int32>(_planeY) + 2);
+			sendMessage(runtime, "fuelSFXOff");
+		}
+
+		setInt(runtime, child(13), "cel", _crashTicks);
+		if (++_crashTicks >= 28) {
+			_crashTicks = 0;
+			hide(runtime, child(13));
+			if (!_newGame)
+				setupLevel(runtime, _level);
+			else {
+				_paused = true;
+				sendMessage(runtime, "GameOver");
+			}
+		}
+		return true;
+	}
+
+	// The runway scrolls in, then the plane lines up with it
+	if (_runway.dist > 0.0) {
+		_runway.dist -= _speed;
+		if (_runway.dist < 490.0 && _runway.dist > 0.0) {
+			place(runtime, child(2), static_cast<int32>(_runway.x), 480 - static_cast<int32>(_runway.dist + 0.5));
+			if (!_approach && _landingTicks == 0) {
+				_approach = true;
+				_speed = 6.0;
+				sendMessage(runtime, "fuelSFXOff");
+				setBool(runtime, child(18), "paused", true);
+				setInt(runtime, child(18), "cel", 1);
+			}
+		}
+	}
+
+	return false;
+}
+
+void SmkJumpModifier::steer(Runtime *runtime, const Common::Point &mouse) {
+	if (_approach)
+		return;
+
+	double oldX = _planeX;
+	double oldY = _planeY;
+	int32 oldBank = _bank;
+
+	int32 rx = static_cast<int32>(round(_planeX));
+	int32 ry = static_cast<int32>(round(_planeY));
+
+	if (rx < mouse.x && rx < 430) {
+		double d = (mouse.x - _planeX) / 1.8;
+		_planeX += d;
+		if (_planeX > 430.0) {
+			_planeX = 430.0;
+			_bank = 0;
+		} else
+			_bank = (d > 5.0) ? 2 : 0;
+	} else if (rx > mouse.x && rx > 211) {
+		double d = (_planeX - mouse.x) / 1.8;
+		_planeX -= d;
+		if (_planeX < 211.0) {
+			_planeX = 211.0;
+			_bank = 0;
+		} else
+			_bank = (d > 5.0) ? 1 : 0;
+	} else
+		_bank = 0;
+
+	if (ry > mouse.y && ry > 146) {
+		_planeY -= (_planeY - mouse.y) / 5.0;
+		if (_planeY < 146.0)
+			_planeY = 146.0;
+	} else if (ry < mouse.y && ry < 345) {
+		_planeY += MIN((mouse.y - _planeY) / 12.0, _speed - _climbOffset);
+		if (_planeY > 345.0)
+			_planeY = 345.0;
+	}
+
+	if (_planeX != oldX || _planeY != oldY)
+		placePlane(runtime);
+
+	if (_bank != oldBank) {
+		setInt(runtime, child(1), "cel", _bank + 1);
+		setInt(runtime, child(14), "cel", _bank + 1);
+	}
+}
+
+void SmkJumpModifier::tickFuel(Runtime *runtime) {
+	if (--_fuelTicks >= 1 || _approach)
+		return;
+
+	_fuelTicks = 25;
+	if (_fuel < 2) {
+		loseAPlane(runtime);
+		return;
+	}
+
+	_fuel--;
+	setInt(runtime, child(10), "cel", _fuel);
+	if (_fuel == 5) {
+		setBool(runtime, child(18), "paused", false);
+		sendMessage(runtime, "fuelSFXOn");
+		if (!_fuelHintPlayed) {
+			_fuelHintPlayed = true;
+			sendMessage(runtime, "PlaySFX8");
+		}
+	}
+}
+
+// Crashing uses up an extra plane, or ends the game without one
+void SmkJumpModifier::loseAPlane(Runtime *runtime) {
+	if (_extraPlanes > 1) {
+		_extraPlanes--;
+		hide(runtime, grandchild(12, _extraPlanes + 1));
+		_newGame = false;
+	} else {
+		_extraPlanes = 0;
+		hide(runtime, grandchild(12, 1));
+		_newGame = true;
+	}
+
+	sendMessage(runtime, "fuelSFXOff");
+	_crashTicks = 1;
+}
+
+void SmkJumpModifier::startDrop(Runtime *runtime) {
+	_water--;
+	setInt(runtime, child(9), "cel", _water + 1);
+	_dropCooldown = 6;
+	_dropTicks = 1;
+	_dropX = _planeX;
+	_dropY = _planeY + 14.0;
+	place(runtime, child(15), static_cast<int32>(_dropX), static_cast<int32>(_dropY));
+	setInt(runtime, child(15), "cel", 1);
+}
+
+void SmkJumpModifier::scrollObjects(Runtime *runtime) {
+	for (uint list = 0; list < kListCount; list++) {
+		Common::Array<Object> &objects = _lists[list];
+		for (uint i = 0; i < objects.size(); i++) {
+			Object &obj = objects[i];
+			if (obj.dist <= 0.0)
+				continue;
+
+			obj.dist -= _speed;
+			if (obj.dist >= 490.0)
+				continue;
+
+			Structural *element = listElement(list, i);
+			if (obj.dist <= 0.0) {
+				hide(runtime, element);
+				obj.dist = -100.0;
+			} else
+				place(runtime, element, static_cast<int32>(obj.x), 480 - static_cast<int32>(obj.dist + 0.5));
+		}
+	}
+}
+
+// Returns true if the plane crashed
+bool SmkJumpModifier::checkCollisions(Runtime *runtime) {
+	bool busy = (_approach || _landingTicks > 0 || _crashTicks > 0);
+
+	// Lakes refill the tank
+	bool overLake = false;
+	for (const Object &lake : _lists[kListLakes]) {
+		if (lake.dist <= 0.0 || lake.dist >= 490.0)
+			continue;
+
+		double halfW = (lake.type == 5) ? 36.0 : (lake.type == 6) ? 37.0 : 25.0;
+		double halfH = (lake.type == 5) ? 32.0 : (lake.type == 6) ? 38.0 : 21.0;
+		double ly = 480.0 - lake.dist;
+		if (fabs(_planeX - lake.x) < halfW && fabs(_planeY - ly) < halfH) {
+			overLake = true;
+			if (_dropHeld && _refillCooldown <= 0 && _water < 8) {
+				_water = MIN<int32>(8, _water + lake.value);
+				_refillCooldown = 16;
+				setInt(runtime, child(9), "cel", _water + 1);
+				sendMessage(runtime, "PlaySFX3");
+			}
+		}
+	}
+
+	if (overLake != _overLake) {
+		_overLake = overLake;
+		setInt(runtime, child(20), "cel", overLake ? 2 : 1);
+	}
+
+	// Water drops on fires
+	if (_dropHeld && _dropCooldown <= 0 && !busy) {
+		if (_water > 0) {
+			bool hit = false;
+			for (uint i = 0; i < _lists[kListFires].size(); i++) {
+				Object &fire = _lists[kListFires][i];
+				if (!_fireLit[i] || fire.dist <= 0.0 || fire.dist >= 490.0)
+					continue;
+
+				if (fabs(_planeX - fire.x) < 10.0 && fabs(_planeY - (480.0 - fire.dist + 0.5)) < 22.0) {
+					hit = true;
+					_fireLit[i] = false;
+					_points += (_combo > 0) ? 75 : 25;
+					_combo = 28;
+					sendMessage(runtime, "UpdateScore");
+
+					Structural *fireElement = listElement(kListFires, i);
+					setBool(runtime, fireElement, "paused", true);
+					setInt(runtime, fireElement, "cel", 9);
+					startDrop(runtime);
+					sendMessage(runtime, "PlaySFX1");
+					if (_water == 0 && !_emptyHintPlayed) {
+						_emptyHintPlayed = true;
+						sendMessage(runtime, "PlaySFX9");
+					}
+					break;
+				}
+			}
+
+			if (!hit && !overLake) {
+				startDrop(runtime);
+				sendMessage(runtime, "PlaySFX2");
+			}
+		} else if (!overLake) {
+			_dropCooldown = 6;
+			sendMessage(runtime, "PlaySFX10");
+		}
+	}
+
+	if (busy)
+		return false;
+
+	// Obstructions crash the plane
+	for (const Object &obj : _lists[kListObstructions]) {
+		if (obj.dist <= 0.0 || obj.dist >= 490.0)
+			continue;
+
+		double oy = 480.0 - obj.dist;
+		auto inBox = [&](double cx, double halfW, double cy, double halfH) {
+			return fabs(_planeX - cx) < halfW && fabs(_planeY - cy) < halfH;
+		};
+
+		bool crashed = false;
+		switch (obj.type) {
+		case 7:
+			crashed = inBox(obj.x, 37.0, oy - 5.0, 31.0);
+			break;
+		case 8:
+			crashed = inBox(obj.x - 6.0, 45.0, oy - 13.0, 46.0) || inBox(obj.x - 14.0, 28.0, oy - 20.0, 32.0) || inBox(obj.x - 10.0, 27.0, oy - 19.0, 29.0);
+			break;
+		case 9:
+			crashed = inBox(obj.x - 14.0, 28.0, oy - 20.0, 32.0) || inBox(obj.x - 10.0, 27.0, oy - 19.0, 29.0);
+			break;
+		case 10:
+			crashed = inBox(obj.x - 10.0, 27.0, oy - 19.0, 29.0);
+			break;
+		default:
+			break;
+		}
+
+		if (crashed) {
+			sendMessage(runtime, "PlaySFX5");
+			loseAPlane(runtime);
+			return true;
+		}
+	}
+
+	// Bonuses
+	for (uint i = 0; i < _lists[kListBonuses].size(); i++) {
+		Object &bonus = _lists[kListBonuses][i];
+		if (bonus.dist <= 0.0 || bonus.dist >= 490.0)
+			continue;
+
+		double by = 480.0 - bonus.dist;
+		bool taken = false;
+		if (bonus.type == 11 && fabs(_planeX - bonus.x) < 15.0 && fabs(_planeY - by) < 15.0) {
+			_points += 50;
+			sendMessage(runtime, "UpdateScore");
+			sendMessage(runtime, "PlaySFX6");
+			taken = true;
+		} else if (bonus.type == 12 && fabs(_planeX - (bonus.x - 5.0)) < 24.0 && fabs(_planeY - (by - 13.0)) < 24.0) {
+			_fuel = MIN<int32>(20, _fuel + 6);
+			setBool(runtime, child(18), "paused", true);
+			setInt(runtime, child(18), "cel", 1);
+			sendMessage(runtime, "fuelSFXOff");
+			setInt(runtime, child(10), "cel", _fuel);
+			sendMessage(runtime, "PlaySFX4");
+			taken = true;
+		} else if (bonus.type == 13 && _extraPlanes < 5 && fabs(_planeX - bonus.x) < 15.0 && fabs(_planeY - by) < 15.0) {
+			static const int16 kIconPositions[4][2] = {{521, 76}, {550, 90}, {521, 108}, {551, 122}};
+			if (_extraPlanes < 4) {
+				DynamicValue pos;
+				pos.setPoint(Common::Point(kIconPositions[_extraPlanes][0], kIconPositions[_extraPlanes][1]));
+				dlgMgrWriteAttribute(runtime, this, grandchild(12, _extraPlanes + 1), "position", pos);
+			}
+			_extraPlanes++;
+			sendMessage(runtime, "PlaySFX7");
+			taken = true;
+		}
+
+		if (taken) {
+			hide(runtime, listElement(kListBonuses, i));
+			bonus.dist = -100.0;
+		}
+	}
+
+	return false;
+}
+
+Common::SharedPtr<Modifier> SmkJumpModifier::shallowClone() const {
+	Common::SharedPtr<SmkJumpModifier> clone(new SmkJumpModifier(*this));
+	clone->_scheduledEvent.reset();
+	clone->_running = false;
+	clone->_initialized = false;
+	return clone;
+}
+
+const char *SmkJumpModifier::getDefaultName() const {
+	return "SmkJump";
+}
+
 // Cel for an animation track at a timeline frame, or -1 to leave it alone
 static int32 dlgMgrCelForFrame(const DlgMgrClientModifier::Track &track, int32 frame) {
 	if (track.frames.size() > 0) {
@@ -2567,7 +3546,7 @@ const char *DlgMgrClientModifier::getDefaultName() const {
 
 KnowWonderPlugIn::KnowWonderPlugIn()
 	: _strUtilModifierFactory(this), _dlgMgrServerModifierFactory(this), _dlgMgrClientModifierFactory(this),
-	  _kwSmackerModifierFactory(this), _editCtrlModifierFactory(this), _gameModifierFactory(this), _whaleMazeModifierFactory(this) {
+	  _kwSmackerModifierFactory(this), _editCtrlModifierFactory(this), _gameModifierFactory(this), _whaleMazeModifierFactory(this), _eyefollowerModifierFactory(this), _smkJumpModifierFactory(this) {
 }
 
 KnowWonderPlugIn::~KnowWonderPlugIn() {
@@ -2591,12 +3570,14 @@ void KnowWonderPlugIn::registerModifiers(IPlugInModifierRegistrar *registrar) co
 
 	// Mini-game modifiers from separate Magic School Bus plug-ins
 	static const char *const gameModifierNames[] = {
-		"AntMaze", "Art", "Balloon", "Eyefollower", "LLava", "Lander", "RoverRace", "SmkJump", "Sub", "SvTown"
+		"AntMaze", "Art", "Balloon", "LLava", "Lander", "RoverRace", "Sub", "SvTown"
 	};
 	for (const char *name : gameModifierNames)
 		registrar->registerPlugInModifier(name, &_gameModifierFactory);
 
 	registrar->registerPlugInModifier("WhaleMaze", &_whaleMazeModifierFactory);
+	registrar->registerPlugInModifier("Eyefollower", &_eyefollowerModifierFactory);
+	registrar->registerPlugInModifier("SmkJump", &_smkJumpModifierFactory);
 }
 
 } // End of namespace KW
