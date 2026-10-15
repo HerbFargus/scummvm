@@ -5728,6 +5728,7 @@ void Runtime::executeHighLevelSceneReturn() {
 	// The scene being returned to leaves the return list
 	const SceneReturnListEntry sceneReturn = _sceneReturnList.back();
 	_sceneReturnList.pop_back();
+	debug(2, "Returning to scene '%s'", sceneReturn.scene->getName().c_str());
 
 	if (sceneReturn.scene == _activeSharedScene)
 		error("Transitioned into the active shared scene as the main scene, this is not supported");
@@ -6811,6 +6812,14 @@ void Runtime::queueMessage(const Common::SharedPtr<MessageDispatch>& dispatch) {
 void Runtime::queueOSEvent(const Common::SharedPtr<OSEvent> &osEvent) {
 	_osEventQueue.push_back(osEvent);
 	_lastUserActivityTime = _playTime;
+}
+
+bool Runtime::isSceneOnStack(const Structural *scene) const {
+	for (const SceneStackEntry &entry : _sceneStack) {
+		if (entry.scene.get() == scene)
+			return true;
+	}
+	return false;
 }
 
 int32 Runtime::getUserTimeout() const {

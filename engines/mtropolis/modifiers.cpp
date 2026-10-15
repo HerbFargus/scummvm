@@ -791,6 +791,7 @@ VThreadState ChangeSceneModifier::consumeMessage(Runtime *runtime, const Common:
 		}
 
 		if (targetScene) {
+			debug(2, "Change Scene '%s': selection %i to '%s'", _name.c_str(), static_cast<int>(_sceneSelectionType), targetScene->getName().c_str());
 			runtime->addSceneStateTransition(HighLevelSceneTransition(targetScene, HighLevelSceneTransition::kTypeChangeToScene, _addToDestList, _addToReturnList));
 		} else {
 			warning("Change Scene Modifier failed, scene could not be resolved");

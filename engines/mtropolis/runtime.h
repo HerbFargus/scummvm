@@ -1583,6 +1583,7 @@ public:
 
 	void queueProject(const Common::SharedPtr<ProjectDescription> &desc);
 	int32 getUserTimeout() const;
+	bool isSceneOnStack(const Structural *scene) const;
 	void setUserTimeout(int32 timeout);
 	void setStartSceneName(const Common::String &sceneName);
 

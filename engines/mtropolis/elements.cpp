@@ -1986,7 +1986,26 @@ MiniscriptInstructionOutcome MToonElement::scriptSetCel(MiniscriptThread *thread
 	return kMiniscriptInstructionOutcomeContinue;
 }
 
-MiniscriptInstructionOutcome MToonElement::scriptSetRange(MiniscriptThread *thread, const DynamicValue &value) {
+MiniscriptInstructionOutcome MToonElement::scriptSetRange(MiniscriptThread *thread, const DynamicValue &valueRef) {
+	const DynamicValue value = valueRef.dereference();
+
+	// A number picks a range by its name, or failing that by its position (Magic School Bus Bugs
+	// steps through Liz's mirror taunts with a counter)
+	if ((value.getType() == DynamicValueTypes::kInteger || value.getType() == DynamicValueTypes::kFloat) && _metadata) {
+		int32 rangeNum = 0;
+		value.roundToInt(rangeNum);
+		Common::String name = Common::String::format("%i", static_cast<int>(rangeNum));
+		for (const MToonMetadata::FrameRangeDef &frameRange : _metadata->frameRanges) {
+			if (caseInsensitiveEqual(frameRange.name, name))
+				return scriptSetRangeByName(thread, name);
+		}
+
+		if (rangeNum >= 1 && static_cast<uint>(rangeNum) <= _metadata->frameRanges.size()) {
+			const MToonMetadata::FrameRangeDef &frameRange = _metadata->frameRanges[rangeNum - 1];
+			return scriptSetRangeTyped(thread, IntRange(frameRange.startFrame + 1, frameRange.endFrame + 1));
+		}
+	}
+
 	if (value.getType() == DynamicValueTypes::kIntegerRange)
 		return scriptSetRangeTyped(thread, value.getIntRange());
 	if (value.getType() == DynamicValueTypes::kPoint)
@@ -2777,6 +2796,16 @@ bool SoundElement::canAutoPlay() const {
 }
 
 void SoundElement::playMedia(Runtime *runtime, Project *project) {
+	// Sounds in a scene that was only loaded to deliver a message don't play until the scene is shown
+	// (Magic School Bus Mars sends messages into a scene holding all of its sounds when quitting)
+	const Structural *scene = this;
+	while (scene && scene->getSceneLoadState() == Structural::SceneLoadState::kNotAScene)
+		scene = scene->getParent();
+	if (scene && !runtime->isSceneOnStack(scene)) {
+		stopPlayer();
+		return;
+	}
+
 	if (_shouldPlayIfNotPaused) {
 		if (_paused) {
 			// Goal state is paused
