@@ -64,7 +64,7 @@ namespace MTropolis {
 //   wait <ms>        wait
 //   click <x> <y>    click at game coordinates
 //   type <text>      type text
-//   key <name>       press enter, escape, backspace or tab
+//   key <name>       press enter, escape, backspace, tab or an arrow key
 //   shot <path>      save a PNG of the screen
 //   probe <x> <y>    log the visual elements at a point
 //   clickon <name>   click the center of a visual element
@@ -232,6 +232,14 @@ void TestInputScript::update(OSystem *system, Runtime *runtime, Engine *engine) 
 				pushKey(events, Common::KEYCODE_BACKSPACE, 8);
 			else if (arg == "tab")
 				pushKey(events, Common::KEYCODE_TAB, 9);
+			else if (arg == "up")
+				pushKey(events, Common::KEYCODE_UP, 0);
+			else if (arg == "down")
+				pushKey(events, Common::KEYCODE_DOWN, 0);
+			else if (arg == "left")
+				pushKey(events, Common::KEYCODE_LEFT, 0);
+			else if (arg == "right")
+				pushKey(events, Common::KEYCODE_RIGHT, 0);
 		} else if (cmd == "shot") {
 			saveScreenshot(system, arg);
 			debug(1, "Test input: Saved '%s'", arg.c_str());
