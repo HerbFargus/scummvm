@@ -1099,16 +1099,20 @@ bool ListVariableModifier::readAttributeIndexed(MiniscriptThread *thread, Dynami
 
 	if (attrib == "value") {
 		size_t realIndex = 0;
-		if (!storage->_list->dynamicValueToIndex(realIndex, index))
-			return false;
-
-		if (storage->_list->getAtIndex(realIndex, result))
+		bool validIndex = storage->_list->dynamicValueToIndex(realIndex, index);
+		if (validIndex && storage->_list->getAtIndex(realIndex, result))
 			return true;
 
-		// mTropolis 2.0 reads past the end of a list as an empty value, which
-		// Magic School Bus relies on before its lists are filled
+		// mTropolis 2.0 reads outside of a list as an empty value, which Magic School Bus relies
+		// on before its lists are filled (and Animals reads index 0 before anything is picked)
 		if (thread->getRuntime()->getProject()->getRuntimeVersion() < kRuntimeVersion200)
 			return false;
+
+		DynamicValue indexNumber;
+		if (!validIndex && !index.convertToType(DynamicValueTypes::kInteger, indexNumber))
+			return false;
+
+		debug(3, "List '%s' read outside its %u values", getName().c_str(), static_cast<uint>(storage->_list->getSize()));
 
 		switch (storage->_list->getType()) {
 		case DynamicValueTypes::kBoolean:
@@ -1122,6 +1126,9 @@ bool ListVariableModifier::readAttributeIndexed(MiniscriptThread *thread, Dynami
 			break;
 		case DynamicValueTypes::kString:
 			result.setString("");
+			break;
+		case DynamicValueTypes::kPoint:
+			result.setPoint(Common::Point(0, 0));
 			break;
 		default:
 			if (storage->_preferredContentType == DynamicValueTypes::kBoolean)
