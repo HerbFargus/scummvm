@@ -1009,6 +1009,158 @@ private:
 	int32 _lineCel;
 };
 
+// Rover race from Magic School Bus Lands on Mars. The player clicks to drive
+// the bus rover around the Martian surface, racing Liz's rover to collect the
+// rocks; whoever holds more rocks when they are all gone wins. Boulders stop
+// the rover, craters slow it, the rovers knock each other about, and sun,
+// tires, cloud and extra life power-ups appear along the way. The levels are
+// read from the original RoverRace.r32 plug-in.
+class RoverRaceModifier : public Modifier {
+public:
+	RoverRaceModifier();
+	~RoverRaceModifier();
+
+	bool load(const PlugInModifierLoaderContext &context, const Data::KW::GameModifier &data);
+
+	bool respondsToEvent(const Event &evt) const override;
+	VThreadState consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) override;
+	void disable(Runtime *runtime) override;
+
+	bool readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) override;
+	MiniscriptInstructionOutcome writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) override;
+
+#ifdef MTROPOLIS_DEBUG_ENABLE
+	const char *debugGetTypeName() const override { return "RoverRace Modifier"; }
+	SupportStatus debugGetSupportStatus() const override { return kSupportStatusPartial; }
+#endif
+
+private:
+	static const int kNumLevels = 15;
+	static const int kNumItems = 23;
+	static const int kNumRocks = 14;	// Items 0-13 are rocks, the rest only give points
+	static const int kNumBoulders = 15;
+	static const int kNumCraters = 12;
+	static const int kNumPathPoints = 30;
+	static const int kNumSpawnTimes = 10;
+	static const int kPolygonPoints = 8;
+
+	enum WritableAttribute {
+		kAttribPaused,
+		kAttribGameLevel,
+	};
+
+	enum PickupType {
+		kPickupExtraLife,
+		kPickupSun,
+		kPickupTires,
+		kPickupCloud,
+
+		kNumPickups,
+	};
+
+	struct Level {
+		Common::Point items[kNumItems];
+		Common::Point boulders[kNumBoulders];
+		Common::Point craters[kNumCraters];
+		Common::Point path[kNumPathPoints];	// Liz's waypoints from the start, power-up spawn points from the end
+		int16 spawnTimes[kNumPickups][kNumSpawnTimes];	// In units of 8 ticks, 0 ends a list
+	};
+
+	struct Rover {
+		int32 targetX;
+		int32 targetY;
+		double remaining;
+		double speed;
+		double heading;
+		double cosH;
+		double sinH;	// Screen space, so -sin(heading)
+		double x;
+		double y;
+		int32 cel;
+		int32 turn;
+		int32 sunTime;
+		int32 tiresTime;
+		int32 cloudTime;
+	};
+
+	struct Pickup {
+		int32 x;
+		int32 y;
+		int32 time;	// Ticks left on screen, 0 or -1 when absent
+	};
+
+	struct Item {
+		int32 x;
+		int32 y;
+		int32 state;	// 0 absent, 1 present, 2 taken by the player, 3 taken by Liz
+	};
+
+	struct WriteProxy {
+		static MiniscriptInstructionOutcome write(MiniscriptThread *thread, const DynamicValue &value, void *objectRef, uintptr ptrOrOffset);
+		static MiniscriptInstructionOutcome refAttrib(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib);
+		static MiniscriptInstructionOutcome refAttribIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib, const DynamicValue &index);
+	};
+
+	Common::SharedPtr<Modifier> shallowClone() const override;
+	const char *getDefaultName() const override;
+
+	bool loadLevels();
+	void setupLevel(Runtime *runtime, int32 level);
+	void tick(Runtime *runtime);
+	void stopGame();
+
+	void steerPlayer(Runtime *runtime);
+	void aimRover(Runtime *runtime, Rover &rover, Structural *element, int32 x, int32 y);
+	void turnRover(Runtime *runtime, Rover &rover, Structural *element);
+	void tickPlayer(Runtime *runtime);
+	void tickLiz(Runtime *runtime);
+	void spawnPickups(Runtime *runtime);
+	bool inBoulder(int boulder, int32 x, int32 y) const;
+	bool inCrater(int32 x, int32 y) const;
+
+	Structural *child(int index) const;
+	Structural *grandchild(int index, int subIndex) const;
+	void placeCentered(Runtime *runtime, Structural *element, int32 x, int32 y);
+	void placeTopLeft(Runtime *runtime, Structural *element, int32 x, int32 y);
+	void hide(Runtime *runtime, Structural *element);
+	Common::Point getCenter(Structural *element) const;
+	int32 getCel(Runtime *runtime, Structural *element);
+	void setCel(Runtime *runtime, Structural *element, int32 cel);
+	void sendMessage(Runtime *runtime, const char *messageName);
+
+	Event _startWhen;
+	Event _stopWhen;
+
+	Common::Array<Level> _levels;	// Index 0 is unused
+	Common::Point _polygons[kNumBoulders][kPolygonPoints];
+	bool _levelsLoaded;
+
+	Common::SharedPtr<ScheduledEvent> _scheduledEvent;
+	bool _running;
+	bool _paused;
+	bool _levelReady;
+
+	int32 _level;
+	int32 _points;
+	int32 _rocks;
+	int32 _lizRocks;
+	int32 _rocksLeft;
+	int32 _tick;
+	int32 _spawnIndex[kNumPickups];
+	int32 _spawnPoint;
+	bool _started;	// The player has steered, which lets Liz go
+	int32 _lizDelay;
+	int32 _lizWaypoint;
+	int32 _collisionAnim;
+
+	Rover _player;
+	Rover _liz;
+	Pickup _pickups[kNumPickups];
+	Item _items[kNumItems];
+	Common::Point _boulders[kNumBoulders];	// Polygon origins, x 0 when absent
+	Common::Rect _craters[kNumCraters];
+};
+
 // Lunar Lander clone from Magic School Bus Lands on Mars. The bus-lander falls
 // under gravity and the player fires the main and side thrusters with the
 // arrow keys, or by holding the mouse button on the side to move towards, to
@@ -1817,6 +1969,7 @@ private:
 	PlugInModifierFactory<BalloonModifier, Data::KW::GameModifier> _balloonModifierFactory;
 	PlugInModifierFactory<ArtModifier, Data::KW::GameModifier> _artModifierFactory;
 	PlugInModifierFactory<SubModifier, Data::KW::GameModifier> _subModifierFactory;
+	PlugInModifierFactory<RoverRaceModifier, Data::KW::GameModifier> _roverRaceModifierFactory;
 	PlugInModifierFactory<LanderModifier, Data::KW::GameModifier> _landerModifierFactory;
 	PlugInModifierFactory<LLavaModifier, Data::KW::GameModifier> _lLavaModifierFactory;
 	PlugInModifierFactory<SvTownModifier, Data::KW::GameModifier> _svTownModifierFactory;

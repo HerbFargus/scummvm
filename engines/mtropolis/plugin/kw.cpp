@@ -5359,6 +5359,883 @@ const char *SubModifier::getDefaultName() const {
 }
 
 // Children of the owner element
+enum RoverRaceChild {
+	kRoverChildPlayer = 1,
+	kRoverChildLiz,
+	kRoverChildExtraLife,
+	kRoverChildSun,
+	kRoverChildActiveSun,
+	kRoverChildTires,
+	kRoverChildActiveTires,
+	kRoverChildCloud,
+	kRoverChildActiveCloud,
+	kRoverChildItems,
+	kRoverChildTwisters,
+	kRoverChildBoulders,
+	kRoverChildCraters,
+	kRoverChildCollision,
+	kRoverChildLevels,
+};
+
+static const int kRoverPickupChild[4] = {kRoverChildExtraLife, kRoverChildSun, kRoverChildTires, kRoverChildCloud};
+
+// The plug-in's own constants, not M_PI
+static const double kRoverPi = 3.14159;
+static const double kRoverTwoPi = 2.0 * kRoverPi;
+static const double kRoverCelStep = kRoverPi / 12.0;
+
+static const double kRoverSpeed = 8.0;
+static const int32 kRoverPickupBox = 18;
+static const int32 kRoverPowerTime = 60;
+static const int32 kRoverHidden = 1000;
+
+static int32 roverRound(double v) {
+	return static_cast<int32>(v >= 0.0 ? v + 0.5 : v - 0.5);
+}
+
+RoverRaceModifier::RoverRaceModifier()
+	: _levelsLoaded(false), _running(false), _paused(false), _levelReady(false), _level(0), _points(0), _rocks(0), _lizRocks(0),
+	  _rocksLeft(0), _tick(0), _spawnPoint(kNumPathPoints - 1), _started(false), _lizDelay(0), _lizWaypoint(0), _collisionAnim(0) {
+	memset(_spawnIndex, 0, sizeof(_spawnIndex));
+	memset(&_player, 0, sizeof(_player));
+	memset(&_liz, 0, sizeof(_liz));
+	memset(_items, 0, sizeof(_items));
+	for (Pickup &pickup : _pickups) {
+		pickup.x = pickup.y = kRoverHidden;
+		pickup.time = 0;
+	}
+}
+
+RoverRaceModifier::~RoverRaceModifier() {
+	stopGame();
+}
+
+bool RoverRaceModifier::load(const PlugInModifierLoaderContext &context, const Data::KW::GameModifier &data) {
+	return loadDlgMgrEvent(_startWhen, data.enableWhen) && loadDlgMgrEvent(_stopWhen, data.disableWhen);
+}
+
+// The levels and boulder outlines are tables in the plug-in's data section.
+// The level fields are 32-bit but always fit in 16 bits.
+bool RoverRaceModifier::loadLevels() {
+	if (_levelsLoaded)
+		return !_levels.empty();
+
+	_levelsLoaded = true;
+
+	Common::File f;
+	if (!f.open(Common::Path("mTrop_Resources/RoverRace.r32")) && !f.open(Common::Path("RoverRace.r32"))) {
+		warning("RoverRace: RoverRace.r32 from the installed game is needed for the levels");
+		return false;
+	}
+
+	Common::Array<byte> image;
+	image.resize(f.size());
+	f.read(&image[0], image.size());
+
+	bool failed = false;
+	auto readS32 = [&](uint32 va) -> int16 {
+		uint32 offset = va - 0x10000000;
+		if (offset + 4 > image.size()) {
+			failed = true;
+			return 0;
+		}
+		return static_cast<int16>(READ_LE_UINT32(&image[offset]));
+	};
+	auto readS16 = [&](uint32 va) -> int16 {
+		uint32 offset = va - 0x10000000;
+		if (offset + 2 > image.size()) {
+			failed = true;
+			return 0;
+		}
+		return static_cast<int16>(READ_LE_UINT16(&image[offset]));
+	};
+	auto readPoint = [&](uint32 va) -> Common::Point {
+		return Common::Point(readS32(va), readS32(va + 4));
+	};
+
+	for (int b = 0; b < kNumBoulders; b++) {
+		for (int i = 0; i < kPolygonPoints; i++)
+			_polygons[b][i] = readPoint(0x10037030 + (b * kPolygonPoints + i) * 8);
+	}
+
+	// Spawn time lists in the order of PickupType
+	static const uint32 kSpawnTimeOffsets[kNumPickups] = {0x3e8, 0x3ac, 0x3c0, 0x3d4};
+
+	Common::Array<Level> levels;
+	levels.resize(kNumLevels + 1);
+	for (uint l = 1; l <= kNumLevels; l++) {
+		Level &level = levels[l];
+		uint32 base = 0x100373f0 + (l - 1) * 0x3fc;
+
+		for (int i = 0; i < kNumItems; i++)
+			level.items[i] = readPoint(base + i * 8);
+		for (int i = 0; i < kNumBoulders; i++)
+			level.boulders[i] = readPoint(base + 0xb8 + i * 8);
+		for (int i = 0; i < kNumCraters; i++)
+			level.craters[i] = readPoint(base + 0x130 + i * 8);
+		for (int i = 0; i < kNumPathPoints; i++)
+			level.path[i] = readPoint(base + 0x190 + i * 18);
+		for (int p = 0; p < kNumPickups; p++) {
+			for (int i = 0; i < kNumSpawnTimes; i++)
+				level.spawnTimes[p][i] = readS16(base + kSpawnTimeOffsets[p] + i * 2);
+		}
+	}
+
+	// Level 1's first rock and Liz's first waypoint, and the first boulder's first point
+	if (failed || levels[1].items[0] != Common::Point(126, 185) || levels[1].path[0] != Common::Point(529, 278) || _polygons[0][0] != Common::Point(-90, 23)) {
+		warning("RoverRace: RoverRace.r32 isn't the expected version");
+		return false;
+	}
+
+	_levels.swap(levels);
+	return true;
+}
+
+bool RoverRaceModifier::respondsToEvent(const Event &evt) const {
+	return _startWhen.respondsTo(evt) || _stopWhen.respondsTo(evt) || evt.eventType == EventIDs::kParentDisabled || evt.eventType == EventIDs::kMouseDown;
+}
+
+VThreadState RoverRaceModifier::consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) {
+	const Event &evt = msg->getEvent();
+
+	// Enabling only starts the clock, the title sets the level with gamelevel
+	if (_startWhen.respondsTo(evt)) {
+		_paused = true;
+		if (!_running) {
+			_running = true;
+			_scheduledEvent = runtime->getScheduler().scheduleMethod<RoverRaceModifier, &RoverRaceModifier::tick>(runtime->getPlayTime() + 83, this);
+		}
+		return kVThreadReturn;
+	}
+
+	if (_stopWhen.respondsTo(evt) || evt.eventType == EventIDs::kParentDisabled) {
+		stopGame();
+		return kVThreadReturn;
+	}
+
+	// While paused, or while the rover is still in its bay, a click skips the speech
+	if (evt.eventType == EventIDs::kMouseDown) {
+		if (_paused || _player.y >= 420.0)
+			sendMessage(runtime, "PausedClick");
+		else if (_level > 0)
+			steerPlayer(runtime);
+	}
+
+	return kVThreadReturn;
+}
+
+void RoverRaceModifier::disable(Runtime *runtime) {
+	stopGame();
+}
+
+void RoverRaceModifier::stopGame() {
+	_running = false;
+	if (_scheduledEvent) {
+		_scheduledEvent->cancel();
+		_scheduledEvent.reset();
+	}
+}
+
+bool RoverRaceModifier::readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) {
+	if (attrib == "paused") {
+		result.setBool(_paused);
+		return true;
+	} else if (attrib == "gamelevel") {
+		result.setInt(_level);
+		return true;
+	} else if (attrib == "rocks") {
+		result.setInt(_rocks);
+		return true;
+	} else if (attrib == "lizrocks") {
+		result.setInt(_lizRocks);
+		return true;
+	} else if (attrib == "points") {
+		result.setInt(_points);
+		return true;
+	}
+
+	return Modifier::readAttribute(thread, result, attrib);
+}
+
+MiniscriptInstructionOutcome RoverRaceModifier::writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) {
+	WritableAttribute writable;
+	if (attrib == "paused")
+		writable = kAttribPaused;
+	else if (attrib == "gamelevel")
+		writable = kAttribGameLevel;
+	else
+		return Modifier::writeRefAttribute(thread, result, attrib);
+
+	result.pod.ifc = DynamicValueWriteInterfaceGlue<WriteProxy>::getInstance();
+	result.pod.objectRef = this;
+	result.pod.ptrOrOffset = writable;
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
+MiniscriptInstructionOutcome RoverRaceModifier::WriteProxy::write(MiniscriptThread *thread, const DynamicValue &assigned, void *objectRef, uintptr ptrOrOffset) {
+	RoverRaceModifier *self = static_cast<RoverRaceModifier *>(objectRef);
+
+	// Variables are passed by reference
+	DynamicValue value = assigned;
+	if (value.getType() == DynamicValueTypes::kObject) {
+		Common::SharedPtr<RuntimeObject> obj = value.getObject().object.lock();
+		if (obj && obj->isModifier() && static_cast<Modifier *>(obj.get())->isVariable())
+			static_cast<VariableModifier *>(obj.get())->varGetValue(value);
+	}
+
+	if (ptrOrOffset == kAttribGameLevel) {
+		int32 level = 0;
+		if (!value.roundToInt(level))
+			return kMiniscriptInstructionOutcomeFailed;
+		if (level >= 1 && level <= kNumLevels)
+			self->setupLevel(thread->getRuntime(), level);
+		return kMiniscriptInstructionOutcomeContinue;
+	}
+
+	if (ptrOrOffset == kAttribPaused) {
+		bool flag = false;
+		if (value.getType() == DynamicValueTypes::kBoolean)
+			flag = value.getBool();
+		else if (value.getType() == DynamicValueTypes::kInteger)
+			flag = (value.getInt() != 0);
+		else
+			return kMiniscriptInstructionOutcomeFailed;
+
+		// A finished race can't be unpaused
+		if (self->_levelReady || flag)
+			self->_paused = flag;
+	}
+
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
+MiniscriptInstructionOutcome RoverRaceModifier::WriteProxy::refAttrib(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib) {
+	return kMiniscriptInstructionOutcomeFailed;
+}
+
+MiniscriptInstructionOutcome RoverRaceModifier::WriteProxy::refAttribIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib, const DynamicValue &index) {
+	return kMiniscriptInstructionOutcomeFailed;
+}
+
+Structural *RoverRaceModifier::child(int index) const {
+	Structural *owner = findStructuralOwner();
+	if (!owner || index < 1 || index > static_cast<int>(owner->getChildren().size()))
+		return nullptr;
+	return owner->getChildren()[index - 1].get();
+}
+
+Structural *RoverRaceModifier::grandchild(int index, int subIndex) const {
+	Structural *container = child(index);
+	if (!container || subIndex < 1 || subIndex > static_cast<int>(container->getChildren().size()))
+		return nullptr;
+	return container->getChildren()[subIndex - 1].get();
+}
+
+// The inverse of getCenter() for positive coordinates, so a parked rover reads back its target
+void RoverRaceModifier::placeCentered(Runtime *runtime, Structural *element, int32 x, int32 y) {
+	if (!element || !element->isElement() || !static_cast<Element *>(element)->isVisual())
+		return;
+
+	const Common::Rect &rect = static_cast<VisualElement *>(element)->getRelativeRect();
+	placeTopLeft(runtime, element, x - rect.width() / 2, y - rect.height() / 2);
+}
+
+void RoverRaceModifier::placeTopLeft(Runtime *runtime, Structural *element, int32 x, int32 y) {
+	if (!element)
+		return;
+
+	DynamicValue pos;
+	pos.setPoint(Common::Point(x, y));
+	dlgMgrWriteAttribute(runtime, this, element, "position", pos);
+}
+
+void RoverRaceModifier::hide(Runtime *runtime, Structural *element) {
+	placeCentered(runtime, element, kRoverHidden, kRoverHidden);
+}
+
+Common::Point RoverRaceModifier::getCenter(Structural *element) const {
+	if (!element || !element->isElement() || !static_cast<Element *>(element)->isVisual())
+		return Common::Point(0, 0);
+
+	// As VisualElement::getCenterPosition()
+	const Common::Rect &rect = static_cast<VisualElement *>(element)->getRelativeRect();
+	return Common::Point((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2);
+}
+
+int32 RoverRaceModifier::getCel(Runtime *runtime, Structural *element) {
+	DynamicValue cel;
+	if (dlgMgrReadAttribute(runtime, this, element, "cel", cel) && cel.getType() == DynamicValueTypes::kInteger)
+		return cel.getInt();
+	return 1;
+}
+
+void RoverRaceModifier::setCel(Runtime *runtime, Structural *element, int32 cel) {
+	dlgMgrSetInt(runtime, this, element, "cel", cel);
+}
+
+void RoverRaceModifier::sendMessage(Runtime *runtime, const char *messageName) {
+	uint32 messageID = 0;
+	if (!runtime->getProject()->findAuthorMessageID(messageName, messageID))
+		return;
+
+	Structural *owner = findStructuralOwner();
+	if (!owner)
+		return;
+
+	debug(2, "RoverRace: Sending '%s'", messageName);
+	Common::SharedPtr<MessageProperties> props(new MessageProperties(Event(EventIDs::kAuthorMessage, messageID), DynamicValue(), getSelfReference()));
+	Common::SharedPtr<MessageDispatch> dispatch(new MessageDispatch(props, owner, true, true, false));
+	runtime->queueMessage(dispatch);
+}
+
+// Even-odd test, as the original's polygon region
+bool RoverRaceModifier::inBoulder(int boulder, int32 x, int32 y) const {
+	const Common::Point *poly = _polygons[boulder];
+	x -= _boulders[boulder].x;
+	y -= _boulders[boulder].y;
+
+	bool inside = false;
+	for (int i = 0, j = kPolygonPoints - 1; i < kPolygonPoints; j = i++) {
+		const Common::Point &a = poly[i];
+		const Common::Point &b = poly[j];
+		if ((a.y > y) != (b.y > y)) {
+			double crossX = a.x + static_cast<double>(y - a.y) * (b.x - a.x) / (b.y - a.y);
+			if (x < crossX)
+				inside = !inside;
+		}
+	}
+	return inside;
+}
+
+bool RoverRaceModifier::inCrater(int32 x, int32 y) const {
+	for (const Common::Rect &crater : _craters) {
+		if (crater.left < x && x < crater.right && crater.top < y && y < crater.bottom)
+			return true;
+	}
+	return false;
+}
+
+void RoverRaceModifier::setupLevel(Runtime *runtime, int32 levelNum) {
+	if (!loadLevels())
+		return;
+
+	debug(2, "RoverRace: Level %d", static_cast<int>(levelNum));
+	const Level &level = _levels[levelNum];
+	_level = levelNum;
+	_points = 0;
+	_started = false;
+	_lizDelay = (levelNum < 6) ? 60 : (levelNum < 11) ? 30 : 0;
+	_tick = 0;
+	memset(_spawnIndex, 0, sizeof(_spawnIndex));
+	_collisionAnim = 0;
+	_spawnPoint = kNumPathPoints - 1;
+
+	if (!findStructuralOwner())
+		return;
+
+	_rocks = 0;
+	_lizRocks = 0;
+
+	// Both rovers start in their bays below the field and drive 50 pixels up out of them
+	static const int32 kStartX[2] = {102, 533};
+	for (int r = 0; r < 2; r++) {
+		Rover &rover = r ? _liz : _player;
+		Structural *element = child(kRoverChildPlayer + r);
+		rover.x = kStartX[r];
+		rover.y = 439.0;
+		placeCentered(runtime, element, kStartX[r], 439);
+		rover.targetX = kStartX[r];
+		rover.targetY = 389;
+		rover.speed = kRoverSpeed;
+		rover.cel = 7;
+		setCel(runtime, element, 7);
+		rover.turn = 0;
+		rover.remaining = 50.0;
+		rover.heading = 0.0;
+		rover.cosH = 0.0;
+		rover.sinH = -1.0;
+		rover.sunTime = rover.tiresTime = rover.cloudTime = 0;
+	}
+	_lizWaypoint = 0;
+
+	for (int p = 0; p < kNumPickups; p++) {
+		hide(runtime, child(kRoverPickupChild[p]));
+		_pickups[p].time = 0;
+	}
+	hide(runtime, child(kRoverChildActiveSun));
+	hide(runtime, child(kRoverChildActiveTires));
+	hide(runtime, child(kRoverChildActiveCloud));
+
+	_rocksLeft = 0;
+	for (int i = 0; i < kNumItems; i++) {
+		Item &item = _items[i];
+		item.x = level.items[i].x;
+		item.y = level.items[i].y;
+		item.state = 0;
+		if (item.x == 0) {
+			item.x = item.y = kRoverHidden;
+		} else {
+			item.state = 1;
+			if (i < kNumRocks)
+				_rocksLeft++;
+		}
+		placeCentered(runtime, grandchild(kRoverChildItems, i + 1), item.x, item.y);
+	}
+
+	// The boulders are drawn in the backgrounds, so only their outlines are used
+	for (int i = 0; i < kNumBoulders; i++)
+		_boulders[i] = level.boulders[i];
+
+	for (int i = 0; i < kNumCraters; i++) {
+		int32 x = level.craters[i].x;
+		int32 y = level.craters[i].y;
+		if (x == 0)
+			x = y = kRoverHidden;
+
+		Structural *crater = grandchild(kRoverChildCraters, i + 1);
+		placeCentered(runtime, crater, x, y);
+		if (crater && crater->isElement() && static_cast<Element *>(crater)->isVisual())
+			_craters[i] = static_cast<VisualElement *>(crater)->getRelativeRect();
+		else
+			_craters[i] = Common::Rect();
+	}
+
+	hide(runtime, child(kRoverChildCollision));
+
+	for (int i = 1; i <= kNumLevels; i++)
+		placeTopLeft(runtime, grandchild(kRoverChildLevels, i), 0, (i == levelNum) ? 0 : 600);
+
+	_levelReady = true;
+}
+
+void RoverRaceModifier::tick(Runtime *runtime) {
+	_scheduledEvent.reset();
+	if (!_running)
+		return;
+
+	_scheduledEvent = runtime->getScheduler().scheduleMethod<RoverRaceModifier, &RoverRaceModifier::tick>(runtime->getPlayTime() + 83, this);
+
+	if (_paused || _level <= 0)
+		return;
+
+	// Both rovers freeze while the collision plays
+	if (_collisionAnim > 0) {
+		setCel(runtime, child(kRoverChildCollision), _collisionAnim);
+		if (--_collisionAnim == 0)
+			hide(runtime, child(kRoverChildCollision));
+	} else {
+		tickPlayer(runtime);
+		tickLiz(runtime);
+	}
+
+	spawnPickups(runtime);
+
+	// A tie goes to Liz
+	if (_rocksLeft < 1) {
+		_paused = true;
+		_levelReady = false;
+		sendMessage(runtime, (_lizRocks < _rocks) ? "YouWin" : "GameOver");
+	}
+
+	_tick++;
+}
+
+// Points the rover at (x, y) from where its sprite is, starting from the cel it shows
+void RoverRaceModifier::aimRover(Runtime *runtime, Rover &rover, Structural *element, int32 x, int32 y) {
+	Common::Point pos = getCenter(element);
+	rover.x = pos.x;
+	rover.y = pos.y;
+
+	int16 dx = static_cast<int16>(x - pos.x);
+	int16 dyUp = static_cast<int16>(-(y - pos.y));
+	rover.remaining = sqrt(static_cast<double>(dx * dx + dyUp * dyUp));
+	rover.heading = atan2(static_cast<double>(dyUp), static_cast<double>(dx));
+	rover.cosH = cos(rover.heading);
+	rover.sinH = -sin(rover.heading);
+	rover.cel = getCel(runtime, element);
+	if (rover.heading < 0.0)
+		rover.heading += kRoverTwoPi;
+
+	// Cel 1 faces east and the cels go anticlockwise, 15 degrees apart
+	rover.turn = (static_cast<int16>(roverRound(rover.heading / kRoverCelStep)) + 1) - rover.cel;
+	if (rover.turn > 12)
+		rover.turn -= 24;
+	else if (rover.turn < -12)
+		rover.turn += 24;
+}
+
+void RoverRaceModifier::steerPlayer(Runtime *runtime) {
+	_started = true;
+
+	Common::Point target = runtime->getCachedMousePosition();
+	_player.targetX = CLIP<int32>(target.x, 30, 610);
+	_player.targetY = CLIP<int32>(target.y, 30, 385);
+	aimRover(runtime, _player, child(kRoverChildPlayer), _player.targetX, _player.targetY);
+}
+
+// Turning takes one cel a tick, and the rover doesn't move meanwhile
+void RoverRaceModifier::turnRover(Runtime *runtime, Rover &rover, Structural *element) {
+	if (rover.turn > 0) {
+		rover.turn--;
+		if (++rover.cel > 24)
+			rover.cel -= 24;
+	} else {
+		rover.turn++;
+		if (--rover.cel < 1)
+			rover.cel += 24;
+	}
+	setCel(runtime, element, rover.cel);
+}
+
+void RoverRaceModifier::tickPlayer(Runtime *runtime) {
+	Structural *element = child(kRoverChildPlayer);
+
+	double speed = _player.speed;
+	int32 px = roverRound(_player.x);
+	int32 py = roverRound(_player.y);
+	if (_player.sunTime > 0) {
+		speed *= 2.0;
+		if (--_player.sunTime == 0)
+			hide(runtime, child(kRoverChildActiveSun));
+	}
+	if (_player.cloudTime > 0) {
+		speed *= 0.5;
+		if (--_player.cloudTime == 0) {
+			hide(runtime, child(kRoverChildActiveCloud));
+		} else {
+			placeCentered(runtime, child(kRoverChildActiveCloud), px, py);
+			setCel(runtime, child(kRoverChildActiveCloud), _player.cel);
+		}
+	}
+
+	if (_player.turn != 0) {
+		turnRover(runtime, _player, element);
+		return;
+	}
+
+	Common::Point pos = getCenter(element);
+	px = pos.x;
+	py = pos.y;
+	if (px == _player.targetX && py == _player.targetY && _player.remaining <= 0.0)
+		return;
+
+	_player.remaining -= speed;
+	if (_player.remaining <= 0.0) {
+		px = _player.targetX;
+		py = _player.targetY;
+		_player.x = px;
+		_player.y = py;
+	} else {
+		_player.x += speed * _player.cosH;
+		_player.y += speed * _player.sinH;
+		px = roverRound(_player.x);
+		py = roverRound(_player.y);
+	}
+
+	for (int i = 0; i < kNumItems; i++) {
+		Item &item = _items[i];
+		if (item.state != 1 || ABS(item.x - px) >= kRoverPickupBox || ABS(item.y - py) >= kRoverPickupBox)
+			continue;
+
+		hide(runtime, grandchild(kRoverChildItems, i + 1));
+		item.state = 2;
+		if (i < kNumRocks) {
+			_rocksLeft--;
+			_rocks++;
+			sendMessage(runtime, "Update Readouts");
+			_points += (i < 7) ? 10 : 20;
+			sendMessage(runtime, "PlaySFX3");
+		} else if (i < 17) {
+			_points += 25;
+			sendMessage(runtime, "PlaySFX4");
+		} else if (i < 20) {
+			_points += 50;
+			sendMessage(runtime, "PlaySFX5");
+		} else {
+			_points += 100;
+			sendMessage(runtime, "PlaySFX4");
+		}
+	}
+
+	for (int p = 0; p < kNumPickups; p++) {
+		Pickup &pickup = _pickups[p];
+		if (pickup.time <= 0 || ABS(pickup.x - px) >= kRoverPickupBox || ABS(pickup.y - py) >= kRoverPickupBox)
+			continue;
+
+		hide(runtime, child(kRoverPickupChild[p]));
+		pickup.time = -1;
+		switch (p) {
+		case kPickupExtraLife:
+			sendMessage(runtime, "ExtraChance");
+			break;
+		case kPickupSun:
+			// The sun clears a cloud instead of speeding up
+			if (_player.cloudTime < 1) {
+				_player.sunTime = kRoverPowerTime;
+				placeCentered(runtime, child(kRoverChildActiveSun), 260, 418);
+			} else {
+				_player.cloudTime = 0;
+				hide(runtime, child(kRoverChildActiveCloud));
+			}
+			sendMessage(runtime, "PlaySFX2");
+			break;
+		case kPickupTires:
+			_player.tiresTime = kRoverPowerTime;
+			placeCentered(runtime, child(kRoverChildActiveTires), 283, 419);
+			sendMessage(runtime, "PlaySFX2");
+			break;
+		case kPickupCloud:
+			// Clouds Liz, or clears her sun (leaving its indicator up, as the original does)
+			if (_liz.sunTime < 1)
+				_liz.cloudTime = kRoverPowerTime;
+			else
+				_liz.sunTime = 0;
+			sendMessage(runtime, "PlaySFX2");
+			break;
+		default:
+			break;
+		}
+	}
+
+	// Boulders push the rover out from their centre and stop it. Only the
+	// sprite and target move; the position is resynchronised on the next click.
+	int32 lastInX = px;
+	int32 lastInY = py;
+	for (int k = 0; k < kNumBoulders; k++) {
+		if (_boulders[k].x == 0 || !inBoulder(k, px, py))
+			continue;
+
+		double angle = atan2(static_cast<double>(-(py - _boulders[k].y)), static_cast<double>(px - _boulders[k].x));
+		double stepX = cos(angle);
+		double stepY = -sin(angle);
+		double fx = px;
+		double fy = py;
+		while (inBoulder(k, px, py)) {
+			lastInX = px;
+			lastInY = py;
+			px = static_cast<int32>(fx);
+			py = static_cast<int32>(fy);
+			fx += stepX;
+			fy += stepY;
+		}
+		_player.targetX = px;
+		_player.targetY = py;
+		_player.remaining = 0.0;
+		sendMessage(runtime, "PlaySFX1");
+	}
+
+	// Craters slow the next tick; tires only wear out while moving
+	_player.speed = kRoverSpeed;
+	if (_player.tiresTime < 1) {
+		if (inCrater(lastInX, lastInY))
+			_player.speed *= 0.5;
+	} else if (--_player.tiresTime == 0) {
+		hide(runtime, child(kRoverChildActiveTires));
+	}
+
+	placeCentered(runtime, element, px, py);
+}
+
+void RoverRaceModifier::tickLiz(Runtime *runtime) {
+	Structural *element = child(kRoverChildLiz);
+
+	double speed = _liz.speed;
+	int32 lx = roverRound(_liz.x);
+	int32 ly = roverRound(_liz.y);
+
+	// The power-up indicators are shared with the player
+	if (_liz.sunTime > 0) {
+		speed *= 2.0;
+		if (--_liz.sunTime == 0)
+			hide(runtime, child(kRoverChildActiveSun));
+	}
+	if (_liz.cloudTime > 0) {
+		speed *= 0.5;
+		if (--_liz.cloudTime == 0) {
+			hide(runtime, child(kRoverChildActiveCloud));
+		} else {
+			placeCentered(runtime, child(kRoverChildActiveCloud), lx, ly);
+			setCel(runtime, child(kRoverChildActiveCloud), _liz.cel);
+		}
+	}
+
+	if (_liz.turn != 0) {
+		turnRover(runtime, _liz, element);
+		return;
+	}
+
+	Common::Point before = getCenter(element);
+	lx = before.x;
+	ly = before.y;
+
+	// Liz waits for the player's first click and then her start delay
+	if (!_started)
+		return;
+	if (_lizDelay >= 1) {
+		_lizDelay--;
+		return;
+	}
+	if (lx == _liz.targetX && ly == _liz.targetY && _liz.remaining <= 0.0)
+		return;
+
+	_liz.remaining -= speed;
+	if (_liz.remaining <= 0.0) {
+		// Arrived: head for the next waypoint, which is (0, 0) after the last one
+		lx = _liz.targetX;
+		ly = _liz.targetY;
+		Common::Point next;
+		if (_lizWaypoint < kNumPathPoints)
+			next = _levels[_level].path[_lizWaypoint++];
+		_liz.targetX = next.x;
+		_liz.targetY = next.y;
+		aimRover(runtime, _liz, element, next.x, next.y);
+	} else {
+		_liz.x += speed * _liz.cosH;
+		_liz.y += speed * _liz.sinH;
+		lx = roverRound(_liz.x);
+		ly = roverRound(_liz.y);
+	}
+
+	for (int i = 0; i < kNumItems; i++) {
+		Item &item = _items[i];
+		if (item.state != 1 || ABS(item.x - lx) >= kRoverPickupBox || ABS(item.y - ly) >= kRoverPickupBox)
+			continue;
+
+		hide(runtime, grandchild(kRoverChildItems, i + 1));
+		item.state = 3;
+		if (i < kNumRocks) {
+			_rocksLeft--;
+			_lizRocks++;
+			sendMessage(runtime, "Update Readouts");
+		}
+	}
+
+	// Liz never takes the extra life, and her pickups make no sound
+	for (int p = kPickupSun; p < kNumPickups; p++) {
+		Pickup &pickup = _pickups[p];
+		if (pickup.time <= 0 || ABS(pickup.x - lx) >= kRoverPickupBox || ABS(pickup.y - ly) >= kRoverPickupBox)
+			continue;
+
+		hide(runtime, child(kRoverPickupChild[p]));
+		pickup.time = -1;
+		if (p == kPickupSun) {
+			if (_liz.cloudTime < 1) {
+				_liz.sunTime = kRoverPowerTime;
+				placeCentered(runtime, child(kRoverChildActiveSun), 444, 419);
+			} else {
+				_liz.cloudTime = 0;
+				hide(runtime, child(kRoverChildActiveCloud));
+			}
+		} else if (p == kPickupTires) {
+			_liz.tiresTime = kRoverPowerTime;
+			placeCentered(runtime, child(kRoverChildActiveTires), 467, 420);
+		} else {
+			if (_player.sunTime < 1)
+				_player.cloudTime = kRoverPowerTime;
+			else
+				_player.sunTime = 0;
+		}
+	}
+
+	// Collision: the player is knocked away and stops, Liz spins and then
+	// carries on. The original uses the player's position as of the last click
+	// or move, and shows Liz's cel on the player.
+	int16 dx = static_cast<int16>(_player.x - lx);
+	int16 dy = static_cast<int16>(_player.y - ly);
+	double dist = sqrt(static_cast<double>(dx * dx + dy * dy));
+	if (dist < 38.0) {
+		// Exactly on top of each other the original's knock-back is NaN
+		if (dist > 0.0) {
+			_player.x += dx * 14.0 / dist;
+			_player.y += dy * 14.0 / dist;
+		}
+		_player.targetX = static_cast<int32>(_player.x);
+		_player.targetY = static_cast<int32>(_player.y);
+		_player.remaining = 0.0;
+		_player.cel += runtime->getRandom()->getRandomNumberRng(1, 24);
+		if (_player.cel > 24)
+			_player.cel -= 24;
+		setCel(runtime, child(kRoverChildPlayer), _liz.cel);
+		placeCentered(runtime, child(kRoverChildPlayer), _player.targetX, _player.targetY);
+
+		// Liz is drawn where she was but keeps this tick's advance
+		lx = before.x;
+		ly = before.y;
+		_liz.remaining += speed;
+		_liz.turn = static_cast<int32>(runtime->getRandom()->getRandomNumberRng(1, 24)) - 12;
+		_liz.cel -= _liz.turn;
+		if (_liz.cel < 0)
+			_liz.cel += 24;
+		else if (_liz.cel > 24)
+			_liz.cel -= 24;
+		setCel(runtime, element, _liz.cel);
+
+		_collisionAnim = 9;
+		setCel(runtime, child(kRoverChildCollision), 9);
+		placeCentered(runtime, child(kRoverChildCollision), static_cast<int32>(_player.x - dx / 2), static_cast<int32>(_player.y - dy / 2));
+		sendMessage(runtime, "PlaySFX1");
+
+		if (_player.x < 0.0 || _player.x > 640.0 || _player.y < 0.0 || _player.y > 420.0) {
+			_paused = true;
+			_levelReady = false;
+			sendMessage(runtime, "GameOver");
+		}
+	}
+
+	_liz.speed = kRoverSpeed;
+	if (_liz.tiresTime < 1) {
+		if (inCrater(lx, ly))
+			_liz.speed *= 0.5;
+	} else if (--_liz.tiresTime == 0) {
+		hide(runtime, child(kRoverChildActiveTires));
+	}
+
+	placeCentered(runtime, element, lx, ly);
+}
+
+// Each power-up appears at its scheduled times (in units of 8 ticks) at the
+// next spawn point, counting down from the end of the path table, and stays
+// for 60 ticks
+void RoverRaceModifier::spawnPickups(Runtime *runtime) {
+	int32 t = _tick / 8;
+	if (t <= 0)
+		return;
+
+	const Level &level = _levels[_level];
+	for (int p = 0; p < kNumPickups; p++) {
+		Pickup &pickup = _pickups[p];
+		Structural *element = child(kRoverPickupChild[p]);
+		if (pickup.time < 1) {
+			if (_spawnIndex[p] < kNumSpawnTimes && level.spawnTimes[p][_spawnIndex[p]] == t) {
+				pickup.time = kRoverPowerTime;
+				if (_spawnPoint < 0 || level.path[_spawnPoint].x == 0)
+					_spawnPoint = kNumPathPoints - 1;
+				pickup.x = level.path[_spawnPoint].x;
+				pickup.y = level.path[_spawnPoint].y;
+				_spawnPoint--;
+				placeCentered(runtime, element, pickup.x, pickup.y);
+				_spawnIndex[p]++;
+			}
+		} else if (--pickup.time == 0) {
+			pickup.x = pickup.y = kRoverHidden;
+			hide(runtime, element);
+			pickup.time = -1;
+		}
+	}
+}
+
+Common::SharedPtr<Modifier> RoverRaceModifier::shallowClone() const {
+	Common::SharedPtr<RoverRaceModifier> clone(new RoverRaceModifier(*this));
+	clone->_scheduledEvent.reset();
+	clone->_running = false;
+	return clone;
+}
+
+const char *RoverRaceModifier::getDefaultName() const {
+	return "RoverRace";
+}
+
+// Children of the owner element
 enum LanderChild {
 	kLanderChildLander = 1,
 	kLanderChildLevels,
@@ -9922,7 +10799,7 @@ const char *DlgMgrClientModifier::getDefaultName() const {
 
 KnowWonderPlugIn::KnowWonderPlugIn()
 	: _strUtilModifierFactory(this), _dlgMgrServerModifierFactory(this), _dlgMgrClientModifierFactory(this),
-	  _kwSmackerModifierFactory(this), _editCtrlModifierFactory(this), _gameModifierFactory(this), _whaleMazeModifierFactory(this), _eyefollowerModifierFactory(this), _smkJumpModifierFactory(this), _balloonModifierFactory(this), _artModifierFactory(this), _svTownModifierFactory(this), _lLavaModifierFactory(this), _subModifierFactory(this), _landerModifierFactory(this) {
+	  _kwSmackerModifierFactory(this), _editCtrlModifierFactory(this), _gameModifierFactory(this), _whaleMazeModifierFactory(this), _eyefollowerModifierFactory(this), _smkJumpModifierFactory(this), _balloonModifierFactory(this), _artModifierFactory(this), _svTownModifierFactory(this), _lLavaModifierFactory(this), _subModifierFactory(this), _landerModifierFactory(this), _roverRaceModifierFactory(this) {
 }
 
 KnowWonderPlugIn::~KnowWonderPlugIn() {
@@ -9946,7 +10823,7 @@ void KnowWonderPlugIn::registerModifiers(IPlugInModifierRegistrar *registrar) co
 
 	// Mini-game modifiers from separate Magic School Bus plug-ins
 	static const char *const gameModifierNames[] = {
-		"AntMaze", "RoverRace"
+		"AntMaze"
 	};
 	for (const char *name : gameModifierNames)
 		registrar->registerPlugInModifier(name, &_gameModifierFactory);
@@ -9960,6 +10837,7 @@ void KnowWonderPlugIn::registerModifiers(IPlugInModifierRegistrar *registrar) co
 	registrar->registerPlugInModifier("LLava", &_lLavaModifierFactory);
 	registrar->registerPlugInModifier("Sub", &_subModifierFactory);
 	registrar->registerPlugInModifier("Lander", &_landerModifierFactory);
+	registrar->registerPlugInModifier("RoverRace", &_roverRaceModifierFactory);
 }
 
 } // End of namespace KW
