@@ -804,6 +804,240 @@ private:
 	int32 _grassCelAttr;
 };
 
+// Lava lake crossing from Magic School Bus Volcano Adventure, a Frogger-style
+// game. The bus hops from the top bank to the bottom one across five lanes of
+// lava, riding junk that drifts along the moving lanes and stepping on stones
+// in the static ones, while dodging fireballs, geysers and sinking objects and
+// picking up bonus critters and extra lives. The levels are read from the
+// original LLava.r32 plug-in.
+class LLavaModifier : public Modifier, public IKeyboardEventReceiver {
+public:
+	LLavaModifier();
+	~LLavaModifier();
+
+	bool load(const PlugInModifierLoaderContext &context, const Data::KW::GameModifier &data);
+
+	bool respondsToEvent(const Event &evt) const override;
+	VThreadState consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) override;
+	void disable(Runtime *runtime) override;
+
+	bool readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) override;
+	MiniscriptInstructionOutcome writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) override;
+
+	void onKeyboardEvent(Runtime *runtime, const KeyboardInputEvent &keyEvt) override;
+
+#ifdef MTROPOLIS_DEBUG_ENABLE
+	const char *debugGetTypeName() const override { return "LLava Modifier"; }
+	SupportStatus debugGetSupportStatus() const override { return kSupportStatusPartial; }
+#endif
+
+private:
+	static const int kNumLanes = 5;
+	static const int kNumSlots = 55;
+	static const int kNumTypes = 21;
+	static const int kNumRipples = 10;
+
+	enum GameState {
+		kStateNewGame = 0,
+		kStateNewLevel = 1,
+		kStatePlaying = 3,
+	};
+
+	enum Direction {
+		kDirNone,
+		kDirUp,		// Back towards the start bank
+		kDirDown,	// On towards the goal
+		kDirLeft,
+		kDirRight,
+	};
+
+	enum BusAnim {
+		kAnimIdle = 0,
+		kAnimHopUp = 2,
+		kAnimHopLeft = 3,
+		kAnimHopRight = 4,
+		kAnimHopDown = 5,
+		kAnimSinking = 6,
+		kAnimBurning = 7,
+		kAnimGeyser = 8,
+		kAnimWon = 9,
+		kAnimLost = 10,
+	};
+
+	enum RiderKind {
+		kRiderBonus,
+		kRiderFire,
+		kRiderXLife,
+
+		kRiderKindCount,
+	};
+
+	struct Lane {
+		Lane();
+
+		bool moving;
+		double speed;
+		int32 wrapLeft;
+		int32 wrapRight;
+	};
+
+	struct LevelSlot {
+		double x;
+		int32 type;
+		int32 sub;
+	};
+
+	struct Level {
+		Common::Point busStart;
+		Lane lanes[kNumLanes];
+		LevelSlot slots[kNumLanes][kNumSlots];
+		double rippleX[20];
+		double rippleY[20];
+	};
+
+	// Extents around an object's centre, and where the bus and riders sit on it
+	struct TypeInfo {
+		int16 box[4];	// Left, right, top, bottom
+		int16 land[2][2];
+		int16 ride[2][2];
+	};
+
+	struct Object {
+		Object();
+
+		double x;
+		double y;
+		bool active;
+		int32 type;
+		int32 sub;	// Motion: 0 none, 1-4 bobbing, 5 sinking
+		int32 counter;
+		int16 hold;
+		int32 row;
+		bool sinkDir;
+		int32 delay;
+	};
+
+	struct Rider {
+		Rider();
+
+		double x;
+		double y;
+		bool active;
+		int32 sub;
+		int32 phase;
+		int16 cel;
+		int32 row;
+		int32 type;
+	};
+
+	struct Ripple {
+		int child;
+		double x;
+		double y;
+		int32 cel;
+	};
+
+	enum WritableAttribute {
+		kAttribPaused,
+		kAttribGameLevel,
+		kAttribIntroDlg,
+	};
+
+	struct WriteProxy {
+		static MiniscriptInstructionOutcome write(MiniscriptThread *thread, const DynamicValue &value, void *objectRef, uintptr ptrOrOffset);
+		static MiniscriptInstructionOutcome refAttrib(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib);
+		static MiniscriptInstructionOutcome refAttribIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib, const DynamicValue &index);
+	};
+
+	Common::SharedPtr<Modifier> shallowClone() const override;
+	const char *getDefaultName() const override;
+
+	bool loadLevels();
+	void setupLevel(Runtime *runtime, int32 level);
+	void tick(Runtime *runtime);
+	void stop();
+	void startPlay(Runtime *runtime);
+	void clickDirection(Runtime *runtime);
+
+	bool tickBus(Runtime *runtime, bool &landed);
+	void tickInput(Runtime *runtime);
+	void startHop(Runtime *runtime, bool down);
+	void land(Runtime *runtime);
+	bool ride(Runtime *runtime, bool landed);
+	bool tickLanes(Runtime *runtime);
+	bool tickGeyser(Runtime *runtime, Object &obj, Structural *element);
+	bool tickRiders(Runtime *runtime);
+
+	void wrapAndSpawn(Runtime *runtime, int lane, int slot);
+	void spawnRider(Runtime *runtime, RiderKind kind, int index, const Object &obj);
+	void resetRider(Runtime *runtime, RiderKind kind, int index);
+	void objectMotion(Runtime *runtime, int lane, int slot);
+	void bob(int32 sub, int32 &phase, double &y) const;
+	void landOffset(int32 type, bool left, int16 &dx, int16 &dy) const;
+	void startBusAnim(int anim, int32 frames, int32 cel);
+	void showBusFrame(Runtime *runtime);
+	void setChances(Runtime *runtime, int32 cel);
+	int32 randomRange(Runtime *runtime, int32 min, int32 max) const;
+
+	Structural *child(int index) const;
+	Structural *grandchild(int index, int subIndex) const;
+	Structural *riderElement(RiderKind kind, int index) const;
+	void place(Runtime *runtime, Structural *element, double x, double y);
+	void placeTopLeft(Runtime *runtime, Structural *element, int32 x, int32 y);
+	void hide(Runtime *runtime, Structural *element);
+	void setCel(Runtime *runtime, Structural *element, int32 cel);
+	void sendMessage(Runtime *runtime, const char *messageName);
+
+	Event _startWhen;
+	Event _stopWhen;
+
+	Common::Array<Level> _levels;	// Index 0 is unused
+	TypeInfo _types[kNumTypes];
+	double _motion[5][12];	// Bob patterns 1-4
+	bool _levelsLoaded;
+
+	Common::SharedPtr<ScheduledEvent> _scheduledEvent;
+	Common::SharedPtr<KeyboardEventSignaller> _keySignaller;
+	bool _running;
+
+	bool _paused;
+	bool _levelReady;
+	bool _introDlg;
+	int _gameState;
+	int32 _countdown;
+
+	int32 _level;
+	int32 _points;
+	int32 _levelBonus;
+	int32 _lives;
+	double _mult;
+	int32 _bonusChance;
+	int32 _fireChance;
+	int16 _maxBonus;
+	int16 _maxFires;
+	int16 _riderCount[kRiderKindCount];
+
+	int32 _dir;
+	int16 _cooldown;
+
+	double _busX;
+	double _busY;
+	int16 _busRow;	// 0 is the goal bank, 1-5 lanes 0-4, 6 the start bank
+	int32 _busCel;
+	int32 _busFrames;
+	int32 _busAnim;
+	double _dx;
+	double _dy;
+	int32 _busMotion;
+	int32 _busPhase;
+
+	Lane _lanes[kNumLanes];
+	bool _rowScored[7];
+	Object _objects[kNumLanes][kNumSlots];
+	Common::Array<Rider> _riders[kRiderKindCount];
+	Ripple _ripples[kNumRipples];
+};
+
 // Save the Town mini-game from Magic School Bus Volcano Adventure. Lava flows
 // down a grid of 38-pixel cells one row at a time. The player picks up left
 // and right deflector blocks with a helicopter cursor and drops them to steer
@@ -1252,6 +1486,7 @@ private:
 	PlugInModifierFactory<SmkJumpModifier, Data::KW::GameModifier> _smkJumpModifierFactory;
 	PlugInModifierFactory<BalloonModifier, Data::KW::GameModifier> _balloonModifierFactory;
 	PlugInModifierFactory<ArtModifier, Data::KW::GameModifier> _artModifierFactory;
+	PlugInModifierFactory<LLavaModifier, Data::KW::GameModifier> _lLavaModifierFactory;
 	PlugInModifierFactory<SvTownModifier, Data::KW::GameModifier> _svTownModifierFactory;
 
 	Common::WeakPtr<RuntimeObject> _dlgMgrServer;

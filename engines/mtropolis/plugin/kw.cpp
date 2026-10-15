@@ -3923,6 +3923,1305 @@ const char *ArtModifier::getDefaultName() const {
 	return "Art";
 }
 
+// Lane centre lines from the bottom lane up, the level 1 timers of each lane's
+// third geyser, and which of the 3 backgrounds each level shows
+static const int16 kLLavaLaneY[5] = {340, 285, 230, 175, 120};
+static const int16 kLLavaGeyserL1[5] = {90, 60, 130, 76, 110};
+static const int16 kLLavaBackground[16] = {0, 1, 3, 2, 1, 3, 1, 2, 3, 1, 3, 2, 1, 3, 2, 3};
+
+// Empty objects and riders sit at this x
+static const double kLLavaEmpty = -300.0;
+static const int32 kLLavaGeyser = 20;
+static const int32 kLLavaNoType = 21;
+
+// Objects that have a left and a right spot for the bus and riders
+static bool llavaTwoSided(int32 type) {
+	switch (type) {
+	case 1:
+	case 4:
+	case 5:
+	case 6:
+	case 7:
+	case 9:
+	case 10:
+	case 11:
+	case 12:
+	case 13:
+	case 14:
+	case 16:
+	case 17:
+		return true;
+	default:
+		return false;
+	}
+}
+
+// The animated rafts (types 15-17) never carry riders other than fires,
+// and these never carry fires either
+static bool llavaNoFire(int32 type) {
+	return type == 2 || type == 3 || (type >= 15 && type <= 17);
+}
+
+static bool llavaRaft(int32 type) {
+	return type >= 15 && type <= 17;
+}
+
+LLavaModifier::Lane::Lane() : moving(false), speed(0.0), wrapLeft(0), wrapRight(0) {
+}
+
+LLavaModifier::Object::Object()
+	: x(kLLavaEmpty), y(600.0), active(false), type(kLLavaNoType), sub(0), counter(0), hold(0), row(-1), sinkDir(false), delay(0) {
+}
+
+LLavaModifier::Rider::Rider() : x(kLLavaEmpty), y(600.0), active(false), sub(0), phase(1), cel(1), row(-1), type(kLLavaNoType) {
+}
+
+LLavaModifier::LLavaModifier()
+	: _levelsLoaded(false), _running(false), _paused(false), _levelReady(false), _introDlg(false), _gameState(kStateNewGame), _countdown(24),
+	  _level(1), _points(0), _levelBonus(0), _lives(5), _mult(1.0), _bonusChance(84), _fireChance(230), _maxBonus(2), _maxFires(3),
+	  _dir(kDirNone), _cooldown(0), _busX(0.0), _busY(0.0), _busRow(6), _busCel(1), _busFrames(0), _busAnim(kAnimIdle), _dx(0.0), _dy(0.0),
+	  _busMotion(0), _busPhase(0) {
+	memset(_types, 0, sizeof(_types));
+	memset(_motion, 0, sizeof(_motion));
+	for (int16 &count : _riderCount)
+		count = 0;
+	for (bool &scored : _rowScored)
+		scored = false;
+	for (Ripple &ripple : _ripples) {
+		ripple.child = 0;
+		ripple.x = kLLavaEmpty;
+		ripple.y = 600.0;
+		ripple.cel = 1;
+	}
+
+	_riders[kRiderBonus].resize(4);
+	_riders[kRiderFire].resize(12);
+	_riders[kRiderXLife].resize(3);
+}
+
+LLavaModifier::~LLavaModifier() {
+	stop();
+}
+
+bool LLavaModifier::load(const PlugInModifierLoaderContext &context, const Data::KW::GameModifier &data) {
+	return loadDlgMgrEvent(_startWhen, data.enableWhen) && loadDlgMgrEvent(_stopWhen, data.disableWhen);
+}
+
+// The levels, object extents and bob patterns are tables in the plug-in's data section
+bool LLavaModifier::loadLevels() {
+	if (_levelsLoaded)
+		return !_levels.empty();
+
+	_levelsLoaded = true;
+
+	Common::File f;
+	if (!f.open(Common::Path("mTrop_Resources/LLava.r32")) && !f.open(Common::Path("LLava.r32"))) {
+		warning("LLava: LLava.r32 from the installed game is needed for the levels");
+		return false;
+	}
+
+	Common::Array<byte> image;
+	image.resize(f.size());
+	f.read(&image[0], image.size());
+
+	bool failed = false;
+	auto readS16 = [&](uint32 va) -> int16 {
+		uint32 offset = va - 0x10000000;
+		if (offset + 2 > image.size()) {
+			failed = true;
+			return 0;
+		}
+		return static_cast<int16>(READ_LE_UINT16(&image[offset]));
+	};
+	auto readS32 = [&](uint32 va) -> int32 {
+		uint32 offset = va - 0x10000000;
+		if (offset + 4 > image.size()) {
+			failed = true;
+			return 0;
+		}
+		return static_cast<int32>(READ_LE_UINT32(&image[offset]));
+	};
+	auto readDouble = [&](uint32 va) -> double {
+		uint32 offset = va - 0x10000000;
+		if (offset + 8 > image.size()) {
+			failed = true;
+			return 0.0;
+		}
+		uint64 bits = READ_LE_UINT64(&image[offset]);
+		double value;
+		memcpy(&value, &bits, sizeof(value));
+		return value;
+	};
+
+	for (int t = 0; t < kNumTypes; t++) {
+		for (int i = 0; i < 4; i++)
+			_types[t].box[i] = readS16(0x1000e0c0 + t * 8 + i * 2);
+		for (int set = 0; set < 2; set++) {
+			for (int i = 0; i < 2; i++) {
+				_types[t].land[set][i] = readS16(0x1000e168 + t * 8 + set * 4 + i * 2);
+				_types[t].ride[set][i] = readS16(0x1000e210 + t * 8 + set * 4 + i * 2);
+			}
+		}
+	}
+
+	for (int sub = 1; sub <= 4; sub++) {
+		for (int phase = 0; phase < 12; phase++)
+			_motion[sub][phase] = readDouble(0x1000e2c0 + (sub - 1) * 0xc0 + phase * 16);
+	}
+
+	Common::Array<Level> levels;
+	levels.resize(16);
+	for (uint l = 1; l <= 15; l++) {
+		Level &level = levels[l];
+		uint32 base = 0x1000d31e + l * 0x12d2;
+
+		level.busStart = Common::Point(readS32(base), readS32(base + 4));
+		for (int r = 0; r < kNumLanes; r++) {
+			uint32 lane = base + 8 + r * 0x12;
+			uint32 offset = lane - 0x10000000;
+			level.lanes[r].moving = (offset < image.size() && image[offset] != 0);
+			level.lanes[r].speed = readDouble(lane + 2);
+			level.lanes[r].wrapLeft = readS32(lane + 10);
+			level.lanes[r].wrapRight = readS32(lane + 14);
+
+			for (int i = 0; i < kNumSlots; i++) {
+				uint32 slot = base + 0x62 + (r * kNumSlots + i) * 16;
+				level.slots[r][i].x = readDouble(slot);
+				level.slots[r][i].type = readS32(slot + 8);
+				level.slots[r][i].sub = readS32(slot + 12);
+				if (level.slots[r][i].type < 0 || level.slots[r][i].type >= kNumTypes)
+					failed = true;
+			}
+		}
+
+		for (int i = 0; i < 20; i++) {
+			level.rippleX[i] = readDouble(base + 0x1192 + i * 16);
+			level.rippleY[i] = readDouble(base + 0x1192 + i * 16 + 8);
+		}
+	}
+
+	// Level 1 starts at (320, 65) with the bottom lane drifting left at 2, and
+	// the smallest stone is 21 wide on each side
+	if (failed || levels[1].busStart != Common::Point(320, 65) || levels[1].lanes[0].speed != -2.0 || levels[1].lanes[0].wrapLeft != -44
+		|| levels[1].lanes[0].wrapRight != 684 || _types[0].box[0] != 21 || readS16(0x1000e5b8) != kLLavaLaneY[0]) {
+		warning("LLava: LLava.r32 isn't the expected version");
+		return false;
+	}
+
+	_levels.swap(levels);
+	return true;
+}
+
+bool LLavaModifier::respondsToEvent(const Event &evt) const {
+	return _startWhen.respondsTo(evt) || _stopWhen.respondsTo(evt) || evt.eventType == EventIDs::kParentDisabled || evt.eventType == EventIDs::kMouseDown;
+}
+
+VThreadState LLavaModifier::consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) {
+	const Event &evt = msg->getEvent();
+
+	if (_startWhen.respondsTo(evt)) {
+		_introDlg = true;
+		_gameState = kStateNewGame;
+		setupLevel(runtime, 1);
+
+		if (!_running) {
+			_running = true;
+			_keySignaller = runtime->getProject()->notifyOnKeyboardEvent(this);
+			_scheduledEvent = runtime->getScheduler().scheduleMethod<LLavaModifier, &LLavaModifier::tick>(runtime->getPlayTime() + 83, this);
+		}
+	} else if (_stopWhen.respondsTo(evt) || evt.eventType == EventIDs::kParentDisabled) {
+		stop();
+	} else if (evt.eventType == EventIDs::kMouseDown) {
+		clickDirection(runtime);
+	}
+
+	return kVThreadReturn;
+}
+
+void LLavaModifier::onKeyboardEvent(Runtime *runtime, const KeyboardInputEvent &keyEvt) {
+	if (keyEvt.getKeyEventType() != Common::EVENT_KEYDOWN)
+		return;
+
+	// Takes effect at the next chance, even while paused
+	switch (keyEvt.getKeyState().keycode) {
+	case Common::KEYCODE_UP:
+		_dir = kDirUp;
+		break;
+	case Common::KEYCODE_DOWN:
+		_dir = kDirDown;
+		break;
+	case Common::KEYCODE_LEFT:
+		_dir = kDirLeft;
+		break;
+	case Common::KEYCODE_RIGHT:
+		_dir = kDirRight;
+		break;
+	default:
+		break;
+	}
+}
+
+void LLavaModifier::disable(Runtime *runtime) {
+	stop();
+}
+
+void LLavaModifier::stop() {
+	_running = false;
+	if (_scheduledEvent) {
+		_scheduledEvent->cancel();
+		_scheduledEvent.reset();
+	}
+	if (_keySignaller) {
+		_keySignaller->removeReceiver(this);
+		_keySignaller.reset();
+	}
+}
+
+bool LLavaModifier::readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) {
+	if (attrib == "paused") {
+		result.setBool(_paused);
+		return true;
+	} else if (attrib == "gamelevel") {
+		result.setInt(_level);
+		return true;
+	} else if (attrib == "points") {
+		result.setInt(_points);
+		return true;
+	}
+
+	return Modifier::readAttribute(thread, result, attrib);
+}
+
+MiniscriptInstructionOutcome LLavaModifier::writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) {
+	WritableAttribute writable;
+	if (attrib == "paused")
+		writable = kAttribPaused;
+	else if (attrib == "gamelevel")
+		writable = kAttribGameLevel;
+	else if (attrib == "introdlg")
+		writable = kAttribIntroDlg;
+	else
+		return Modifier::writeRefAttribute(thread, result, attrib);
+
+	result.pod.ifc = DynamicValueWriteInterfaceGlue<WriteProxy>::getInstance();
+	result.pod.objectRef = this;
+	result.pod.ptrOrOffset = writable;
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
+MiniscriptInstructionOutcome LLavaModifier::WriteProxy::write(MiniscriptThread *thread, const DynamicValue &assigned, void *objectRef, uintptr ptrOrOffset) {
+	LLavaModifier *self = static_cast<LLavaModifier *>(objectRef);
+
+	// Variables are passed by reference
+	DynamicValue value = assigned;
+	if (value.getType() == DynamicValueTypes::kObject) {
+		Common::SharedPtr<RuntimeObject> obj = value.getObject().object.lock();
+		if (obj && obj->isModifier() && static_cast<Modifier *>(obj.get())->isVariable())
+			static_cast<VariableModifier *>(obj.get())->varGetValue(value);
+	}
+
+	if (ptrOrOffset == kAttribGameLevel) {
+		int32 level = 0;
+		if (!value.roundToInt(level))
+			return kMiniscriptInstructionOutcomeFailed;
+
+		// A full new game at that level
+		if (level >= 1 && level < 16) {
+			self->_gameState = kStateNewGame;
+			self->setupLevel(thread->getRuntime(), level);
+		}
+		return kMiniscriptInstructionOutcomeContinue;
+	}
+
+	bool flag = false;
+	if (value.getType() == DynamicValueTypes::kBoolean)
+		flag = value.getBool();
+	else if (value.getType() == DynamicValueTypes::kInteger)
+		flag = (value.getInt() != 0);
+	else if (value.getType() == DynamicValueTypes::kFloat)
+		flag = (value.getFloat() != 0.0);
+	else
+		return kMiniscriptInstructionOutcomeFailed;
+
+	if (ptrOrOffset == kAttribPaused) {
+		// Unpausing only takes effect once a level is set up
+		if (self->_levelReady || flag) {
+			self->_paused = flag;
+			if (self->_gameState != kStateNewGame && self->_gameState != kStateNewLevel)
+				self->_gameState = kStatePlaying;
+		}
+	} else if (ptrOrOffset == kAttribIntroDlg) {
+		self->_introDlg = flag;
+	}
+
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
+MiniscriptInstructionOutcome LLavaModifier::WriteProxy::refAttrib(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib) {
+	return kMiniscriptInstructionOutcomeFailed;
+}
+
+MiniscriptInstructionOutcome LLavaModifier::WriteProxy::refAttribIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib, const DynamicValue &index) {
+	return kMiniscriptInstructionOutcomeFailed;
+}
+
+// Children of the owner element: 1 bus, 2-6 lanes from the bottom up, 7 banner and
+// badge, 8 backgrounds, 9 bonus critters, 10 ripples, 11 fires, 12 chances, 13 extra lives
+Structural *LLavaModifier::child(int index) const {
+	Structural *owner = findStructuralOwner();
+	if (!owner || index < 1 || index > static_cast<int>(owner->getChildren().size()))
+		return nullptr;
+	return owner->getChildren()[index - 1].get();
+}
+
+Structural *LLavaModifier::grandchild(int index, int subIndex) const {
+	Structural *container = child(index);
+	if (!container || subIndex < 1 || subIndex > static_cast<int>(container->getChildren().size()))
+		return nullptr;
+	return container->getChildren()[subIndex - 1].get();
+}
+
+Structural *LLavaModifier::riderElement(RiderKind kind, int index) const {
+	static const int kContainers[kRiderKindCount] = {9, 11, 13};
+	return grandchild(kContainers[kind], index + 1);
+}
+
+void LLavaModifier::place(Runtime *runtime, Structural *element, double x, double y) {
+	if (!element || !element->isElement() || !static_cast<Element *>(element)->isVisual())
+		return;
+
+	// Placed centered on the point, which is truncated
+	const Common::Rect &rect = static_cast<VisualElement *>(element)->getRelativeRect();
+	placeTopLeft(runtime, element, static_cast<int32>(x) - rect.width() / 2, static_cast<int32>(y) - rect.height() / 2);
+}
+
+void LLavaModifier::placeTopLeft(Runtime *runtime, Structural *element, int32 x, int32 y) {
+	if (!element)
+		return;
+
+	DynamicValue pos;
+	pos.setPoint(Common::Point(x, y));
+	dlgMgrWriteAttribute(runtime, this, element, "position", pos);
+}
+
+void LLavaModifier::hide(Runtime *runtime, Structural *element) {
+	place(runtime, element, -100.0, 600.0);
+}
+
+void LLavaModifier::setCel(Runtime *runtime, Structural *element, int32 cel) {
+	dlgMgrSetInt(runtime, this, element, "cel", cel);
+}
+
+void LLavaModifier::sendMessage(Runtime *runtime, const char *messageName) {
+	uint32 messageID = 0;
+	if (!runtime->getProject()->findAuthorMessageID(messageName, messageID))
+		return;
+
+	Structural *owner = findStructuralOwner();
+	if (!owner)
+		return;
+
+	Common::SharedPtr<MessageProperties> props(new MessageProperties(Event(EventIDs::kAuthorMessage, messageID), DynamicValue(), getSelfReference()));
+	Common::SharedPtr<MessageDispatch> dispatch(new MessageDispatch(props, owner, true, true, false));
+	runtime->queueMessage(dispatch);
+}
+
+int32 LLavaModifier::randomRange(Runtime *runtime, int32 min, int32 max) const {
+	return runtime->getRandom()->getRandomNumberRng(min, max);
+}
+
+void LLavaModifier::setChances(Runtime *runtime, int32 cel) {
+	setCel(runtime, child(12), cel);
+}
+
+void LLavaModifier::setupLevel(Runtime *runtime, int32 levelNum) {
+	if (!loadLevels() || levelNum < 1)
+		return;
+
+	const Level &level = _levels[MIN<int32>(levelNum, 15)];
+	int bg = kLLavaBackground[MIN<int32>(levelNum, 15)];
+
+	debug(2, "LLava: Level %i", static_cast<int>(levelNum));
+
+	_levelReady = false;
+	_paused = false;
+	_level = levelNum;
+	_busAnim = kAnimIdle;
+	_countdown = 24;
+	_dir = kDirNone;
+	_dx = 0.0;
+	_dy = 0.0;
+	for (int16 &count : _riderCount)
+		count = 0;
+	_levelBonus = 0;
+
+	if (_gameState == kStateNewGame) {
+		_points = 0;
+		sendMessage(runtime, "UpdateScore");
+
+		if (levelNum < 6) {
+			_mult = 1.0;
+			_lives = 5;
+			_bonusChance = 84;
+			_fireChance = 230;
+			_maxBonus = 2;
+			_maxFires = 3;
+		} else if (levelNum <= 10) {
+			_mult = 1.5;
+			_lives = 4;
+			_bonusChance = 134;
+			_fireChance = 415;
+			_maxBonus = 3;
+			_maxFires = 8;
+		} else {
+			_mult = 2.0;
+			_lives = 3;
+			_bonusChance = 238;
+			_fireChance = 580;
+			_maxBonus = 4;
+			_maxFires = 12;
+		}
+	}
+
+	Structural *bus = child(1);
+	_busCel = 1;
+	_busFrames = 0;
+	_cooldown = 0;
+	_busMotion = 0;
+	_busPhase = 0;
+	_busX = level.busStart.x;
+	_busY = level.busStart.y;
+	_busRow = 6;
+	place(runtime, bus, _busX, _busY);
+	setCel(runtime, bus, 1);
+	dlgMgrSetInt(runtime, this, bus, "layer", 1200);
+
+	for (uint i = 0; i < _riders[kRiderFire].size(); i++) {
+		Structural *fire = riderElement(kRiderFire, i);
+		_riders[kRiderFire][i] = Rider();
+		hide(runtime, fire);
+		dlgMgrSetBool(runtime, this, fire, "paused", true);
+		setCel(runtime, fire, 1);
+	}
+
+	for (int r = 0; r < kNumLanes; r++) {
+		_lanes[r] = level.lanes[r];
+		_rowScored[r + 1] = false;
+		int geysers = 0;
+
+		for (int i = 0; i < kNumSlots; i++) {
+			Structural *element = grandchild(r + 2, i + 1);
+			Object &obj = _objects[r][i];
+			obj.x = level.slots[r][i].x;
+			obj.type = level.slots[r][i].type;
+			obj.sub = level.slots[r][i].sub;
+			obj.y = kLLavaLaneY[r];
+			obj.row = r;
+			obj.hold = 1;
+
+			// A few objects on the moving lanes are missing each time
+			if (_lanes[r].moving && _lanes[r].speed != 0.0 && randomRange(runtime, 1, 1000) < 18) {
+				obj.type = kLLavaNoType;
+				obj.x = kLLavaEmpty;
+				obj.y = 600.0;
+				obj.sub = 0;
+				obj.row = -1;
+			}
+
+			obj.active = true;
+			obj.sinkDir = true;
+
+			if (obj.sub == 5)
+				obj.counter = randomRange(runtime, 24, 120);
+			else if (obj.sub != 0)
+				obj.counter = randomRange(runtime, 1, 12);
+
+			if (llavaRaft(obj.type)) {
+				dlgMgrSetBool(runtime, this, element, "paused", true);
+				setCel(runtime, element, 1);
+			} else if (obj.type == kLLavaGeyser) {
+				geysers++;
+				dlgMgrSetBool(runtime, this, element, "paused", true);
+				setCel(runtime, element, 1);
+				obj.counter = randomRange(runtime, 70, 420);
+				if (levelNum == 1 && geysers == 3)
+					obj.counter = kLLavaGeyserL1[r];
+			}
+
+			if (obj.x <= -70.0 || obj.x >= 710.0) {
+				hide(runtime, element);
+			} else if (obj.type == kLLavaGeyser) {
+				place(runtime, element, obj.x, obj.y - 14.0);
+			} else {
+				place(runtime, element, obj.x, obj.y);
+
+				// Some objects start out burning
+				if (randomRange(runtime, 0, 1000) < _fireChance * 2.0 / 3.0 && _riderCount[kRiderFire] < _maxFires && !llavaNoFire(obj.type)) {
+					for (uint f = 0; f < _riders[kRiderFire].size(); f++) {
+						if (_riders[kRiderFire][f].x != kLLavaEmpty)
+							continue;
+						spawnRider(runtime, kRiderFire, f, obj);
+						Rider &fire = _riders[kRiderFire][f];
+						fire.cel = randomRange(runtime, 1, 13);
+						setCel(runtime, riderElement(kRiderFire, f), fire.cel);
+						place(runtime, riderElement(kRiderFire, f), fire.x, fire.y - 8.0);
+						break;
+					}
+				}
+			}
+		}
+	}
+
+	placeTopLeft(runtime, grandchild(7, 1), 151, 160);
+	setCel(runtime, grandchild(7, 2), levelNum % 5);
+	placeTopLeft(runtime, grandchild(7, 2), 391, 198);
+
+	for (int k = 1; k <= 3; k++) {
+		if (k == bg)
+			placeTopLeft(runtime, grandchild(8, k), 0, 0);
+		else
+			placeTopLeft(runtime, grandchild(8, k), -100, 600);
+	}
+
+	for (uint i = 0; i < _riders[kRiderBonus].size(); i++) {
+		_riders[kRiderBonus][i] = Rider();
+		hide(runtime, riderElement(kRiderBonus, i));
+	}
+
+	// Each background has its own set of 10 ripples
+	Structural *ripples = child(10);
+	if (ripples) {
+		for (const Common::SharedPtr<Structural> &ripple : ripples->getChildren())
+			hide(runtime, ripple.get());
+	}
+	int firstRipple = (bg == 3) ? 11 : 1;
+	for (int k = 0; k < kNumRipples; k++) {
+		Ripple &ripple = _ripples[k];
+		ripple.child = firstRipple + k;
+		ripple.x = level.rippleX[ripple.child - 1];
+		ripple.y = level.rippleY[ripple.child - 1];
+		ripple.cel = randomRange(runtime, 1, 5);
+
+		Structural *element = grandchild(10, ripple.child);
+		dlgMgrSetBool(runtime, this, element, "paused", true);
+		setCel(runtime, element, ripple.cel);
+		if (ripple.x != kLLavaEmpty)
+			place(runtime, element, ripple.x, ripple.y);
+	}
+
+	if (_gameState == kStateNewGame) {
+		dlgMgrSetBool(runtime, this, child(12), "paused", true);
+		setChances(runtime, _lives + 1);
+	}
+
+	for (uint i = 0; i < _riders[kRiderXLife].size(); i++) {
+		_riders[kRiderXLife][i] = Rider();
+		hide(runtime, riderElement(kRiderXLife, i));
+	}
+
+	_levelReady = true;
+}
+
+// The banner shows for 2 seconds or until a click
+void LLavaModifier::startPlay(Runtime *runtime) {
+	_gameState = kStatePlaying;
+	place(runtime, grandchild(7, 1), -1.0, 600.0);
+	place(runtime, grandchild(7, 2), -1.0, 600.0);
+	if (_lives >= 1)
+		setChances(runtime, _lives);
+}
+
+// Clicks pick a hop direction relative to the bus
+void LLavaModifier::clickDirection(Runtime *runtime) {
+	if (!_paused && (_gameState == kStateNewGame || _gameState == kStateNewLevel)) {
+		startPlay(runtime);
+		return;
+	}
+
+	const Common::Point &mouse = runtime->getCachedMousePosition();
+	if (mouse.x - 28 < _busX && _busX < mouse.x + 28 && mouse.y - 23 < _busY && _busY < mouse.y + 23)
+		_dir = kDirDown;
+	else if (mouse.y > _busY + 23.0)
+		_dir = kDirDown;
+	else if (mouse.y < _busY - 23.0)
+		_dir = kDirUp;
+	else if (mouse.x < _busX - 14.0)
+		_dir = kDirLeft;
+	else if (mouse.x > _busX + 14.0)
+		_dir = kDirRight;
+}
+
+void LLavaModifier::tick(Runtime *runtime) {
+	_scheduledEvent.reset();
+	if (!_running)
+		return;
+
+	_scheduledEvent = runtime->getScheduler().scheduleMethod<LLavaModifier, &LLavaModifier::tick>(runtime->getPlayTime() + 83, this);
+
+	if (_paused || !_levelReady)
+		return;
+
+	if (_gameState == kStateNewGame || _gameState == kStateNewLevel) {
+		if (_countdown > 0)
+			_countdown--;
+		else
+			startPlay(runtime);
+		return;
+	}
+
+	if (_gameState != kStatePlaying)
+		return;
+
+	// The game waits while the mouse is over the bottom bar or outside
+	const Common::Point &mouse = runtime->getCachedMousePosition();
+	if (mouse.y > 430 || mouse.y < 0 || mouse.x > 640 || mouse.x < 0)
+		return;
+
+	bool landed = false;
+	if (!tickBus(runtime, landed))
+		return;
+
+	// A direction queued during a hop starts a hop that the landing cancels again
+	if (_cooldown > 0)
+		_cooldown--;
+	else if (_busAnim == kAnimIdle) {
+		tickInput(runtime);
+		if (landed)
+			land(runtime);
+	}
+
+	if (!ride(runtime, landed))
+		return;
+	if (!tickLanes(runtime))
+		return;
+	tickRiders(runtime);
+}
+
+void LLavaModifier::startBusAnim(int anim, int32 frames, int32 cel) {
+	_busAnim = anim;
+	_busFrames = frames;
+	_busCel = cel;
+}
+
+void LLavaModifier::showBusFrame(Runtime *runtime) {
+	setCel(runtime, child(1), _busCel);
+	_busCel++;
+	_busFrames--;
+}
+
+// Returns false if the tick ends here
+bool LLavaModifier::tickBus(Runtime *runtime, bool &landed) {
+	Structural *bus = child(1);
+
+	switch (_busAnim) {
+	case kAnimHopUp:
+	case kAnimHopLeft:
+	case kAnimHopRight:
+	case kAnimHopDown:
+		if (_busFrames > 0) {
+			showBusFrame(runtime);
+			if (_busAnim == kAnimHopUp || _busAnim == kAnimHopDown) {
+				_busX += _dx;
+				_busY += _dy;
+				place(runtime, bus, _busX, _busY);
+			}
+			break;
+		}
+
+		_busCel = 1;
+		setCel(runtime, bus, 1);
+		if (_busAnim == kAnimHopUp) {
+			_busY -= 55.0;
+			_busRow++;
+		} else if (_busAnim == kAnimHopDown) {
+			_busY += 55.0;
+			_busRow--;
+		} else if (_busAnim == kAnimHopLeft) {
+			_busX -= 40.0;
+		} else {
+			_busX += 40.0;
+		}
+		landed = true;
+		_busAnim = kAnimIdle;
+		break;
+	case kAnimSinking:
+		if (_busFrames < 1) {
+			_busAnim = kAnimLost;
+			return false;
+		}
+		if (_busFrames == 5)
+			dlgMgrSetInt(runtime, this, bus, "layer", 70);
+		showBusFrame(runtime);
+		return false;
+	case kAnimBurning:
+		// The burning bus keeps riding
+		if (_busFrames > 0) {
+			if (_busCel == 51)
+				dlgMgrSetInt(runtime, this, bus, "layer", 2700);
+			showBusFrame(runtime);
+		} else {
+			_busAnim = kAnimLost;
+		}
+		break;
+	case kAnimGeyser:
+		if (_busFrames < 1) {
+			_busAnim = kAnimLost;
+			return false;
+		}
+		showBusFrame(runtime);
+		return false;
+	case kAnimWon:
+		if (_busFrames > 0) {
+			if (_busFrames == 10)
+				sendMessage(runtime, "PlaySFX14");
+			showBusFrame(runtime);
+			return false;
+		}
+
+		// Count the level bonus into the score, then move on
+		if (_levelBonus > 0) {
+			_levelBonus -= 10;
+			_points += 10;
+			sendMessage(runtime, "UpdateScore");
+		} else if (_level != 5 && _level != 10 && _level != 15) {
+			_gameState = kStateNewLevel;
+			_paused = true;
+			sendMessage(runtime, "levelwon");
+			setupLevel(runtime, _level + 1);
+		} else {
+			_gameState = kStateNewGame;
+			_paused = true;
+			sendMessage(runtime, "YouWin");
+		}
+		return false;
+	case kAnimLost:
+		_paused = true;
+		if (_lives < 2) {
+			_gameState = kStateNewGame;
+			sendMessage(runtime, "GameOver");
+		} else {
+			_gameState = kStateNewLevel;
+			_lives--;
+			setupLevel(runtime, _level);
+		}
+		return false;
+	default:
+		break;
+	}
+
+	return true;
+}
+
+void LLavaModifier::tickInput(Runtime *runtime) {
+	switch (_dir) {
+	case kDirUp:
+		if (_busRow < 6)
+			startHop(runtime, false);
+		break;
+	case kDirDown:
+		if (_busRow > 0)
+			startHop(runtime, true);
+		break;
+	case kDirLeft:
+	case kDirRight:
+		if ((_dir == kDirLeft && _busX > 60.0) || (_dir == kDirRight && _busX < 580.0)) {
+			sendMessage(runtime, "PlaySFX1");
+			if (_dir == kDirLeft)
+				startBusAnim(kAnimHopLeft, 8, 19);
+			else
+				startBusAnim(kAnimHopRight, 8, 10);
+			_dir = kDirNone;
+			_dx = 0.0;
+			_dy = 0.0;
+		}
+		break;
+	default:
+		break;
+	}
+}
+
+// Hops up or down a lane, aiming at the first object that will be under the
+// bus when it arrives
+void LLavaModifier::startHop(Runtime *runtime, bool down) {
+	sendMessage(runtime, "PlaySFX1");
+	_dx = 0.0;
+	_dy = 0.0;
+	if (down)
+		startBusAnim(kAnimHopDown, 8, 1);
+	else
+		startBusAnim(kAnimHopUp, 8, 27);
+	_dir = kDirNone;
+
+	double current = (_busRow >= 1 && _busRow <= 5) ? _lanes[_busRow - 1].speed : 0.0;
+	int lane = down ? _busRow - 2 : _busRow;
+	if (lane < 0 || lane >= kNumLanes)
+		return;
+
+	double ticks = down ? 9.0 : 8.0;
+	double targetY = down ? _busY + 55.0 : _busY - 55.0;
+	for (int i = 0; i < kNumSlots; i++) {
+		const Object &obj = _objects[lane][i];
+		if (obj.x == kLLavaEmpty || obj.type >= kNumTypes)
+			continue;
+
+		double objX = obj.x + _lanes[lane].speed * ticks;
+		double busX = _busX + current * ticks;
+		int16 ox = 0;
+		int16 oy = 0;
+		landOffset(obj.type, objX <= busX, ox, oy);
+
+		const int16 *box = _types[obj.type].box;
+		int32 a = static_cast<int32>(objX);
+		int32 b = static_cast<int32>(busX);
+		if (a - box[0] < b && b < a + box[1] && obj.y - box[2] < targetY && targetY < obj.y + box[3]) {
+			_dx = (ox + objX - busX) / ticks;
+			if (down)
+				_dy = (oy + obj.y - targetY) / ticks;
+			break;
+		}
+	}
+}
+
+void LLavaModifier::landOffset(int32 type, bool left, int16 &dx, int16 &dy) const {
+	int set = (left && llavaTwoSided(type)) ? 1 : 0;
+	dx = _types[type].land[set][0];
+	dy = _types[type].land[set][1];
+}
+
+// The bus lands on whatever is under it, or in the lava
+void LLavaModifier::land(Runtime *runtime) {
+	_cooldown = 4;
+	_dir = kDirNone;
+	_busAnim = kAnimIdle;
+
+	if (_busRow == 0 || _busRow == 6) {
+		_busMotion = 0;
+		if (_busRow == 0) {
+			startBusAnim(kAnimWon, 10, 41);
+			_levelBonus = static_cast<int32>(_mult * 100.0);
+		}
+		return;
+	}
+
+	int lane = _busRow - 1;
+	bool hit = false;
+
+	// Overlapping objects all count, the last one wins
+	for (int i = 0; i < kNumSlots; i++) {
+		const Object &obj = _objects[lane][i];
+		if (!obj.active || obj.x == kLLavaEmpty || obj.type >= kNumTypes)
+			continue;
+
+		const int16 *box = _types[obj.type].box;
+		if (!(obj.x - box[0] < _busX && _busX < obj.x + box[1] && obj.y - box[2] < _busY && _busY < obj.y + box[3]))
+			continue;
+
+		hit = true;
+		switch (obj.type) {
+		case 14:
+			sendMessage(runtime, "PlaySFX10");	// Piano
+			break;
+		case 5:
+			sendMessage(runtime, "PlaySFX11");	// Phone booth
+			break;
+		case 4:
+		case 17:
+			sendMessage(runtime, "PlaySFX12");	// Car
+			break;
+		case 12:
+			sendMessage(runtime, "PlaySFX13");	// Bed
+			break;
+		default:
+			sendMessage(runtime, "PlaySFX9");
+			break;
+		}
+
+		int16 ox = 0;
+		int16 oy = 0;
+		landOffset(obj.type, obj.x <= _busX, ox, oy);
+		_busX = obj.x + ox;
+		_busY = obj.y + oy;
+		_busMotion = obj.sub;
+		_busPhase = obj.counter;
+
+		// No points for a lane if the bus lands next to a fire
+		bool nearFire = false;
+		for (const Rider &fire : _riders[kRiderFire]) {
+			if (fabs(fire.x - _busX) < 20.0 && fabs(fire.y - _busY) < 20.0)
+				nearFire = true;
+		}
+		if (!nearFire && !_rowScored[_busRow]) {
+			_points += static_cast<int32>(_mult * 10.0);
+			sendMessage(runtime, "UpdateScore");
+			_rowScored[_busRow] = true;
+		}
+	}
+
+	if (!hit) {
+		sendMessage(runtime, "PlaySFX3");
+		startBusAnim(kAnimSinking, 5, 36);
+	}
+
+	for (uint b = 0; b < _riders[kRiderBonus].size(); b++) {
+		const Rider &bonus = _riders[kRiderBonus][b];
+		if (bonus.x == kLLavaEmpty || bonus.row < 0 || !_lanes[bonus.row].moving)
+			continue;
+
+		if (fabs(bonus.x - _busX) < 18.0 && fabs(bonus.y - _busY) < 30.0) {
+			_points += static_cast<int32>(_mult * 20.0);
+			sendMessage(runtime, "UpdateScore");
+			resetRider(runtime, kRiderBonus, b);
+			sendMessage(runtime, "PlaySFX7");
+		}
+	}
+}
+
+// Carries the bus along a moving lane. Returns false if the tick ends here.
+bool LLavaModifier::ride(Runtime *runtime, bool landed) {
+	bool moved = landed;
+	if (_busRow >= 1 && _busRow <= 5 && _lanes[_busRow - 1].moving) {
+		_busX += _lanes[_busRow - 1].speed;
+		if (_busX < 20.0 || _busX > 620.0) {
+			sendMessage(runtime, "PlaySFX2");
+			startBusAnim(kAnimSinking, 5, 36);
+			return false;
+		}
+		bob(_busMotion, _busPhase, _busY);
+		moved = true;
+	}
+
+	if (moved)
+		place(runtime, child(1), _busX, _busY);
+	return true;
+}
+
+bool LLavaModifier::tickLanes(Runtime *runtime) {
+	for (int r = 0; r < kNumLanes; r++) {
+		for (int i = 0; i < kNumSlots; i++) {
+			Object &obj = _objects[r][i];
+			if (obj.x == kLLavaEmpty)
+				continue;
+
+			Structural *element = grandchild(r + 2, i + 1);
+			if (!_lanes[r].moving) {
+				if (obj.type == kLLavaGeyser && tickGeyser(runtime, obj, element))
+					return false;
+				continue;
+			}
+
+			obj.x += _lanes[r].speed;
+			wrapAndSpawn(runtime, r, i);
+			objectMotion(runtime, r, i);
+			if (_busAnim == kAnimSinking) {
+				_busFrames = 5;
+				_busCel = 36;
+				return false;
+			}
+
+			// Objects off the screen stay where they were last drawn
+			if (obj.x > -70.0 && obj.x < 710.0 && obj.active)
+				place(runtime, element, obj.x, obj.y);
+		}
+	}
+
+	return true;
+}
+
+// Geysers build up, erupt for a while and settle again. Returns true if one
+// caught the bus.
+bool LLavaModifier::tickGeyser(Runtime *runtime, Object &obj, Structural *element) {
+	if (obj.counter >= 62) {
+		obj.counter--;
+		return false;
+	}
+
+	if (obj.active) {
+		setCel(runtime, element, 62 - obj.counter);
+		if (obj.counter == 61)
+			sendMessage(runtime, "PlaySFX6");
+		obj.counter--;
+		if (obj.counter == 18) {
+			obj.active = false;
+			obj.hold = -1;
+		}
+		return false;
+	}
+
+	const int16 *box = _types[kLLavaGeyser].box;
+	if (_busAnim == kAnimIdle && obj.x - box[0] < _busX && _busX < obj.x + box[1] && obj.y - box[2] < _busY && _busY < obj.y + box[3]) {
+		sendMessage(runtime, "PlaySFX8");
+		startBusAnim(kAnimGeyser, 9, 64);
+		return true;
+	}
+
+	if (obj.counter == 4 && obj.hold == -1)
+		obj.hold = randomRange(runtime, 40, 160);
+
+	if (obj.hold < 1) {
+		setCel(runtime, element, 62 - obj.counter);
+		obj.counter--;
+		if (obj.counter == 0) {
+			obj.active = true;
+			obj.counter = randomRange(runtime, 70, 420);
+		}
+	} else {
+		obj.hold--;
+	}
+
+	return false;
+}
+
+// Objects leaving one side of a moving lane come back on the other, sometimes
+// with a fire, a critter or an extra life on them
+void LLavaModifier::wrapAndSpawn(Runtime *runtime, int lane, int slot) {
+	Object &obj = _objects[lane][slot];
+	const Lane &laneInfo = _lanes[lane];
+	if (obj.x > laneInfo.wrapLeft && obj.x < laneInfo.wrapRight)
+		return;
+
+	double newX = (obj.x >= laneInfo.wrapRight) ? laneInfo.wrapLeft : laneInfo.wrapRight;
+
+	// Riders still on it are dropped
+	if (obj.type < kNumTypes) {
+		const int16 *box = _types[obj.type].box;
+		for (int kind = 0; kind < kRiderKindCount; kind++) {
+			for (uint i = 0; i < _riders[kind].size(); i++) {
+				const Rider &rider = _riders[kind][i];
+				if (rider.x == kLLavaEmpty)
+					continue;
+				if (obj.x - (box[0] + 18) < rider.x && rider.x < obj.x + (box[1] + 18) && obj.y - (box[2] + 35) < rider.y && rider.y < obj.y + (box[3] + 35)) {
+					_riderCount[kind]--;
+					resetRider(runtime, static_cast<RiderKind>(kind), i);
+				}
+			}
+		}
+	}
+
+	obj.x = newX;
+
+	int32 bonusRoll = randomRange(runtime, 0, 1000);
+	int32 fireRoll = randomRange(runtime, 0, 1000);
+	int32 xlifeRoll = randomRange(runtime, 0, 1000);
+
+	if (fireRoll < _fireChance && _riderCount[kRiderFire] < _maxFires) {
+		if (llavaNoFire(obj.type))
+			return;
+		for (uint f = 0; f < _riders[kRiderFire].size(); f++) {
+			if (_riders[kRiderFire][f].x != kLLavaEmpty)
+				continue;
+			spawnRider(runtime, kRiderFire, f, obj);
+			place(runtime, riderElement(kRiderFire, f), _riders[kRiderFire][f].x, _riders[kRiderFire][f].y - 8.0);
+			return;
+		}
+		return;
+	}
+
+	if (bonusRoll < _bonusChance && _riderCount[kRiderBonus] < _maxBonus) {
+		if (llavaRaft(obj.type))
+			return;
+
+		// The critters are tried in a random order
+		int order[4];
+		bool used[4] = {false, false, false, false};
+		for (int k = 0; k < 4; k++) {
+			int pick;
+			do {
+				pick = randomRange(runtime, 0, 3);
+			} while (used[pick]);
+			used[pick] = true;
+			order[k] = pick;
+		}
+
+		for (int k = 0; k < 4; k++) {
+			int b = order[k];
+			if (_riders[kRiderBonus][b].x != kLLavaEmpty)
+				continue;
+			spawnRider(runtime, kRiderBonus, b, obj);
+			place(runtime, riderElement(kRiderBonus, b), _riders[kRiderBonus][b].x, _riders[kRiderBonus][b].y);
+			return;
+		}
+	} else if (xlifeRoll < 17 && _lives < 5 && !llavaRaft(obj.type)) {
+		for (uint e = 0; e < _riders[kRiderXLife].size(); e++) {
+			if (_riders[kRiderXLife][e].x != kLLavaEmpty)
+				continue;
+			spawnRider(runtime, kRiderXLife, e, obj);
+			place(runtime, riderElement(kRiderXLife, e), _riders[kRiderXLife][e].x, _riders[kRiderXLife][e].y + 6.0);
+			return;
+		}
+	}
+}
+
+void LLavaModifier::spawnRider(Runtime *runtime, RiderKind kind, int index, const Object &obj) {
+	Rider &rider = _riders[kind][index];
+	_riderCount[kind]++;
+	rider.x = obj.x;
+	rider.y = obj.y;
+	rider.active = true;
+	rider.sub = obj.sub;
+	rider.phase = obj.counter;
+	rider.row = obj.row;
+	rider.type = obj.type;
+	rider.cel = 1;
+
+	int set = 0;
+	if (llavaTwoSided(obj.type) && randomRange(runtime, 0, 1000) >= 500)
+		set = 1;
+	if (obj.type < kNumTypes) {
+		rider.x += _types[obj.type].ride[set][0];
+		rider.y += _types[obj.type].ride[set][1];
+	}
+}
+
+void LLavaModifier::resetRider(Runtime *runtime, RiderKind kind, int index) {
+	Rider &rider = _riders[kind][index];
+	rider.x = kLLavaEmpty;
+	rider.active = false;
+	rider.row = -1;
+	rider.type = kLLavaNoType;
+	hide(runtime, riderElement(kind, index));
+}
+
+void LLavaModifier::bob(int32 sub, int32 &phase, double &y) const {
+	if (sub < 1 || sub > 4)
+		return;
+
+	phase = (phase + 1) % 12;
+	if (phase < 0)
+		phase += 12;
+	y += _motion[sub][phase];
+}
+
+// Bobbing objects go up and down, sinking ones go under and come back up now and then
+void LLavaModifier::objectMotion(Runtime *runtime, int lane, int slot) {
+	Object &obj = _objects[lane][slot];
+	if (obj.sub != 5) {
+		bob(obj.sub, obj.counter, obj.y);
+		return;
+	}
+
+	if (obj.counter > 7) {
+		obj.counter--;
+		return;
+	}
+
+	Structural *element = grandchild(lane + 2, slot + 1);
+	if (!obj.active) {
+		if (obj.counter >= 0) {
+			// Surfacing starts
+			setCel(runtime, element, obj.counter + 1);
+			obj.counter--;
+			obj.active = true;
+			return;
+		}
+	} else if (obj.counter >= 0) {
+		// One frame every 4 ticks
+		if (obj.delay > 0) {
+			obj.delay--;
+			return;
+		}
+
+		int32 cel;
+		if (obj.sinkDir) {
+			cel = 8 - obj.counter;
+			if (obj.counter == 7 && obj.x > -70.0 && obj.x < 710.0)
+				sendMessage(runtime, "PlaySFX5");
+		} else {
+			cel = obj.counter + 1;
+		}
+		setCel(runtime, element, cel);
+		obj.counter--;
+		obj.delay = 3;
+		return;
+	}
+
+	obj.counter = randomRange(runtime, 24, 120);
+	obj.delay = 3;
+	if (obj.sinkDir)
+		obj.active = !obj.active;
+	obj.sinkDir = !obj.sinkDir;
+
+	if (!obj.active) {
+		// Just went under, with the bus if it was on it
+		hide(runtime, element);
+		const int16 *box = _types[obj.type].box;
+		if (_busAnim == kAnimIdle && obj.x - box[0] < _busX && _busX < obj.x + box[1] && obj.y - box[2] < _busY && _busY < obj.y + box[3]) {
+			sendMessage(runtime, "PlaySFX3");
+			startBusAnim(kAnimSinking, 5, 36);
+		}
+	}
+}
+
+// Critters, fires and extra lives ride their objects. Returns false if a fire hit the bus.
+bool LLavaModifier::tickRiders(Runtime *runtime) {
+	for (uint b = 0; b < _riders[kRiderBonus].size(); b++) {
+		Rider &bonus = _riders[kRiderBonus][b];
+		if (bonus.x == kLLavaEmpty || bonus.row < 0 || !_lanes[bonus.row].moving)
+			continue;
+		bonus.x += _lanes[bonus.row].speed;
+		bob(bonus.sub, bonus.phase, bonus.y);
+		place(runtime, riderElement(kRiderBonus, b), bonus.x, bonus.y);
+	}
+
+	for (uint f = 0; f < _riders[kRiderFire].size(); f++) {
+		Rider &fire = _riders[kRiderFire][f];
+		if (fire.x == kLLavaEmpty || fire.row < 0 || !_lanes[fire.row].moving)
+			continue;
+
+		Structural *element = riderElement(kRiderFire, f);
+		fire.x += _lanes[fire.row].speed;
+		fire.cel = (fire.cel + 1) % 14;
+		setCel(runtime, element, fire.cel);
+		bob(fire.sub, fire.phase, fire.y);
+		if (_busAnim == kAnimIdle && fabs(fire.x - _busX) < 20.0 && fabs(fire.y - _busY) < 20.0) {
+			sendMessage(runtime, "PlaySFX8");
+			startBusAnim(kAnimBurning, 10, 51);
+			return false;
+		}
+		place(runtime, element, fire.x, fire.y - 8.0);
+	}
+
+	for (Ripple &ripple : _ripples) {
+		ripple.cel = (ripple.cel + 1) % 5;
+		setCel(runtime, grandchild(10, ripple.child), ripple.cel);
+	}
+
+	for (uint e = 0; e < _riders[kRiderXLife].size(); e++) {
+		Rider &xlife = _riders[kRiderXLife][e];
+		if (xlife.x == kLLavaEmpty || xlife.row < 0 || !_lanes[xlife.row].moving)
+			continue;
+
+		xlife.x += _lanes[xlife.row].speed;
+		bob(xlife.sub, xlife.phase, xlife.y);
+		if (_busAnim != kAnimIdle || !(fabs(xlife.x - _busX) < 20.0 && fabs(xlife.y - _busY) < 20.0)) {
+			place(runtime, riderElement(kRiderXLife, e), xlife.x, xlife.y + 6.0);
+		} else if (_lives < 5) {
+			_lives++;
+			sendMessage(runtime, "PlaySFX4");
+			_riderCount[kRiderXLife]--;
+			resetRider(runtime, kRiderXLife, e);
+			setChances(runtime, _lives);
+		}
+	}
+
+	return true;
+}
+
+Common::SharedPtr<Modifier> LLavaModifier::shallowClone() const {
+	Common::SharedPtr<LLavaModifier> clone(new LLavaModifier(*this));
+	clone->_scheduledEvent.reset();
+	clone->_keySignaller.reset();
+	clone->_running = false;
+	clone->_paused = false;
+	clone->_levelReady = false;
+	clone->_level = 1;
+	clone->_points = 0;
+	return clone;
+}
+
+const char *LLavaModifier::getDefaultName() const {
+	return "LLava";
+}
+
 // Children of the owner element
 enum SvTownChild {
 	kSvTownVents = 1,
@@ -6502,7 +7801,7 @@ const char *DlgMgrClientModifier::getDefaultName() const {
 
 KnowWonderPlugIn::KnowWonderPlugIn()
 	: _strUtilModifierFactory(this), _dlgMgrServerModifierFactory(this), _dlgMgrClientModifierFactory(this),
-	  _kwSmackerModifierFactory(this), _editCtrlModifierFactory(this), _gameModifierFactory(this), _whaleMazeModifierFactory(this), _eyefollowerModifierFactory(this), _smkJumpModifierFactory(this), _balloonModifierFactory(this), _artModifierFactory(this), _svTownModifierFactory(this) {
+	  _kwSmackerModifierFactory(this), _editCtrlModifierFactory(this), _gameModifierFactory(this), _whaleMazeModifierFactory(this), _eyefollowerModifierFactory(this), _smkJumpModifierFactory(this), _balloonModifierFactory(this), _artModifierFactory(this), _svTownModifierFactory(this), _lLavaModifierFactory(this) {
 }
 
 KnowWonderPlugIn::~KnowWonderPlugIn() {
@@ -6526,7 +7825,7 @@ void KnowWonderPlugIn::registerModifiers(IPlugInModifierRegistrar *registrar) co
 
 	// Mini-game modifiers from separate Magic School Bus plug-ins
 	static const char *const gameModifierNames[] = {
-		"AntMaze", "LLava", "Lander", "RoverRace", "Sub"
+		"AntMaze", "Lander", "RoverRace", "Sub"
 	};
 	for (const char *name : gameModifierNames)
 		registrar->registerPlugInModifier(name, &_gameModifierFactory);
@@ -6537,6 +7836,7 @@ void KnowWonderPlugIn::registerModifiers(IPlugInModifierRegistrar *registrar) co
 	registrar->registerPlugInModifier("Balloon", &_balloonModifierFactory);
 	registrar->registerPlugInModifier("Art", &_artModifierFactory);
 	registrar->registerPlugInModifier("SvTown", &_svTownModifierFactory);
+	registrar->registerPlugInModifier("LLava", &_lLavaModifierFactory);
 }
 
 } // End of namespace KW
