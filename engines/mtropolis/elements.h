@@ -332,6 +332,7 @@ private:
 	int32 _cel;
 
 	bool _hasIssuedRenderWarning;
+	bool _playThroughOnce;	// Play was given a range that doesn't exist, so it plays once without looping
 };
 
 class TextLabelElement : public VisualElement {

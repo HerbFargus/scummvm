@@ -1411,14 +1411,14 @@ MiniscriptInstructionOutcome ImageElement::scriptSetFlushPriority(MiniscriptThre
 
 MToonElement::MToonElement()
 	: _cacheBitmap(false), _maintainRate(false), _assetID(0), _rateTimes100000(0), _flushPriority(0), _celStartTimeMSec(0),
-	  _isPlaying(false), _isStopped(false), _renderedFrame(0), _playRange(IntRange(1, 1)), _cel(1), _hasIssuedRenderWarning(false) {
+	  _isPlaying(false), _isStopped(false), _renderedFrame(0), _playRange(IntRange(1, 1)), _cel(1), _hasIssuedRenderWarning(false), _playThroughOnce(false) {
 }
 
 MToonElement::MToonElement(const MToonElement &other)
 	: VisualElement(other), _cacheBitmap(other._cacheBitmap), _maintainRate(other._maintainRate), _assetID(other._assetID)
 	, _rateTimes100000(other._rateTimes100000), _flushPriority(other._flushPriority), _celStartTimeMSec(other._celStartTimeMSec)
 	, _isPlaying(other._isPlaying), _isStopped(other._isStopped), _renderSurface(nullptr), _renderedFrame(0), _metadata(other._metadata)
-	, _cachedMToon(other._cachedMToon), _playMediaSignaller(nullptr), _playRange(other._playRange), _cel(other._cel), _hasIssuedRenderWarning(false) {
+	, _cachedMToon(other._cachedMToon), _playMediaSignaller(nullptr), _playRange(other._playRange), _cel(other._cel), _hasIssuedRenderWarning(false), _playThroughOnce(false) {
 	_playMediaSignaller = other.getRuntime()->getProject()->notifyOnPlayMedia(this);
 }
 
@@ -1868,7 +1868,7 @@ void MToonElement::playMedia(Runtime *runtime, Project *project) {
 		bool alreadyAtLastCel = (framesRemainingToOnePastEnd == 1);
 		if (framesRemainingToOnePastEnd <= framesAdvanced) {
 			ranPastEnd = true;
-			if (_loop)
+			if (_loop && !_playThroughOnce)
 				targetCel = isReversed ? maxCel : minCel;
 			else
 				targetCel = isReversed ? minCel : maxCel;
@@ -1899,7 +1899,7 @@ void MToonElement::playMedia(Runtime *runtime, Project *project) {
 			runtime->queueMessage(dispatch);
 		}
 
-		if (ranPastEnd && !_loop) {
+		if (ranPastEnd && (!_loop || _playThroughOnce)) {
 			_paused = true;
 
 			Common::SharedPtr<MessageProperties> msgProps(new MessageProperties(Event(EventIDs::kPause, 0), DynamicValue(), getSelfReference()));
@@ -1995,6 +1995,7 @@ MiniscriptInstructionOutcome MToonElement::scriptRangeWriteRefAttribute(Miniscri
 
 MiniscriptInstructionOutcome MToonElement::scriptSetRangeTyped(MiniscriptThread *thread, const IntRange &intRangeRef) {
 	IntRange intRange = intRangeRef;
+	_playThroughOnce = false;
 
 	int32 maxFrame = _metadata->frames.size();
 
@@ -2079,6 +2080,13 @@ MiniscriptInstructionOutcome MToonElement::scriptSetRangeByName(MiniscriptThread
 		for (const MToonMetadata::FrameRangeDef &frameRange : _metadata->frameRanges)
 			available += " '" + frameRange.name + "'";
 		thread->error("mToon range '" + name + "' doesn't exist in the mToon data, ranges:" + available);
+	} else if (getRuntime()->getProject()->getRuntimeVersion() >= kRuntimeVersion200) {
+		// mTropolis 2.0 plays the whole mToon once for a Play with a range it doesn't have.
+		// Magic School Bus relies on this to stop its map buttons on their last cel.
+		scriptSetRangeTyped(nullptr, IntRange(1, _metadata->frames.size()));
+		_cel = 1;
+		_contentsDirty = true;
+		_playThroughOnce = true;
 	}
 
 	return kMiniscriptInstructionOutcomeFailed;
