@@ -4874,7 +4874,21 @@ bool Runtime::runFrame() {
 			for (const Common::SharedPtr<SceneTransitionHooks> &hook : _hacks.sceneTransitionHooks)
 				hook->onProjectStarted(this);
 
-			_pendingSceneTransitions.push_back(HighLevelSceneTransition(firstSubsection->getChildren()[1], HighLevelSceneTransition::kTypeChangeToScene, false, false));
+			Common::SharedPtr<Structural> startScene = firstSubsection->getChildren()[1];
+			if (!_startSceneName.empty()) {
+				for (const Common::SharedPtr<Structural> &section : _project->getChildren()) {
+					for (const Common::SharedPtr<Structural> &subsection : section->getChildren()) {
+						// The first scene of each subsection is its shared scene
+						for (uint i = 1; i < subsection->getChildren().size(); i++) {
+							if (subsection->getChildren()[i]->getName().equalsIgnoreCase(_startSceneName) && startScene == firstSubsection->getChildren()[1])
+								startScene = subsection->getChildren()[i];
+						}
+					}
+				}
+				_startSceneName.clear();
+			}
+
+			_pendingSceneTransitions.push_back(HighLevelSceneTransition(startScene, HighLevelSceneTransition::kTypeChangeToScene, false, false));
 			continue;
 		}
 
@@ -7447,6 +7461,11 @@ void Runtime::queueProject(const Common::SharedPtr<ProjectDescription> &desc) {
 	_queuedProjectDesc = desc;
 }
 
+// The next project starts at this scene instead of its first one
+void Runtime::setStartSceneName(const Common::String &sceneName) {
+	_startSceneName = sceneName;
+}
+
 const Graphics::Font *Runtime::getWindowsFont(const Common::String &familyName, uint pointSize, bool bold, bool italic) {
 #ifdef USE_FREETYPE2
 	Common::String family = "Sans";
@@ -7511,8 +7530,12 @@ void Runtime::closeProject() {
 	// TODO: There are actually some elaborate cases here involving opening projects, project return list,
 	// Project Ended message, etc. and Obsidian actually attempts to stop MIDI playback on project end.
 
-	// The reference guide says a title opened with "add to return list" closes back to the
-	// title that opened it, but Magic School Bus quits from titles opened that way
+	// A title opened with "add to return list" closes back to the title that opened it
+	if (_canReturnToPreviousTitle) {
+		_returnToPreviousTitleRequested = true;
+		return;
+	}
+
 	_isQuitting = true;
 }
 

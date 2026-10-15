@@ -1582,6 +1582,7 @@ public:
 	void drawFrame();
 
 	void queueProject(const Common::SharedPtr<ProjectDescription> &desc);
+	void setStartSceneName(const Common::String &sceneName);
 
 	// Open Title: requests that the engine boots another title file
 	void requestOpenTitle(const Common::String &path, bool addToReturnList);
@@ -1915,6 +1916,7 @@ private:
 	Common::HashMap<Common::String, Common::SharedPtr<Graphics::Font> > _windowsFonts;
 	bool _canReturnToPreviousTitle = false;
 	bool _returnToPreviousTitleRequested = false;
+	Common::String _startSceneName;
 	Common::SharedPtr<Project> _project;
 	Common::ScopedPtr<VThread> _vthread;
 	Common::Array<Common::SharedPtr<MessageDispatch> > _messageQueue;
