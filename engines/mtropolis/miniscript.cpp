@@ -579,11 +579,17 @@ MiniscriptInstructionOutcome Set::execute(MiniscriptThread *thread) const {
 
 	if (target.value.getType() == DynamicValueTypes::kWriteProxy) {
 		const DynamicValueWriteProxy &proxy = target.value.getWriteProxy();
+		uint pushCount = thread->getRuntime()->getVThread().getPushCount();
 		outcome = proxy.pod.ifc->write(thread, srcValue.value, proxy.pod.objectRef, proxy.pod.ptrOrOffset);
 		if (outcome == kMiniscriptInstructionOutcomeFailed) {
 			thread->error("Failed to assign value to proxy");
 			return outcome;
 		}
+
+		// A write that sent messages (such as cancelling a dialogue line, which sends its done
+		// message) pushed tasks that have to run before the script carries on
+		if (outcome == kMiniscriptInstructionOutcomeContinue && thread->getRuntime()->getVThread().getPushCount() != pushCount)
+			outcome = kMiniscriptInstructionOutcomeYieldToVThread;
 	} else {
 		VariableModifier *var = nullptr;
 		if (target.value.getType() == DynamicValueTypes::kObject) {

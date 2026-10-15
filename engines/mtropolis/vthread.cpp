@@ -61,7 +61,7 @@ void VThreadTaskData::debugInspect(IDebugInspectionReport *report) const {
 #endif
 
 VThread::VThread(ICoroutineManager *coroManager)
-	: _numActiveStackChunks(0), _coroManager(coroManager) {
+	: _numActiveStackChunks(0), _coroManager(coroManager), _pushCount(0) {
 }
 
 VThread::~VThread() {
@@ -140,7 +140,13 @@ bool VThread::reserveFrameInChunk(VThreadStackChunk *chunk, size_t frameAlignmen
 	return true;
 }
 
+uint VThread::getPushCount() const {
+	return _pushCount;
+}
+
 void VThread::reserveFrame(size_t frameAlignment, size_t frameSize, VThreadStackFrame *&outFramePtr, size_t dataAlignment, size_t dataSize, void *&outDataPtr, bool &outIsNewChunk) {
+	_pushCount++;
+
 	// See if this fits in the last active chunk
 	if (_numActiveStackChunks > 0) {
 		VThreadStackChunk &lastChunk = _stackChunks[_numActiveStackChunks - 1];
