@@ -90,11 +90,30 @@ MiniscriptReferences::GlobalRef::GlobalRef() : guid(0) {
 MiniscriptReferences::MiniscriptReferences(const Common::Array<LocalRef> &localRefs, const Common::Array<GlobalRef> &globalRefs) : _localRefs(localRefs), _globalRefs(globalRefs) {
 }
 
+static Common::String runtimeObjectName(RuntimeObject *obj) {
+	if (obj->isModifier())
+		return static_cast<Modifier *>(obj)->getName();
+	if (obj->isStructural())
+		return static_cast<Structural *>(obj)->getName();
+	return Common::String();
+}
+
 void MiniscriptReferences::linkInternalReferences(ObjectLinkingScope *scope) {
 	// Resolve using name lookups since there are some known cases where the GUID is broken
 	// e.g. "bArriveFromCutScene" in "Set bArriveFromCutScene on PE" in Obsidian
-	for (Common::Array<LocalRef>::iterator it = _localRefs.begin(), itEnd = _localRefs.end(); it != itEnd; ++it)
+	for (Common::Array<LocalRef>::iterator it = _localRefs.begin(), itEnd = _localRefs.end(); it != itEnd; ++it) {
 		it->resolution = scope->resolve(it->guid, it->name, false);
+
+		// A GUID can also belong to a different object than the one the script names, after objects
+		// were copied (in Magic School Bus Animals' penguin game, "lstiRCIdxMap" has listGood's GUID
+		// and "i" has a timer's), so an object with the name takes priority
+		Common::SharedPtr<RuntimeObject> obj = it->resolution.lock();
+		if (obj && !it->name.empty() && !caseInsensitiveEqual(runtimeObjectName(obj.get()), it->name)) {
+			Common::WeakPtr<RuntimeObject> byName = scope->resolve(it->name, false);
+			if (!byName.expired())
+				it->resolution = byName;
+		}
+	}
 
 	for (Common::Array<GlobalRef>::iterator it = _globalRefs.begin(), itEnd = _globalRefs.end(); it != itEnd; ++it)
 		it->resolution = scope->resolve(it->guid, "", true);
