@@ -439,12 +439,13 @@ struct SpriteObject : public EngineObject {
 	Common::Array<ObjRef> _children;
 	ObjRef _drawnAnim; // keeps the layers in _drawn alive
 	Common::Array<PlacedLayer> _drawn;
+	bool _speaking; // a talkie stream set the mouth last time
 
 	explicit SpriteObject(Type *t);
 	~SpriteObject() override;
 };
 
-SpriteObject::SpriteObject(Type *t) : EngineObject(t), _playing(false), _started(0), _animSeen(nullptr), _loopsSeen(0) {
+SpriteObject::SpriteObject(Type *t) : EngineObject(t), _playing(false), _started(0), _animSeen(nullptr), _loopsSeen(0), _speaking(false) {
 	_blinkAt = g_system->getMillis() + 1000 + g_engine->getRandomNumber(4000);
 	setEngineAttr(this, "position", newPoint(0, 0, 0).get());
 	setEngineAttr(this, "anim", g_none);
@@ -554,14 +555,35 @@ static void advanceSprite(SpriteObject *s) {
 
 // Lipsync: the mouth follows the newest stream attached to the sprite that
 // is still speaking. The game sets renderMask itself between lines
+// The stream only speaks while the sprite's talkie does: skipping a
+// cutscene (Enter) stops the sound but leaves the stream attached, and the
+// mouth must close with the sound. A sprite with no talkie sounds follows
+// its stream alone
 static void applyLipsync(SpriteObject *s) {
+	Object *talkies = s->getDict()->getItemString("talkies");
+	if (talkies && isInstanceOf(talkies, &g_talkieListType)) {
+		Ref<List> sounds = ((TalkieListObject *)talkies)->all();
+		bool playing = false;
+		for (uint32 i = 0; i < sounds->size() && !playing; i++)
+			playing = soundIsPlaying(sounds->get(i));
+		if (sounds->size() && !playing) {
+			if (s->_speaking)
+				setEngineAttr(s, "renderMask", newInt(kPhonemeRest).get());
+			s->_speaking = false;
+			return;
+		}
+	}
 	for (int i = (int)s->_children.size() - 1; i >= 0; i--) {
 		uint32 mask;
 		if (playbackMouthShape(s->_children[i].get(), &mask)) {
 			setEngineAttr(s, "renderMask", newInt(mask).get());
+			s->_speaking = true;
 			return;
 		}
 	}
+	if (s->_speaking)
+		setEngineAttr(s, "renderMask", newInt(kPhonemeRest).get());
+	s->_speaking = false;
 }
 
 void advanceSprites() {
