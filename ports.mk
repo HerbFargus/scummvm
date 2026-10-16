@@ -139,7 +139,7 @@ bundle_name = ScummVM.app
 bundle-pack:
 	mkdir -p $(bundle_name)/Contents/MacOS
 	mkdir -p $(bundle_name)/Contents/Resources
-	echo "APPL????" > $(bundle_name)/Contents/PkgInfo
+	printf "APPL????" > $(bundle_name)/Contents/PkgInfo
 	sed -e 's/$$(PRODUCT_BUNDLE_IDENTIFIER)/org.scummvm.app/' $(srcdir)/dists/macosx/Info.plist >$(bundle_name)/Contents/Info.plist
 ifdef USE_SPARKLE
 	mkdir -p $(bundle_name)/Contents/Frameworks
@@ -592,7 +592,11 @@ OSX_STATIC_LIBS += $(STATICLIBPATH)/lib/libRetroWave.a
 endif
 
 ifdef USE_SONIVOX
+ifneq (,$(wildcard $(STATICLIBPATH)/lib/libsonivox-static.a))
 OSX_STATIC_LIBS += $(STATICLIBPATH)/lib/libsonivox-static.a
+else
+OSX_STATIC_LIBS += $(STATICLIBPATH)/lib/libsonivox.a
+endif
 endif
 
 ifdef USE_SPARKLE
@@ -659,7 +663,7 @@ osxsnap: bundle
 	mkdir ScummVM-snapshot/doc/sv
 	cp $(DIST_FILES_DOCS_se) ./ScummVM-snapshot/doc/sv/
 ifdef MACOSX_LEOPARD_OR_BELOW
-	perl -pi -e 'print "\xEF\xBB\xBF" if $$. == 1 && !/^\xEF\xBB\xBF/' ./ScummVM-snapshot/doc/*/*
+	perl -pi -e 'print "\xEF\xBB\xBF" if $$. == 1 && substr($$_, 0, 3) ne "\xEF\xBB\xBF"; close ARGV if eof' ./ScummVM-snapshot/doc/*/*
 else
 	xattr -w "com.apple.TextEncoding" "utf-8;134217984" ./ScummVM-snapshot/doc/*/*
 endif
@@ -710,19 +714,12 @@ ideprojects: devtools/create_project
 ifeq ($(VER_DIRTY), -dirty)
 	$(error You have uncommitted changes)
 endif
-ifeq "$(CUR_BRANCH)" "heads/master"
-	$(error You cannot do it on master)
-else ifeq "$(CUR_BRANCH)" ""
-	$(error You must be on a release branch)
-endif
 	@echo Creating Code::Blocks project files...
-	@cd $(srcdir)/dists/codeblocks && $(PWD)/devtools/create_project/create_project ../.. --codeblocks >/dev/null && git add -f engines/*.h *.workspace *.cbp
+	@cd $(srcdir)/dists/codeblocks && $(PWD)/devtools/create_project/create_project ../.. --codeblocks >/dev/null
 	@echo Creating MSVC project files...
-	@cd $(srcdir)/dists/msvc && $(PWD)/devtools/create_project/create_project ../.. --msvc-version 14 --msvc >/dev/null && git add -f engines/*.h *.sln *.vcxproj *.vcxproj.filters *.props
+	@cd $(srcdir)/dists/msvc && $(PWD)/devtools/create_project/create_project ../.. --msvc-version 18 --msvc >/dev/null
 	@echo
 	@echo All is done.
-	@echo Now run
-	@echo -e "\tgit commit -m 'DISTS: Generated Code::Blocks and MSVC project files'"
 
 release-checks:
 	devtools/release-checks.sh

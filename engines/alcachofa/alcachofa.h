@@ -61,7 +61,7 @@ constexpr int16 kSmallThumbnailHeight = 120;
 namespace SaveVersion {
 	static constexpr const Common::Serializer::Version kInitial = 0;
 	static constexpr const Common::Serializer::Version kWithEngineV10 = 1;
-};
+}
 static constexpr const Common::Serializer::Version kCurrentSaveVersion = SaveVersion::kWithEngineV10;
 
 class MySerializer : public Common::Serializer {
@@ -81,12 +81,15 @@ public:
 
 class Config {
 public:
+	static constexpr const uint8 kMaxCursor = 3;
+
 	inline bool &subtitles() { return _subtitles; }
 	inline bool &highQuality() { return _highQuality; }
 	inline bool &bits32() { return _bits32; }
 	inline bool &texFilter() { return _texFilter; }
 	inline uint8 &musicVolume() { return _musicVolume; }
 	inline uint8 &speechVolume() { return _speechVolume; }
+	inline uint8 &cursor() { return _cursor; } // only used in V2
 
 	static void registerDefaults();
 	void loadFromScummVM();
@@ -100,7 +103,8 @@ private:
 		_texFilter = true;
 	uint8
 		_musicVolume = 255,
-		_speechVolume = 255;
+		_speechVolume = 255,
+		_cursor = 0;
 };
 
 class AlcachofaEngine : public Engine {
@@ -114,6 +118,7 @@ public:
 	inline EngineVersion version() const { return gameDescription().engineVersion; }
 	inline bool isV1() const { return gameDescription().isVersionBetween(10, 19); }
 	inline bool isV2() const { return gameDescription().isVersionBetween(20, 29); }
+	inline bool isV20() const { return gameDescription().isVersionBetween(20, 20); }
 	inline bool isV3() const { return gameDescription().isVersionBetween(30, 39); }
 
 	inline const AlcachofaGameDescription &gameDescription() const { return *_gameDescription; }
@@ -158,6 +163,7 @@ public:
 			(f == kSupportsReturnToLauncher);
 	};
 
+	bool isInSpecialGameLoop() const { return !_eventLoopSemaphore.isReleased(); }
 	bool canLoadGameStateCurrently(Common::U32String *msg = nullptr) override;
 	bool canSaveGameStateCurrently(Common::U32String *msg = nullptr) override {
 		return canLoadGameStateCurrently(msg);

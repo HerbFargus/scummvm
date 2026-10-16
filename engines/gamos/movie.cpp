@@ -124,8 +124,6 @@ bool MoviePlayer::playMovie(Common::File *file, uint32 offset, GamosEngine *gamo
 			}
 		}
 	}
-
-	return deinit();
 }
 
 bool MoviePlayer::error() {
@@ -320,8 +318,13 @@ int MoviePlayer::processImageChunk() {
 		if (dtime > _frameTime) {
 			if (_soundBufferSize) {
 				_skippedFrames++;
-				if (_skippedFrames != 8)
+				if (_skippedFrames != 8) {
 					_doUpdateScreen = false;
+					_screen->update();
+					_currentFrame++;
+
+					return 1;
+				}
 			}
 		} else if (dtime < _frameTime) {
 			while (true) {

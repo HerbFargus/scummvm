@@ -301,10 +301,11 @@ const WorkaroundEntry workaroundList[] = {
 	// Rincewind invisible. Entrance 2 attempts to kill the dragon's polygon,
 	// but it uses the wrong ID, and no attempt is made to remove the actor.
 	// We fix this by adding a `KillActor` call and a `KillTag` call with the
-	// actual polygon ID to the entrance 2 script. Entrance 1 is the finale,
-	// and requires `SetActor` and `SetTag` calls to restore the dragon.
-	{TINSEL_V1, false, false, Common::kPlatformUnknown, 0x0184eb36, 0, sizeof(fragment20), fragment20}, // Entrance 2
-	{TINSEL_V1, false, false, Common::kPlatformUnknown, 0x0184e86c, 0, sizeof(fragment21), fragment21}, // Entrance 1
+	// actual polygon ID to the entrance 2 script. We balance this with
+	// `SetActor` and `SetTag` calls when exiting to the map to prevent
+	// altering global actor or tag state outside of the act 4 square.
+	{TINSEL_V1, false, false, Common::kPlatformUnknown, 0x0184eb36,  0, sizeof(fragment20), fragment20}, // Entrance 2
+	{TINSEL_V1, false, false, Common::kPlatformUnknown, 0x0184eccc, 54, sizeof(fragment21), fragment21}, // Polygon 1: exit to map
 
 #if NOIR_SKIP_INTRO
 	// NOIR: Skip the menu and intro, and skip the first conversation.
@@ -957,14 +958,20 @@ void Interpret(CORO_PARAM, INT_CONTEXT *ic) {
 			break;
 
 		case OP_ESCON:
-			g_bNoPause = true;
-			ic->escOn = true;
-			ic->myEscape = GetEscEvents();
+			// Ignore EscapeOn during DW1 intro. We implement our own skipping.
+			if (!InDw1Intro()) {
+				g_bNoPause = true;
+				ic->escOn = true;
+				ic->myEscape = GetEscEvents();
+			}
 			break;
 
 		case OP_ESCOFF:
-			ic->escOn = false;
-			ic->myEscape = 0;
+			// Ignore EscapeOff during DW1 intro. We implement our own skipping.
+			if (!InDw1Intro()) {
+				ic->escOn = false;
+				ic->myEscape = 0;
+			}
 			break;
 
 		case OP_NOOP:

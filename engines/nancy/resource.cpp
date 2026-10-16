@@ -23,6 +23,7 @@
 #include "common/config-manager.h"
 
 #include "image/bmp.h"
+#include "image/png.h"
 
 #include "engines/nancy/nancy.h"
 #include "engines/nancy/resource.h"
@@ -94,7 +95,7 @@ bool ResourceManager::loadImage(const Common::Path &name, Graphics::ManagedSurfa
 			// .cifs are compressed, so we need to extract
 			CifFile cifFile(stream, name); // cifFile takes ownership of the current stream
 			stream = cifFile.createReadStream();
-			info = cifFile._info;
+			info = cifFile.getInfo();
 		}
 	}
 
@@ -147,7 +148,7 @@ bool ResourceManager::loadImage(const Common::Path &name, Graphics::ManagedSurfa
 		return false;
 	}
 
-	if (info.depth != 16) {
+	if (info.depth != 16 && info.depth != 24 && info.depth != 32) {
 		warning("Image '%s' has unsupported depth %i", name.toString().c_str(), info.depth);
 		delete stream;
 		return false;
@@ -162,8 +163,53 @@ bool ResourceManager::loadImage(const Common::Path &name, Graphics::ManagedSurfa
 		*outDest = info.dest;
 	}
 
+#ifdef USE_PNG
+	// Nancy18 stores its images as PNG files
+	if (g_nancy->getGameType() >= kGameTypeNancy18) {
+		Image::PNGDecoder pngDec;
+		if (!pngDec.loadStream(*stream)) {
+			warning("Couldn't decode PNG image '%s'", name.toString().c_str());
+			delete stream;
+			return false;
+		}
+
+		Graphics::Surface *converted = pngDec.getSurface()->convertTo(g_nancy->_graphics->getInputPixelFormat(32));
+		GraphicsManager::copyToManaged(*converted, surf);
+		converted->free();
+		delete converted;
+		delete stream;
+		return true;
+	}
+#endif
+
+	// Nancy16 stores its images as uncompressed, top-down TGA files. Only the header
+	// needs skipping; the image's size and depth come from the CIF info.
+	if (g_nancy->getGameType() >= kGameTypeNancy16) {
+		byte idLength = stream->readByte();
+		byte colorMapType = stream->readByte();
+		byte imageType = stream->readByte();
+		stream->skip(9); // color map spec, origin
+		uint16 width = stream->readUint16LE();
+		uint16 height = stream->readUint16LE();
+		byte bpp = stream->readByte();
+		byte descriptor = stream->readByte();
+
+		const byte kTGATrueColor = 2;
+		const byte kTGATopDown = 0x20;
+
+		if (colorMapType != 0 || imageType != kTGATrueColor || !(descriptor & kTGATopDown) ||
+				bpp != info.depth || width != info.width || height != info.height) {
+			warning("Image '%s' is an unsupported TGA (type %u, color map %u, %u bpp, descriptor 0x%02x, %ux%u)",
+				name.toString().c_str(), imageType, colorMapType, bpp, descriptor, width, height);
+			delete stream;
+			return false;
+		}
+
+		stream->skip(idLength);
+	}
+
 	// Finally, copy the data into the surface
-	uint32 bufSize = info.pitch * info.height * (info.depth / 16);
+	uint32 bufSize = info.pitch * info.height;
 	byte *buf = new byte[bufSize];
 	stream->read(buf, bufSize);
 
@@ -174,7 +220,30 @@ bool ResourceManager::loadImage(const Common::Path &name, Graphics::ManagedSurfa
 	}
 	#endif
 
-	GraphicsManager::copyToManaged(buf, surf, info.width, info.height, g_nancy->_graphics->getInputPixelFormat());
+	if (info.depth == 24 && surf.format.bpp() == 32) {
+		// Nancy13+ uses 32bpp surfaces for 24bpp images, so we need to convert the data
+		// to 32bpp before copying it into the surface
+		uint32 newBufSize = info.width * info.height * 4;
+		byte *newBuf = new byte[newBufSize];
+		for (uint y = 0; y < info.height; ++y) {
+			for (uint x = 0; x < info.width; ++x) {
+				uint32 srcIndex = y * info.pitch + x * 3;
+				uint32 destIndex = y * info.width * 4 + x * 4;
+				newBuf[destIndex + 0] = buf[srcIndex + 0];
+				newBuf[destIndex + 1] = buf[srcIndex + 1];
+				newBuf[destIndex + 2] = buf[srcIndex + 2];
+				newBuf[destIndex + 3] = 0xFF; // alpha channel
+			}
+		}
+		delete[] buf;
+		buf = newBuf;
+		bufSize = newBufSize;
+		info.pitch = info.width * 4;
+		info.depth = 32;
+	}
+
+	GraphicsManager::copyToManaged(buf, surf, info.width, info.height, g_nancy->_graphics->getInputPixelFormat(info.depth));
+
 	delete[] buf;
 	delete stream;
 	return true;
@@ -206,7 +275,28 @@ IFF *ResourceManager::loadIFF(const Common::Path &name) {
 	return nullptr;
 }
 
+Common::SeekableReadStream *ResourceManager::loadScript(const Common::Path &name) {
+	Common::SeekableReadStream *stream = SearchMan.createReadStreamForMember(name.append(".lua"));
+	if (stream) {
+		return stream;
+	}
+
+	stream = SearchMan.createReadStreamForMember(name.append(".cif"));
+	if (stream) {
+		CifFile cifFile(stream, name); // cifFile takes ownership of the current stream
+		return cifFile.createReadStream();
+	}
+
+	return SearchMan.createReadStreamForMember(Common::Path(name));
+}
+
 bool ResourceManager::readCifTree(const Common::String &name, const Common::String &ext, int priority) {
+	// Nancy15+ asks for a player character's tree again on every switch back
+	// to that character, so make sure each tree is only ever added once
+	if (hasCifTree(name)) {
+		return true;
+	}
+
 	CifTree *tree = CifTree::makeCifTreeArchive(name, ext);
 	if (!tree) {
 		return false;
@@ -220,6 +310,22 @@ bool ResourceManager::readCifTree(const Common::String &name, const Common::Stri
 	SearchMan.add(treePrefix + upper, tree, priority, true);
 	_cifTreeNames.push_back(name);
 	return true;
+}
+
+bool ResourceManager::hasCifTree(const Common::String &name) const {
+	for (const Common::String &loaded : _cifTreeNames) {
+		if (loaded.equalsIgnoreCase(name)) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+void ResourceManager::setCifTreePriority(const Common::String &name, int priority) {
+	Common::String upper = name;
+	upper.toUppercase();
+	SearchMan.setPriority(treePrefix + upper, priority);
 }
 
 PatchTree *ResourceManager::readPatchTree(Common::SeekableReadStream *stream, const Common::String &name, int priority) {
@@ -264,6 +370,11 @@ Common::String ResourceManager::getCifDescription(const Common::String &treeName
 		error("Couldn't find CifInfo struct inside loaded CifTrees");
 	}
 
+	if (!tree->hasFile(name)) {
+		Common::String ret = Common::String::format("Couldn't find CIF %s\n", name.toString().c_str());
+		return ret;
+	}
+
 	const CifInfo &info = tree->getCifInfo(name);
 
 	Common::String desc;
@@ -288,27 +399,21 @@ void ResourceManager::list(const Common::String &treeName, Common::Array<Common:
 		if (!tree) {
 			return;
 		}
-		for (auto &i : tree->_fileMap) {
-			if (type == CifInfo::kResTypeAny || i._value.type == type) {
-				outList.push_back(i._key);
-			}
-		}
+		Common::Array<Common::Path> result = tree->getPathsForType(type);
+		outList.insert_at(outList.size(), result);
 	} else {
 		for (uint i = 0; i < _cifTreeNames.size(); ++i) {
 			// No provided tree name, check inside every loaded tree
 			Common::String upper = _cifTreeNames[i];
 			upper.toUppercase();
 			const CifTree *tree = (const CifTree *)SearchMan.getArchive(treePrefix + upper);
-			for (auto &it : tree->_fileMap) {
-				if (type == CifInfo::kResTypeAny || it._value.type == type) {
-					outList.push_back(it._key);
-				}
-			}
+			Common::Array<Common::Path> result = tree->getPathsForType(type);
+			outList.insert_at(outList.size(), result);
 		}
 	}
 }
 
-bool ResourceManager::exportCif(const Common::String &treeName, const Common::Path &name) {
+bool ResourceManager::exportCif(const Common::Path &name) {
 	if (!SearchMan.hasFile(name)) {
 		return false;
 	}
@@ -319,8 +424,10 @@ bool ResourceManager::exportCif(const Common::String &treeName, const Common::Pa
 	if (stream) {
 		// .cifs are compressed, so we need to extract
 		CifFile cifFile(stream, name); // cifFile takes ownership of the current stream
-		stream = cifFile.createReadStreamRaw();
-		info = cifFile._info;
+		stream = cifFile.createReadStream();
+		if (!stream)
+			stream = cifFile.createReadStreamRaw();
+		info = cifFile.getInfo();
 	}
 
 	if (!stream) {
@@ -344,7 +451,9 @@ bool ResourceManager::exportCif(const Common::String &treeName, const Common::Pa
 			}
 
 			if (tree) {
-				stream = tree->createReadStreamRaw(name);
+				stream = tree->createReadStreamForMember(name);
+				if (!stream)
+					stream = tree->createReadStreamRaw(name);
 				info = tree->getCifInfo(name);
 			} else {
 				// Finally, use SearchMan to get a loose file. This is useful if we want to add files that
@@ -363,8 +472,7 @@ bool ResourceManager::exportCif(const Common::String &treeName, const Common::Pa
 		}
 	}
 
-	CifFile file;
-	file._info = info;
+	CifFile file(info);
 
 	Common::DumpFile dump;
 	dump.open(name.append(".cif"));
@@ -408,7 +516,7 @@ bool ResourceManager::exportCifTree(const Common::String &treeName, const Common
 			// .cifs are compressed, so we need to extract
 			CifFile cifFile(stream, path); // cifFile takes ownership of the current stream
 			stream = cifFile.createReadStreamRaw();
-			info = cifFile._info;
+			info = cifFile.getInfo();
 		}
 
 		if (!stream) {
@@ -452,25 +560,32 @@ bool ResourceManager::exportCifTree(const Common::String &treeName, const Common
 		}
 
 		resStreams.push_back(stream);
-		file._writeFileMap.push_back(info);
-	}
-
-	uint16 dataOffset = headerSize + file._writeFileMap.size() * infoSize; // Initial offset after header/infos
-	for (uint i = 0; i < file._writeFileMap.size(); ++i) {
-		file._writeFileMap[i].dataOffset = dataOffset;
-		for (uint j = 0; j < i; ++j) {
-			file._writeFileMap[i].dataOffset += resStreams[j]->size(); // Final offset, following raw data of previous files
-		}
+		file.addInfo(info);
 	}
 
 	Common::DumpFile dump;
 	dump.open(Common::Path(treeName + ".dat"));
 
-	Common::Serializer ser(nullptr, &dump);
-	file.sync(ser);
+	if (g_nancy->getGameType() >= kGameTypeNancy18) {
+		file.write(dump, resStreams);
+	} else {
+		uint16 dataOffset = headerSize + file.writeFileMapSize() * infoSize; // Initial offset after header/infos
+		for (uint i = 0; i < file.writeFileMapSize(); ++i) {
+			file.setDataOffset(i, dataOffset);
+			for (uint j = 0; j < i; ++j) {
+				file.setDataOffset(i, file.getDataOffset(i) + resStreams[j]->size()); // Final offset, following raw data of previous files
+			}
+		}
+
+		Common::Serializer ser(nullptr, &dump);
+		file.sync(ser);
+
+		for (uint i = 0; i < resStreams.size(); ++i) {
+			dump.writeStream(resStreams[i]);
+		}
+	}
 
 	for (uint i = 0; i < resStreams.size(); ++i) {
-		dump.writeStream(resStreams[i]);
 		delete resStreams[i];
 	}
 

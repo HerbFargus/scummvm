@@ -47,7 +47,7 @@ C2ButtonDialog::C2ButtonDialog(CWnd *pParent, CPalette *pPalette,
                                const char *pszButton1Text, const char *pszButton2Text,
                                const char *pszText1, const char *pszText2,
                                const char *pszText3)
-	: CBmpDialog(pParent, pPalette, IDD_2BTNDLG, ".\\ART\\MSSCROLL.BMP") {
+	: CBmpDialog(pParent, pPalette, IDD_2BTNDLG, "art\\MSSCROLL.BMP") {
 	assert(pParent != nullptr);
 	assert(pPalette != nullptr);
 	assert(pszText1 != nullptr);
@@ -147,7 +147,7 @@ bool C2ButtonDialog::OnInitDialog() {
 	);
 
 	if ((m_cTextMessage1 = new CText()) != nullptr) {
-		bAssertCheck = (*m_cTextMessage1).SetupText(pDC, m_pPalette, &statsRect, JUSTIFY_CENTER);
+		bAssertCheck = m_cTextMessage1->SetupText(pDC, m_pPalette, &statsRect, JUSTIFY_CENTER);
 		ASSERT(bAssertCheck);   // initialize the text objext
 	}
 
@@ -159,7 +159,7 @@ bool C2ButtonDialog::OnInitDialog() {
 	                 );
 
 	if ((m_cTextMessage2 = new CText()) != nullptr) {
-		bAssertCheck = (*m_cTextMessage2).SetupText(pDC, m_pPalette, &statsRect, JUSTIFY_CENTER);
+		bAssertCheck = m_cTextMessage2->SetupText(pDC, m_pPalette, &statsRect, JUSTIFY_CENTER);
 		ASSERT(bAssertCheck);   // initialize the text objext
 	}
 
@@ -178,14 +178,14 @@ bool C2ButtonDialog::OnInitDialog() {
 	ReleaseDC(pDC);
 
 	if ((m_pButton1 = new CColorButton) != nullptr) {            // build the first color button
-		(*m_pButton1).SetPalette(m_pPalette);                 // set the palette to use
-		(*m_pButton1).SetControl(IDOK, this);                 // tie to the dialog control
-		(*m_pButton1).SetWindowText(m_pszButton1Text);
+		m_pButton1->SetPalette(m_pPalette);                 // set the palette to use
+		m_pButton1->SetControl(IDOK, this);                 // tie to the dialog control
+		m_pButton1->SetWindowText(m_pszButton1Text);
 	}
 	if ((m_pButton2 = new CColorButton) != nullptr) {             // build the second color button
-		(*m_pButton2).SetPalette(m_pPalette);                  // set the palette to use
-		(*m_pButton2).SetControl(IDCANCEL, this);              // tie to the dialog control
-		(*m_pButton2).SetWindowText(m_pszButton2Text);
+		m_pButton2->SetPalette(m_pPalette);                  // set the palette to use
+		m_pButton2->SetControl(IDCANCEL, this);              // tie to the dialog control
+		m_pButton2->SetWindowText(m_pszButton2Text);
 	}
 
 	return true;  // return true  unless you set the focus to a control

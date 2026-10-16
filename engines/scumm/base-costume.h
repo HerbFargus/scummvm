@@ -113,12 +113,9 @@ protected:
 public:
 	struct ByleRLEData {
 		// Parameters for the original ("V1") costume codec.
-		// These ones are accessed from ARM code. Don't reorder.
 		int x;
 		int y;
 		const byte *scaleTable;
-		int height;
-		int width;
 		int skipWidth;
 		byte *destPtr;
 		const byte *maskPtr;
@@ -126,10 +123,12 @@ public:
 		byte mask, shr;
 		byte repColor;
 		byte repLen;
-		// These ones aren't accessed from ARM code.
 		Common::Rect boundsRect;
 		int scaleXIndex, scaleYIndex;
 		int scaleIndexMask;
+#ifdef SCUMM_OPTIMISED_CODE
+		int scaledHeight;
+#endif
 	};
 
     BaseCostumeRenderer(ScummEngine *scumm, bool akosRendering = false) {
@@ -177,11 +176,14 @@ protected:
 		bool &decode);
 
 	void byleRLEDecode(ByleRLEData &compData, int16 actorHitX = 0, int16 actorHitY = 0, bool *actorHitResult = nullptr, const uint8 *xmap = nullptr);
-
+#ifdef SCUMM_OPTIMISED_CODE
+	void byleRLEDecodeFast(ByleRLEData &compData, const byte *xmap);
+#endif
 	void skipCelLines(ByleRLEData &compData, int num);
 
 private:
-	// helper function to be called from paintCelByleRLECommon
+	// helper functions to be called from paintCelByleRLECommon
+	virtual void clipBoundsRect(Common::Rect &boundsRect) {}
 	virtual void markAsDirty(const Common::Rect &rect, ByleRLEData &compData, bool &decode) {}
 };
 

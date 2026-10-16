@@ -96,8 +96,8 @@ struct MacFinderInfo {
 
 	MacFinderInfoData toData() const;
 
-	byte type[4];
-	byte creator[4];
+	uint32 type;
+	uint32 creator;
 	uint16 flags;
 	Common::Point position;
 	int16 windowID;
@@ -165,6 +165,11 @@ public:
 	 * @return The stream if found, 0 otherwise
 	 */
 	static SeekableReadStream *openDataForkFromMacBinary(SeekableReadStream *inStream, DisposeAfterUse::Flag disposeAfterUse = DisposeAfterUse::NO);
+
+	/**
+	 * Write macbinary data to a stream.
+	 */
+	static void writeMacBinary(SeekableWriteStream *outStream, SeekableReadStream *dataFork, SeekableReadStream *resourceFork, const Common::String &name, const MacFinderInfo &info, TimeDate *created = nullptr, TimeDate *modified = nullptr);
 
 	/**
 	 * See if a Mac data/resource fork pair exists.
@@ -264,6 +269,14 @@ public:
 	uint32 getResLength(uint32 typeID, uint16 resID);
 
 	/**
+	 * Get the resource ID from a MacBinary file
+	 * @param typeID FourCC of the type
+	 * @param filename file name of the resource
+	 * @return The resource ID for a matching resource
+	 */
+	uint16 getResID(uint32 typeID, const Common::String &filename);
+
+	/**
 	 * Get the size of the data portion of the resource fork
 	 * @return The size of the data portion of the resource fork
 	 */
@@ -296,6 +309,12 @@ public:
 	Path getBaseFileName() const { return _baseFileName; }
 
 	void setBaseFileName(Common::Path str) { _baseFileName = str; }
+
+	/**
+	 * Get the original Macintosh file name extracted from headers.
+	 * @return The original file name if available, otherwise an empty string.
+	 */
+	String getOriginalFileName() const { return _originalFileName; }
 
 	/**
 	 * Return list of resource IDs with specified type ID
@@ -347,17 +366,20 @@ public:
 private:
 	SeekableReadStream *_stream;
 	Path _baseFileName;
+	String _originalFileName;
 
 	bool load(SeekableReadStream *stream);
 
 	bool loadFromRawFork(SeekableReadStream *stream);
 	bool loadFromAppleDouble(SeekableReadStream *stream);
 
+public:
 	/**
 	 * Get Finder info from a file in MacBinary format
 	 */
 	static bool getFinderInfoFromMacBinary(SeekableReadStream *stream, MacFinderInfo &outFinderInfo, MacFinderExtendedInfo &outFinderExtendedInfo);
 
+private:
 	/**
 	 * Get Finder info from a file in AppleDouble format
 	 */

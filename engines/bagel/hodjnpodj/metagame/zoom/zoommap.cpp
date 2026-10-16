@@ -29,7 +29,7 @@ namespace HodjNPodj {
 namespace Metagame {
 namespace Zoom {
 
-#define SPLASHSPEC  ".\\ART\\ZOOMMAP.BMP"
+#define SPLASHSPEC  "art\\ZOOMMAP.BMP"
 
 #define IDC_LEAVE		999
 
@@ -458,7 +458,7 @@ bool CMainZoomWindow::OnCommand(WPARAM wParam, LPARAM lParam) {
 			break;
 		}
 	}
-	(*this).SetFocus();                         // Reset focus back to the main window
+	(this)->SetFocus();                         // Reset focus back to the main window
 	return true;
 }
 

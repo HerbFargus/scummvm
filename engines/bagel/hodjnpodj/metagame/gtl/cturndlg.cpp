@@ -29,7 +29,7 @@ namespace Metagame {
 namespace Gtl {
 
 CTurnDialog::CTurnDialog(CWnd* pParent, CPalette *pPalette, bool bHodj, bool bGain, bool bTurn)
-	: CBmpDialog(pParent, pPalette, IDD_TURNDLG, ".\\art\\msscroll.bmp") {
+	: CBmpDialog(pParent, pPalette, IDD_TURNDLG, "art\\msscroll.bmp") {
 	// Initialize all members
 	//
 	m_pPalette = pPalette;
@@ -100,7 +100,7 @@ bool CTurnDialog::OnInitDialog() {
 	                 nText_row_offset + nTextHeight);
 
 	if ((m_pTextMessage = new CText()) != nullptr) {
-		bSuccess = (*m_pTextMessage).SetupText(pDC, m_pPalette, &textRect, JUSTIFY_CENTER);
+		bSuccess = m_pTextMessage->SetupText(pDC, m_pPalette, &textRect, JUSTIFY_CENTER);
 		ASSERT(bSuccess);   // initialize the text objext
 	}
 
@@ -108,8 +108,8 @@ bool CTurnDialog::OnInitDialog() {
 
 	m_pOKButton = new CColorButton();                   // build a color QUIT button to let us exit
 	ASSERT(m_pOKButton != nullptr);
-	(*m_pOKButton).SetPalette(m_pPalette);        // set the palette to use
-	bSuccess = (*m_pOKButton).SetControl((int) GetDefID(), this); // tie to the dialog control
+	m_pOKButton->SetPalette(m_pPalette);        // set the palette to use
+	bSuccess = m_pOKButton->SetControl((int) GetDefID(), this); // tie to the dialog control
 	ASSERT(bSuccess);
 
 	return true;  // return true  unless you set the focus to a control
@@ -128,13 +128,13 @@ void CTurnDialog::OnPaint() {
 
 	if (m_bTurn) {
 		Common::sprintf_s(msgBuf, "%s %s", m_bHodj ? "Hodj" : "Podj", m_bGain ? "gains a turn." : "loses a turn.");
-		Common::sprintf_s(artBuf, "%s", m_bGain ? ".\\art\\freeturn.bmp" : ".\\art\\loseturn.bmp");
+		Common::sprintf_s(artBuf, "%s", m_bGain ? "art\\freeturn.bmp" : "art\\loseturn.bmp");
 	} else {
 		Common::sprintf_s(msgBuf, "%s %s", m_bHodj ? "Hodj" : "Podj", m_bGain ? "wins the game!" : "loses the game.");
-		Common::sprintf_s(artBuf, "%s", m_bGain ? ".\\art\\wingame.bmp" : ".\\art\\losegame.bmp");
+		Common::sprintf_s(artBuf, "%s", m_bGain ? "art\\wingame.bmp" : "art\\losegame.bmp");
 	}
 
-	bSuccess = (*m_pTextMessage).DisplayString(pDC, msgBuf, 20, FW_BOLD, TEXT_COLOR);
+	bSuccess = m_pTextMessage->DisplayString(pDC, msgBuf, 20, FW_BOLD, TEXT_COLOR);
 	ASSERT(bSuccess);
 
 	PaintMaskedDIB(pDC, m_pPalette, artBuf,

@@ -127,8 +127,8 @@ void PopUpDialog::open() {
 void PopUpDialog::reflowLayout() {
 }
 
-void PopUpDialog::drawDialog(DrawLayer layerToDraw) {
-	Dialog::drawDialog(layerToDraw);
+void PopUpDialog::drawDialog(DrawLayer layerToDraw, bool resetClipping) {
+	Dialog::drawDialog(layerToDraw, resetClipping);
 
 	int16 x = _x;
 	if (g_gui.useRTL()) {
@@ -304,20 +304,15 @@ void PopUpDialog::clearEntries() {
 }
 
 int PopUpDialog::findItem(int x, int y) const {
+	int entry = -1;
 	if (x >= 0 && x < _w && y >= 0 && y < _h) {
-		if (_twoColumns) {
-			uint entry = (y - 2) / _lineHeight;
-			if (x > _w / 2) {
-				entry += _entriesPerColumn;
-
-				if (entry >= _entries.size())
-					return -1;
-			}
-			return entry;
-		}
-		return (y - 2) / _lineHeight;
+		entry = (y - 2) / _lineHeight;
+		if (_twoColumns && x > _w / 2)
+			entry += _entriesPerColumn;
+		if (entry >= static_cast<int>(_entries.size()))
+			entry = -1;
 	}
-	return -1;
+	return entry;
 }
 
 void PopUpDialog::setSelection(int item) {
@@ -436,7 +431,7 @@ void PopUpDialog::drawMenuEntry(int entry, bool hilite) {
 
 PopUpWidget::PopUpWidget(GuiObject *boss, const Common::String &name, const Common::U32String &tooltip, uint32 cmd)
 	: Widget(boss, name, tooltip), CommandSender(boss) {
-	setFlags(WIDGET_ENABLED | WIDGET_CLEARBG | WIDGET_RETAIN_FOCUS | WIDGET_IGNORE_DRAG);
+	setFlags(WIDGET_ENABLED | WIDGET_CLEARBG);
 	_type = kPopUpWidget;
 	_cmd = cmd;
 
@@ -446,7 +441,7 @@ PopUpWidget::PopUpWidget(GuiObject *boss, const Common::String &name, const Comm
 
 PopUpWidget::PopUpWidget(GuiObject *boss, int x, int y, int w, int h, const Common::U32String &tooltip, uint32 cmd)
 	: Widget(boss, x, y, w, h, tooltip), CommandSender(boss) {
-	setFlags(WIDGET_ENABLED | WIDGET_CLEARBG | WIDGET_RETAIN_FOCUS | WIDGET_IGNORE_DRAG);
+	setFlags(WIDGET_ENABLED | WIDGET_CLEARBG);
 	_type = kPopUpWidget;
 	_cmd = cmd;
 

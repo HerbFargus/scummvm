@@ -24,9 +24,11 @@
 #include "engines/nancy/nancy.h"
 #include "engines/nancy/cif.h"
 #include "engines/nancy/resource.h"
+#include "engines/nancy/sound.h"
 #include "engines/nancy/state/scene.h"
 
 #include "common/memstream.h"
+#include "common/random.h"
 
 namespace Nancy {
 
@@ -50,7 +52,7 @@ void SceneChangeDescription::readData(Common::SeekableReadStream &stream, bool l
 	}
 }
 
-void SceneChangeWithFlag::readData(Common::SeekableReadStream &stream, bool reverseFormat) {
+void SceneChangeWithFlag::readData(Common::SeekableReadStream &stream, bool reverseFormat, bool terse) {
 	_sceneChange.sceneID = stream.readUint16LE();
 	_sceneChange.frameID = stream.readUint16LE();
 	_sceneChange.verticalOffset = stream.readUint16LE();
@@ -61,23 +63,29 @@ void SceneChangeWithFlag::readData(Common::SeekableReadStream &stream, bool reve
 		_flag.label = stream.readSint16LE();
 		_flag.flag = stream.readByte();
 
+		if (terse) {
+			stream.skip(1);	// unknown
+			stream.skip(2);	// shouldStopRendering
+		}
+
 		if (g_nancy->getGameType() >= kGameTypeNancy3) {
-			int32 x = stream.readSint32LE();
-			int32 y = stream.readSint32LE();
-			int32 z = stream.readSint32LE();
+			int32 x = terse ? 0 : stream.readSint32LE();
+			int32 y = terse ? 0 : stream.readSint32LE();
+			int32 z = terse ? 1 : stream.readSint32LE();
 			_sceneChange.listenerFrontVector.set(x, y, z);
 			_sceneChange.frontVectorFrameID = _sceneChange.frameID;
 		}
 	} else {
 		if (g_nancy->getGameType() >= kGameTypeNancy3) {
-			int32 x = stream.readSint32LE();
-			int32 y = stream.readSint32LE();
-			int32 z = stream.readSint32LE();
+			int32 x = terse ? 0 : stream.readSint32LE();
+			int32 y = terse ? 0 : stream.readSint32LE();
+			int32 z = terse ? 1 : stream.readSint32LE();
 			_sceneChange.listenerFrontVector.set(x, y, z);
 			_sceneChange.frontVectorFrameID = _sceneChange.frameID;
 		}
 
 		stream.skip(2); // shouldStopRendering
+
 		_flag.label = stream.readSint16LE();
 		_flag.flag = stream.readByte();
 	}
@@ -105,8 +113,14 @@ void FrameBlitDescription::readData(Common::SeekableReadStream &stream, bool lon
 		hasHotspot = stream.readUint16LE();
 	}
 
-	readRect(stream, src);
-	readRect(stream, dest);
+	// The right and bottom edges of a Nancy18 rect are no longer a part of it
+	if (g_nancy->getGameType() >= kGameTypeNancy18) {
+		readExclusiveRect(stream, src);
+		readExclusiveRect(stream, dest);
+	} else {
+		readRect(stream, src);
+		readRect(stream, dest);
+	}
 }
 
 void MultiEventFlagDescription::readData(Common::SeekableReadStream &stream) {
@@ -117,16 +131,29 @@ void MultiEventFlagDescription::readData(Common::SeekableReadStream &stream) {
 }
 
 void MultiEventFlagDescription::execute() {
-	for (uint i = 0; i < 10; ++i) {
-		NancySceneState.setEventFlag(descs[i]);
+	for (const FlagDescription &desc : descs) {
+		NancySceneState.setEventFlag(desc);
 	}
 }
 
-void SecondaryVideoDescription::readData(Common::SeekableReadStream &stream) {
+void SecondaryVideoDescription::readData(Common::SeekableReadStream &stream, bool hasTrailingRects) {
 	frameID = stream.readUint16LE();
-	readRect(stream, srcRect);
-	readRect(stream, destRect);
-	stream.skip(0x20);
+
+	// The right and bottom edges of a Nancy18 rect are no longer a part of it
+	if (g_nancy->getGameType() >= kGameTypeNancy18) {
+		readExclusiveRect(stream, srcRect);
+		readExclusiveRect(stream, destRect);
+	} else {
+		readRect(stream, srcRect);
+		readRect(stream, destRect);
+	}
+
+	// PlaySecondaryVideo keeps the two trailing rects in every game, while
+	// PlaySecondaryMovie only has them up to Nancy 9 and dropped them afterwards.
+	if (hasTrailingRects || g_nancy->getGameType() <= kGameTypeNancy9) {
+		stream.skip(16);
+		stream.skip(16);
+	}
 }
 
 void SoundEffectDescription::readData(Common::SeekableReadStream &stream) {
@@ -264,6 +291,48 @@ void SoundDescription::readTerse(Common::SeekableReadStream &stream) {
 	numLoops = stream.readUint32LE();
 	volume = stream.readUint16LE();
 	stream.skip(2);
+}
+
+void RandomSoundBlock::readData(Common::SeekableReadStream &stream) {
+	int16 count = stream.readSint16LE();
+	if (count > 0) {
+		names.resize(count);
+		for (int i = 0; i < count; ++i) {
+			readFilename(stream, names[i]);
+		}
+		channel = stream.readSint16LE();
+		numLoops = stream.readSint32LE();
+		volume = stream.readSint16LE();
+	}
+}
+
+SoundDescription RandomSoundBlock::play() const {
+	SoundDescription desc;
+	if (names.empty()) {
+		return desc;
+	}
+
+	uint idx = names.size() == 1 ? 0 : g_nancy->_randomSource->getRandomNumber(names.size() - 1);
+	const Common::String &name = names[idx];
+	if (name.empty() || name == "NO SOUND") {
+		return desc;
+	}
+
+	desc.name = name;
+	desc.channelID = channel;
+	desc.numLoops = numLoops > 0 ? numLoops : 1;
+	desc.volume = volume;
+
+	g_nancy->_sound->loadSound(desc);
+	g_nancy->_sound->playSound(desc);
+
+	Common::String caption = resolveSubtitleText(name);
+	if (caption.empty()) {
+		caption = resolveSubtitleText(name, Common::String(), "CONVO");
+	}
+	showSubtitle(caption);
+
+	return desc;
 }
 
 void ConditionalDialogue::readData(Common::SeekableReadStream &stream) {

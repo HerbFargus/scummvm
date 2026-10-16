@@ -64,7 +64,7 @@ static  CColorButton *pDefaultsButton = nullptr;               // Defaults butto
 static  CCheckButton *pFixedButton = nullptr;
 
 CUserCfgDlg::CUserCfgDlg(CWnd *pParent, CPalette *pPalette, unsigned int nID)
-	: CBmpDialog(pParent, pPalette, nID, ".\\ART\\SSCROLL.BMP") {
+	: CBmpDialog(pParent, pPalette, nID, "art\\SSCROLL.BMP") {
 
 	m_pNamesButton = nullptr;
 	DoModal();
@@ -82,22 +82,6 @@ void CUserCfgDlg::PutDlgData() {
 	pFixedButton->SetCheck(!m_bRandomLetters);
 	m_pNamesButton->SetCheck(m_bShowNames);
 }
-
-
-void CUserCfgDlg::GetDlgData() {
-	m_nGameSpeed = m_pSpeedScroll->GetScrollPos();
-	m_nShown = m_pShownScroll->GetScrollPos();
-
-	m_bRandomLetters = true;
-	if (pFixedButton->GetCheck() == 1)
-		m_bRandomLetters = false;
-
-	m_bShowNames = false;
-	if (m_pNamesButton->GetCheck() == 1) {
-		m_bShowNames = true;
-	}
-}
-
 
 bool CUserCfgDlg::OnCommand(WPARAM wParam, LPARAM lParam) {
 	/*
@@ -302,23 +286,23 @@ bool CUserCfgDlg::OnInitDialog() {
 	ReleaseDC(pDC);
 
 	if ((pOKButton = new CColorButton) != nullptr) {                   // build a color QUIT button to let us exit
-		(*pOKButton).SetPalette(m_pPalette);                        // set the palette to use
-		(*pOKButton).SetControl(IDOK, this);            // tie to the dialog control
+		pOKButton->SetPalette(m_pPalette);                        // set the palette to use
+		pOKButton->SetControl(IDOK, this);            // tie to the dialog control
 	}
 
 	if ((pCancelButton = new CColorButton) != nullptr) {                   // build a color QUIT button to let us exit
-		(*pCancelButton).SetPalette(m_pPalette);                        // set the palette to use
-		(*pCancelButton).SetControl(IDCANCEL, this);            // tie to the dialog control
+		pCancelButton->SetPalette(m_pPalette);                        // set the palette to use
+		pCancelButton->SetControl(IDCANCEL, this);            // tie to the dialog control
 	}
 
 	if ((pDefaultsButton = new CColorButton) != nullptr) {                 // build a color QUIT button to let us exit
-		(*pDefaultsButton).SetPalette(m_pPalette);                      // set the palette to use
-		(*pDefaultsButton).SetControl(ID_RESET, this);              // tie to the dialog control
+		pDefaultsButton->SetPalette(m_pPalette);                      // set the palette to use
+		pDefaultsButton->SetControl(ID_RESET, this);              // tie to the dialog control
 	}
 
 	if ((pFixedButton = new CCheckButton) != nullptr) {        // build a color QUIT button to let us exit
-		(*pFixedButton).SetPalette(m_pPalette);             // set the palette to use
-		(*pFixedButton).SetControl(ID_FIXED, this);         // tie to the dialog control
+		pFixedButton->SetPalette(m_pPalette);             // set the palette to use
+		pFixedButton->SetControl(ID_FIXED, this);         // tie to the dialog control
 	}
 
 	if ((m_pNamesButton = new CCheckButton) != nullptr) {
@@ -427,8 +411,6 @@ void CUserCfgDlg::ClearDialogImage() {
 	CDC *pDC;
 
 	if (m_bShouldSave) {
-		GetDlgData();
-
 		WritePrivateProfileString(INI_SECTION, "RandomLetters",
 		                          m_bRandomLetters ? "Yes" : "No", INI_FILENAME);
 		WritePrivateProfileString(INI_SECTION, "NumStartingLetters",

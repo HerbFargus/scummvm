@@ -260,6 +260,9 @@ Music::Music(SherlockEngine *vm, Audio::Mixer *mixer) : _vm(vm), _mixer(mixer) {
 			if (ConfMan.getBool("native_mt32")) {
 				_midiDriver = MidiDriver_MT32_create();
 				_musicType = MT_MT32;
+			} else {
+				_midiDriver = MidiDriver_SH_AdLib_create();
+				_musicType = MT_ADLIB;
 			}
 			break;
 		default:
@@ -624,8 +627,8 @@ void Music::getSongNames(Common::StringArray &songs) {
 		Common::StringArray fileList;
 		_vm->_res->getResourceNames("music.lib", fileList);
 		for (Common::StringArray::iterator i = fileList.begin(); i != fileList.end(); ++i) {
-			if ((*i).matchString("*.XMI", true)) {
-				(*i).erase((*i).size() - 4);
+			if (i->matchString("*.XMI", true)) {
+				i->erase(i->size() - 4);
 				songs.push_back(*i);
 			}
 		}

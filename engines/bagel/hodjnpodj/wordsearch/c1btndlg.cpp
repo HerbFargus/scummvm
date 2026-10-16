@@ -50,7 +50,7 @@ extern  CText   *atxtDisplayWord[WORDSPERLIST];
 
 
 C1ButtonDialog::C1ButtonDialog(CWnd *pParent, CPalette *pPalette, char *pszButton1Text, char *pszText1, char *pszText2)
-	: CBmpDialog(pParent, pPalette, IDD_1BTNDLG, ".\\ART\\WLSTSCRL.BMP", 16, 25) {
+	: CBmpDialog(pParent, pPalette, IDD_1BTNDLG, "art\\WLSTSCRL.BMP", 16, 25) {
 	assert(pParent != nullptr);
 	assert(pPalette != nullptr);
 	assert(pszText1 != nullptr);
@@ -145,7 +145,7 @@ bool C1ButtonDialog::OnInitDialog() {
 	);
 
 	if ((m_cTextMessage1 = new CText()) != nullptr) {
-		bAssertCheck = (*m_cTextMessage1).SetupText(pDC, m_pPalette, &statsRect, JUSTIFY_CENTER);
+		bAssertCheck = m_cTextMessage1->SetupText(pDC, m_pPalette, &statsRect, JUSTIFY_CENTER);
 		ASSERT(bAssertCheck);   // initialize the text objext
 	}
 
@@ -158,7 +158,7 @@ bool C1ButtonDialog::OnInitDialog() {
 	);
 
 	if ((m_cTextMessage2 = new CText()) != nullptr) {
-		bAssertCheck = (*m_cTextMessage2).SetupText(pDC, m_pPalette, &statsRect, JUSTIFY_CENTER);
+		bAssertCheck = m_cTextMessage2->SetupText(pDC, m_pPalette, &statsRect, JUSTIFY_CENTER);
 		ASSERT(bAssertCheck);   // initialize the text objext
 	}
 
@@ -172,7 +172,7 @@ bool C1ButtonDialog::OnInitDialog() {
 		    nStat_row_offset + (12 * i) + nStatHeight
 		);
 		if ((m_cWordList[i] = new CText()) != nullptr) {
-			bAssertCheck = (*m_cWordList[i]).SetupText(pDC, m_pPalette, &statsRect, JUSTIFY_CENTER);
+			bAssertCheck = m_cWordList[i]->SetupText(pDC, m_pPalette, &statsRect, JUSTIFY_CENTER);
 			ASSERT(bAssertCheck);   // initialize the text objext
 		}
 	}
@@ -180,9 +180,9 @@ bool C1ButtonDialog::OnInitDialog() {
 	ReleaseDC(pDC);
 
 	if ((m_pButton1 = new CColorButton) != nullptr) {            // build the first color button
-		(*m_pButton1).SetPalette(m_pPalette);                 // set the palette to use
-		(*m_pButton1).SetControl(IDOK, this);                 // tie to the dialog control
-		(*m_pButton1).SetWindowText(m_pszButton1Text);
+		m_pButton1->SetPalette(m_pPalette);                 // set the palette to use
+		m_pButton1->SetControl(IDOK, this);                 // tie to the dialog control
+		m_pButton1->SetWindowText(m_pszButton1Text);
 	}
 
 	return true;  // return true  unless you set the focus to a control

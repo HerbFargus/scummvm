@@ -23,8 +23,12 @@
 #define NANCY_MISC_HYPERTEXT_H
 
 #include "engines/nancy/renderobject.h"
+#include "engines/nancy/graphics.h"
 
 namespace Nancy {
+
+class Font;
+
 namespace Misc {
 
 // Base class for handling the engine's custom hypertext format
@@ -44,6 +48,14 @@ public:
 	bool hasBeenDrawn() const { return !_needsTextRedraw; }
 
 protected:
+	enum Justification { kJustifyLeft, kJustifyRight, kJustifyCenter };
+
+	// Image embedded in the text via the <iNAME,left,top,right,bottom> tag
+	struct InlineImage {
+		Common::Path name;
+		Common::Rect src; // empty means the whole image
+	};
+
 	void initSurfaces(uint width, uint height, const struct Graphics::PixelFormat &format, uint32 backgroundColor, uint32 highlightBackgroundColor);
 
 	void addTextLine(const Common::String &text);
@@ -53,16 +65,30 @@ protected:
 	void drawAllText(const Common::Rect &textBounds, uint leftOffsetNonNewline, uint fontID, uint highlightFontID);
 	virtual void clear();
 
+	void drawInlineImage(const InlineImage &inlineImage, const Common::Rect &textBounds, uint horizontalOffset, uint justification, const Font *font);
+
+	// Nancy16 UI text starts out in a color of its own, until a color tag picks one of
+	// the font colors; that color then gets used in place of _defaultTextColor
+	void setDefaultTextRGB(byte r, byte g, byte b);
+
 	Graphics::ManagedSurface _fullSurface; 			// Contains all rendered text (may be cropped)
 	Graphics::ManagedSurface _textHighlightSurface; // Same as above, but drawn with the highlight font
 
 	uint32 _backgroundColor;
 	uint32 _highlightBackgroundColor;
 	uint _defaultTextColor;
+	uint _defaultJustification = kJustifyLeft;
+	FontColorState _fontColorState = kFontColorNormal;	// Nancy16+: picks the color of a color tag
 	int _imageVerticalOffset;
 
 	Common::Array<Common::String> _textLines;
 	Common::Array<Common::Rect> _hotspots;
+
+	// When set, drawAllText records the dest rect of every drawn mark glyph
+	// (in _fullSurface coords, in draw order). The notebook uses this to hit-
+	// test the tasklist's clickable checkboxes.
+	bool _recordMarkHotspots = false;
+	Common::Array<Common::Rect> _markHotspots;
 
 	// Data for displaying images inside text; used in Hypertext
 	Common::Path _imageName;
@@ -72,6 +98,16 @@ protected:
 	uint16 _numDrawnLines;
 	uint16 _drawnTextHeight;
 	bool _needsTextRedraw;
+
+private:
+	// Color IDs are font color IDs, or this for the color given to setDefaultTextRGB()
+	static const int kDefaultRGB = -1;
+
+	void drawTextRun(Graphics::ManagedSurface &surface, const Font *font, const Common::String &text, int x, int y, int width, int colorID) const;
+	uint32 getColorPixel(const Font *font, int colorID) const;
+
+	bool _hasDefaultTextRGB = false;
+	byte _defaultTextRGB[3] = {};
 };
 
 } // End of namespace Misc

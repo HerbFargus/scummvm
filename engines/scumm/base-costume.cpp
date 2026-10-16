@@ -20,6 +20,9 @@
  */
 
 
+#define FORCE_TEXT_CONSOLE
+
+#include "common/textconsole.h"
 #include "scumm/base-costume.h"
 #include "scumm/util.h"
 
@@ -57,6 +60,7 @@ byte BaseCostumeRenderer::drawCostume(const VirtScreen &vs, int numStrips, const
 	return result;
 }
 
+#ifndef SCUMM_OPTIMISED_CODE
 byte BaseCostumeRenderer::paintCelByleRLECommon(
 	int xMoveCur,
 	int yMoveCur,
@@ -192,6 +196,7 @@ byte BaseCostumeRenderer::paintCelByleRLECommon(
 	compData.skipWidth = _width;
 	compData.scaleXStep = _drawActorToRight ? 1 : -1;
 
+	clipBoundsRect(compData.boundsRect);
 	markAsDirty(rect, compData, decode);
 	if (!decode)
 		return 0;
@@ -278,75 +283,37 @@ byte BaseCostumeRenderer::paintCelByleRLECommon(
 		return 2;
 	}
 
-	compData.width = _out.w;
-	compData.height = _out.h;
 	compData.destPtr = (byte *)_out.getBasePtr(compData.x, compData.y);
 
 	return drawFlag;
 }
-
-#ifdef USE_ARM_COSTUME_ASM
-
-#ifndef IPHONE
-#define ClassicProc3RendererShadowARM _ClassicProc3RendererShadowARM
-#endif
-
-extern "C" int ClassicProc3RendererShadowARM(
-	int _scaleY,
-	BaseCostumeRenderer::ByleRLEData *compData,
-	int pitch,
-	const byte *src,
-	int height,
-	int _scaleX,
-	int _scaleIndexX,
-	byte *_shadowTable,
-	uint16 _palette[32],
-	int32 _numStrips,
-	int _scaleIndexY);
 #endif
 
 void BaseCostumeRenderer::byleRLEDecode(ByleRLEData &compData, int16 actorHitX, int16 actorHitY, bool *actorHitResult, const uint8 *xmap) {
-	const byte *mask, *src;
-	byte *dst;
-	byte len, maskbit;
-	int lastColumnX, y;
-	uint16 color, height, pcolor;
-	int scaleIndexY;
-	bool masked;
-
-#ifdef USE_ARM_COSTUME_ASM
-	if ((!_akosRendering && (_shadowMode & 0x20) == 0) &&
+#ifdef SCUMM_OPTIMISED_CODE
+	if ((_vm->_bytesPerPixel == 1) &&
+		(!(_vm->_game.features & GF_16BIT_COLOR)) &&
 		(actorHitResult == NULL) &&
-		(compData.maskPtr != NULL) &&
-		(_shadowTable != NULL))
-	{
-		compData.scaleXIndex = (byte)ClassicProc3RendererShadowARM(
-			_scaleY,
-			&compData,
-			_out.pitch,
-			_srcPtr,
-			_height,
-			_scaleX,
-			compData.scaleXIndex,
-			_shadowTable,
-			_palette,
-			_numStrips,
-			compData.scaleYIndex);
+		(compData.maskPtr != NULL)) {
+		byleRLEDecodeFast(compData, xmap);
 		return;
 	}
-#endif /* USE_ARM_COSTUME_ASM */
+	warning("%s: unoptimised version is being executed", __FUNCTION__);
+#endif
+	const byte *src = _srcPtr;
+	byte *dst = compData.destPtr;
 
-	lastColumnX = -1;
-	y = compData.y;
-	src = _srcPtr;
-	dst = compData.destPtr;
-	len = compData.repLen;
-	color = compData.repColor;
-	height = _height;
+	byte len = compData.repLen;
+	uint16 color = compData.repColor;
 
-	scaleIndexY = compData.scaleYIndex;
-	maskbit = revBitMask(compData.x & 7);
-	mask = compData.maskPtr + compData.x / 8;
+	// reset every column
+	int lastColumnX = -1;
+	int y = compData.y;
+	uint16 height = _height;
+	int scaleIndexY = compData.scaleYIndex;
+
+	byte maskbit = revBitMask(compData.x & 7);
+	const byte *mask = compData.maskPtr + compData.x / 8;
 
 	if (len)
 		goto StartPos;
@@ -366,9 +333,9 @@ void BaseCostumeRenderer::byleRLEDecode(ByleRLEData &compData, int16 actorHitX, 
 						return;
 					}
 				} else {
-					masked = (y < compData.boundsRect.top || y >= compData.boundsRect.bottom)
-							 || (compData.x < compData.boundsRect.left || compData.x >= compData.boundsRect.right)
-							 || (compData.maskPtr && (*mask & maskbit));
+					const bool masked = (y < compData.boundsRect.top || y >= compData.boundsRect.bottom)
+						|| (compData.x < compData.boundsRect.left || compData.x >= compData.boundsRect.right)
+						|| (compData.maskPtr && (*mask & maskbit));
 					bool skipColumn = false;
 
 					if (color && !masked) {
@@ -480,10 +447,10 @@ void BaseCostumeRenderer::skipCelLines(ByleRLEData &compData, int num) {
 		if (!compData.repLen)
 			compData.repLen = *_srcPtr++;
 
-		do {
-			if (!--num)
-				return;
-		} while (--compData.repLen);
+		if ((num -= compData.repLen) <= 0) {
+			compData.repLen = 1 - num;
+			return;
+		}
 	} while (true);
 }
 

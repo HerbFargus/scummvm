@@ -50,6 +50,7 @@ public:
 	void SetupHandleTable();
 
 	FONT *GetFont(SCNHANDLE offset);
+	uint32 GetFontCharacterCount(const byte *fontData) const;
 	PALETTE *GetPalette(SCNHANDLE offset);
 	const IMAGE *GetImage(SCNHANDLE offset);
 	void SetImagePalette(SCNHANDLE offset, SCNHANDLE palHandle);
@@ -76,6 +77,9 @@ public:
 		SCNHANDLE next);		// Handle of end of range + 1
 
 	int CdNumber(SCNHANDLE offset);
+
+	// Used for skipping DW1 introduction
+	SCNHANDLE GetDw1TitleSceneHandle() { return _dw1TitleSceneHandle; }
 
 	// Noir
 	SCNHANDLE FindLanguageSceneHandle(const char *fileName);
@@ -105,6 +109,8 @@ private:
 	Common::File *_cdGraphStream;
 
 	Common::Path _szCdPlayFile;
+
+	SCNHANDLE _dw1TitleSceneHandle;
 };
 
 } // End of namespace Tinsel

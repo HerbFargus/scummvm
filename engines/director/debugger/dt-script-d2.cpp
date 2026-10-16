@@ -41,14 +41,27 @@ private:
 	bool _isScriptInDebug = false;
 	bool _currentStatementDisplayed = false;
 	bool _scrollTo = false;
-	bool _scrollDone = true;
+	bool _scrollDone = false;
+	int _renderLineID = 1;
+	uint _markPc = 0;
+	bool _markPcValid = false;
 
 public:
 	explicit RenderOldScriptVisitor(ImGuiScript &script, bool scrollTo) : _script(script), _scrollTo(scrollTo) {
 		Common::Array<CFrame *> &callstack = g_lingo->_state->callstack;
 		if (!callstack.empty()) {
 			CFrame *head = callstack[callstack.size() - 1];
-			_isScriptInDebug = (head->sp.ctx->_id == script.id.member) && (*head->sp.name == script.handlerId);
+			if (head->sp.ctx)
+				_isScriptInDebug = (head->sp.ctx->_id == script.id.member) && (*head->sp.name == script.handlerId);
+		}
+		// find the statement containing the pc from the previous render's offsets
+		if (_script.pc != 0) {
+			for (uint off : _script.startOffsets) {
+				if (off <= _script.pc && (!_markPcValid || off > _markPc)) {
+					_markPc = off;
+					_markPcValid = true;
+				}
+			}
 		}
 		_script.startOffsets.clear();
 	}
@@ -72,9 +85,8 @@ public:
 			}
 			ImGui::NewLine();
 		}
-		if (_state->_dbg._goToDefinition && _scrollTo) {
+		if (_scrollTo) {
 			ImGui::SetScrollHereY(0.5f);
-			_state->_dbg._goToDefinition = false;
 		}
 
 		indent();
@@ -489,9 +501,10 @@ public:
 	}
 
 	virtual bool visitFuncNode(FuncNode *node) {
-		const bool isBuiltin = g_lingo->_builtinCmds.contains(*node->name);
+		const bool isBuiltin = g_lingo->_builtinCmds.contains(*node->name) || g_lingo->_builtinFuncs.contains(*node->name);
 		const ImVec4 color = (ImVec4)ImColor(isBuiltin ? _state->theme->builtin_color : _state->theme->call_color);
 		ImGui::TextColored(color, "%s(", node->name->c_str());
+		maybeHighlightLastItem(*node->name);
 		if (!isBuiltin && ImGui::IsItemHovered() && ImGui::BeginTooltip()) {
 			ImGui::Text("Go to definition");
 			ImGui::EndTooltip();
@@ -505,23 +518,14 @@ public:
 				}
 			}
 
-			ScriptContext *context = getScriptContext(obj, _script.id, *node->name);
+			ScriptContext *context = resolveHandlerContext(obj, _script.id, *node->name);
 			if (context) {
-				ImGuiScript script = toImGuiScript(_script.type, CastMemberID(context->_id, _script.id.castLib), *node->name);
-				const Director::Movie *movie = g_director->getCurrentMovie();
-
-				int castId = context->_id;
-				bool childScript = false;
-				if (castId == -1) {
-					castId = movie->getCast()->getCastIdByScriptId(context->_parentNumber);
-					childScript = true;
-				}
-				script.byteOffsets = context->_functionByteOffsets[script.handlerId];
-				script.moviePath = _script.moviePath;
-
-				script.handlerName = formatHandlerName(context->_scriptId, castId, script.handlerId, context->_scriptType, childScript);
-				setScriptToDisplay(script);
-				_state->_dbg._goToDefinition = true;
+				ImGuiScript script = buildImGuiHandlerScript(context, _script.id.castLib, *node->name, _script.moviePath);
+				// Open the definition in the window that hosts this script view
+				if (_state->_dbg._hostExecutionContext)
+					setScriptToDisplay(script);
+				else
+					addToOpenHandlers(script);
 			}
 		}
 		ImGui::SameLine();
@@ -794,7 +798,7 @@ private:
 		bool showCurrentStatement = false;
 		_script.startOffsets.push_back(pc);
 
-		if (_script.pc != 0 && pc >= _script.pc) {
+		if (_script.pc != 0 && (_markPcValid ? pc == _markPc : pc >= _script.pc)) {
 			if (!_currentStatementDisplayed) {
 				showCurrentStatement = true;
 				_currentStatementDisplayed = true;
@@ -814,17 +818,25 @@ private:
 		const float width = ImGui::GetContentRegionAvail().x;
 		const ImVec2 mid(pos.x + 7, pos.y + 7);
 
-		ImVec4 color = _state->theme->bp_color_disabled;
+		// add/delBreakpoint invalidate bp, so copy its state into locals
 		const Director::Breakpoint *bp = getBreakpoint(_script.handlerId, _script.id.member, pc);
-		if (bp)
-			color = _state->theme->bp_color_enabled;
+		bool hasBp = bp != nullptr;
+		bool bpEnabled = bp && bp->enabled;
+		ImVec4 color = hasBp ? _state->theme->bp_color_enabled : _state->theme->bp_color_disabled;
 
+		// Need to give a new id for each button
+		Common::String id = _script.handlerId + _renderLineID;
+		ImGui::PushID(id.c_str());
 		ImGui::InvisibleButton("Line", ImVec2(16, ImGui::GetFontSize()));
+		ImGui::PopID();
+		_renderLineID++;
 
 		// click on breakpoint column?
 		if (ImGui::IsItemClicked(0)) {
-			if (color == _state->theme->bp_color_enabled) {
+			if (hasBp) {
 				g_lingo->delBreakpoint(bp->id);
+				hasBp = false;
+				bpEnabled = false;
 				color = _state->theme->bp_color_disabled;
 			} else {
 				Director::Breakpoint newBp;
@@ -833,8 +845,11 @@ private:
 				newBp.funcName = _script.handlerId;
 				newBp.funcOffset = pc;
 				g_lingo->addBreakpoint(newBp);
+				hasBp = true;
+				bpEnabled = true;
 				color = _state->theme->bp_color_enabled;
 			}
+			bp = nullptr;
 		}
 
 		if (color == _state->theme->bp_color_disabled && ImGui::IsItemHovered()) {
@@ -842,7 +857,7 @@ private:
 		}
 
 		// draw breakpoint
-		if (!bp || bp->enabled)
+		if (!hasBp || bpEnabled)
 			dl->AddCircleFilled(mid, 4.0f, ImColor(color));
 		else
 			dl->AddCircle(mid, 4.0f, ImColor(_state->theme->line_color));
@@ -851,7 +866,7 @@ private:
 		if (showCurrentStatement) {
 			dl->AddQuadFilled(ImVec2(pos.x, pos.y + 4.f), ImVec2(pos.x + 9.f, pos.y + 4.f), ImVec2(pos.x + 9.f, pos.y + 10.f), ImVec2(pos.x, pos.y + 10.f), ImColor(_state->theme->current_statement));
 			dl->AddTriangleFilled(ImVec2(pos.x + 8.f, pos.y), ImVec2(pos.x + 14.f, pos.y + 7.f), ImVec2(pos.x + 8.f, pos.y + 14.f), ImColor(_state->theme->current_statement));
-			if (!_scrollDone && _scrollTo && g_lingo->_state->callstack.size() != _state->_dbg._callstackSize) {
+			if (!_scrollDone && _scrollTo) {
 				ImGui::SetScrollHereY(0.5f);
 				_scrollDone = true;
 			}
@@ -871,7 +886,7 @@ private:
 };
 
 void renderOldScriptAST(ImGuiScript &script, bool showByteCode, bool scrollTo) {
-    RenderOldScriptVisitor oldVisitor(script, scrollTo);
+	RenderOldScriptVisitor oldVisitor(script, scrollTo);
 	script.oldAst->accept(&oldVisitor);
 }
 

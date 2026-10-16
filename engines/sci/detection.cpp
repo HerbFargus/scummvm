@@ -138,7 +138,7 @@ static const PlainGameDescriptor s_sciGameTitles[] = {
 	{"hoyle5",          "Hoyle Classic Games"},
 	{"hoyle5bridge",    "Hoyle Bridge"},
 	{"hoyle5children",  "Hoyle Children's Collection"},
-	{"hoyle5school",    "Hoyle School House Math"},
+	{"hoyle5school",    "Hoyle School House"},
 	{"hoyle5solitaire", "Hoyle Solitaire"},
 	{"chest",           "Inside the Chest"},	// aka Behind the Developer's Shield
 	{"gk2",             "The Beast Within: A Gabriel Knight Mystery"},
@@ -235,8 +235,14 @@ DetectedGames SciMetaEngineDetection::detectGames(const Common::FSList &fslist, 
 				break;
 		}
 
+		// Save the language info from the options string, since it will be overwritten in the next step.
+		Common::List<Common::Language> langList = Common::parseLanguagesFromGameGUIOptionsString(game.getGUIOptions());
+
 		game.setGUIOptions(customizeGuiOptions(fslist.begin()->getParent().getPath(), parseGameGUIOptions(game.getGUIOptions()), game.platform, g->gameidStr, g->version));
-		game.appendGUIOptions(getGameGUIOptionsDescriptionLanguage(game.language));
+
+		// Restore the language info to the options string.
+		for (const Common::Language &lang : langList)
+			game.appendGUIOptions(getGameGUIOptionsDescriptionLanguage(lang));
 	}
 
 	return games;

@@ -24,7 +24,6 @@
 #include "common/file.h"
 #include "common/md5.h"
 #include "common/str-array.h"
-#include "common/translation.h"
 #include "common/util.h"
 #include "gamos/detection.h"
 #include "gamos/detection_tables.h"
@@ -34,6 +33,7 @@ class GamosMetaEngineDetection : public AdvancedMetaEngineDetection<Gamos::Gamos
 public:
 	GamosMetaEngineDetection(): AdvancedMetaEngineDetection(
 		    Gamos::gameDescriptions, Gamos::gamosGames) {
+			_flags = kADFlagMatchFullPaths;
 	}
 	~GamosMetaEngineDetection() override {}
 

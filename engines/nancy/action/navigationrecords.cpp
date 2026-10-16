@@ -20,9 +20,11 @@
  */
 
 #include "engines/nancy/nancy.h"
+#include "engines/nancy/sound.h"
 #include "engines/nancy/util.h"
 
 #include "engines/nancy/action/navigationrecords.h"
+#include "engines/nancy/action/soundrecords.h"
 
 #include "engines/nancy/state/scene.h"
 
@@ -30,7 +32,25 @@ namespace Nancy {
 namespace Action {
 
 void SceneChange::readData(Common::SeekableReadStream &stream) {
+	if (g_nancy->getGameType() >= kGameTypeNancy16) {
+		readDataNancy16(stream);
+		return;
+	}
+
 	_sceneChange.readData(stream);
+}
+
+// Nancy16 dropped the vertical offset, sound continuation flag and listener
+// vector from its scene changes, and widened the frame ID to 32 bits
+void SceneChange::readDataNancy16(Common::SeekableReadStream &stream) {
+	_sceneChange.sceneID = stream.readUint16LE();
+	if (_frameType == kWithFrame) {
+		_sceneChange.frameID = stream.readUint32LE();
+	}
+
+	_sceneChange.continueSceneSound = kContinueSceneSound;
+	_sceneChange.listenerFrontVector.set(0, 0, 1);
+	_sceneChange.frontVectorFrameID = _sceneChange.frameID;
 }
 
 void SceneChange::execute() {
@@ -39,7 +59,18 @@ void SceneChange::execute() {
 }
 
 void HotMultiframeSceneChange::readData(Common::SeekableReadStream &stream) {
-	SceneChange::readData(stream);
+	if (_isTerse) {
+		_hoverCursor = (CursorManager::CursorType)stream.readUint16LE();
+		_sceneChange.sceneID = stream.readUint16LE();
+		_sceneChange.frameID = stream.readUint16LE();
+		_sceneChange.verticalOffset = 0;
+		_sceneChange.continueSceneSound = stream.readUint16LE();
+		_sceneChange.listenerFrontVector.set(0, 0, 1);
+		_sceneChange.frontVectorFrameID = _sceneChange.frameID;
+	} else {
+		SceneChange::readData(stream);
+	}
+	
 	uint16 numHotspots = stream.readUint16LE();
 
 	_hotspots.reserve(numHotspots);
@@ -71,13 +102,77 @@ void HotMultiframeSceneChange::execute() {
 	}
 }
 
+// The hover cursor is stored as the id of the matching directional scene-change
+// action record type, which gets translated into the actual cursor to display.
+static CursorManager::CursorType getNavigationCursor(uint16 id) {
+	switch (id) {
+	case 14:
+		return CursorManager::kExit;
+	case 15:
+	case 23:
+		return CursorManager::kMoveForward;
+	case 16:
+		return CursorManager::kMoveBackward;
+	case 17:
+	case 24:
+		return CursorManager::kMoveUp;
+	case 18:
+	case 25:
+		return CursorManager::kMoveDown;
+	case 19:
+		return CursorManager::kMoveLeft;
+	case 20:
+		return CursorManager::kMoveRight;
+	default:
+		return CursorManager::kHotspot;
+	}
+}
+
+void HotSingleFrameSceneChange::readData(Common::SeekableReadStream &stream) {
+	_hoverCursor = getNavigationCursor(stream.readUint16LE());
+	_sceneChange.sceneID = stream.readUint16LE();
+	_sceneChange.continueSceneSound = kContinueSceneSound;
+	_sceneChange.listenerFrontVector.set(0, 0, 1);
+	readRect(stream, _sceneHotspot.coords);
+}
+
+void HotSingleFrameSceneChange::execute() {
+	switch (_state) {
+	case kBegin:
+		_hotspot = _sceneHotspot.coords;
+		_state = kRun;
+		// fall through
+	case kRun:
+		_hasHotspot = true;
+		break;
+	case kActionTrigger:
+		SceneChange::execute();
+		break;
+	}
+}
+
 void Hot1FrSceneChange::readData(Common::SeekableReadStream &stream) {
+	if (g_nancy->getGameType() >= kGameTypeNancy16 && !_isTerse) {
+		readDataNancy16(stream);
+		_hoverCursor = (CursorManager::CursorType)stream.readUint32LE();
+		readRect(stream, _hotspotDesc.coords);
+		return;
+	}
+
+	if (_dynamicCursor)
+		_hoverCursor = (CursorManager::CursorType)stream.readUint16LE();
+
 	if (!_isTerse) {
 		SceneChange::readData(stream);
 		_hotspotDesc.readData(stream);
 	} else {
 		_sceneChange.sceneID = stream.readUint16LE();
-		_sceneChange.continueSceneSound = kContinueSceneSound;
+		if (g_nancy->getGameType() >= kGameTypeNancy10 && _dynamicCursor) {
+			_sceneChange.frameID = stream.readUint16LE();
+			_sceneChange.continueSceneSound = stream.readUint16LE();
+		} else {
+			_sceneChange.continueSceneSound = kContinueSceneSound;
+		}
 		_sceneChange.listenerFrontVector.set(0, 0, 1);
 		readRect(stream, _hotspotDesc.coords);
 	}
@@ -102,7 +197,7 @@ void Hot1FrSceneChange::execute() {
 	}
 }
 
-void HotMultiframeMultisceneChange::readData(Common::SeekableReadStream &stream) {
+void HotMultiframeMultiSceneChange::readData(Common::SeekableReadStream &stream) {
 	if (g_nancy->getGameType() <= kGameTypeNancy2) {
 		_onTrue._sceneChange.readData(stream);
 		_onFalse._sceneChange.readData(stream);
@@ -123,7 +218,7 @@ void HotMultiframeMultisceneChange::readData(Common::SeekableReadStream &stream)
 	}
 }
 
-void HotMultiframeMultisceneChange::execute() {
+void HotMultiframeMultiSceneChange::execute() {
 	switch (_state) {
 	case kBegin:
 		// set something to 1
@@ -165,13 +260,14 @@ void HotMultiframeMultisceneChange::execute() {
 		} else {
 			_onFalse.execute();
 		}
+		_isDone = true;
 
 		break;
 	}
 	}
 }
 
-void HotMultiframeMultisceneCursorTypeSceneChange::readData(Common::SeekableReadStream &stream) {
+void HotMultiframeMultiSceneCursorTypeSceneChange::readData(Common::SeekableReadStream &stream) {
 	uint16 numScenes = stream.readUint16LE();
 	_scenes.resize(numScenes);
 	_cursorTypes.resize(numScenes);
@@ -190,7 +286,7 @@ void HotMultiframeMultisceneCursorTypeSceneChange::readData(Common::SeekableRead
 	}
 }
 
-void HotMultiframeMultisceneCursorTypeSceneChange::execute() {
+void HotMultiframeMultiSceneCursorTypeSceneChange::execute() {
 	switch (_state) {
 	case kBegin:
 		// turn main rendering on
@@ -217,6 +313,101 @@ void HotMultiframeMultisceneCursorTypeSceneChange::execute() {
 
 		NancySceneState.changeScene(_defaultScene);
 		_isDone = true;
+		break;
+	}
+}
+
+void HotMultiframeInvTypeSceneChange::ItemUse::readData(Common::SeekableReadStream &stream) {
+	itemID = stream.readSint16LE();
+	loseItem = stream.readByte();
+	readMultiNameSound(stream, sound, ccText);
+	sceneID = stream.readUint16LE();
+
+	uint16 numFlags = stream.readUint16LE();
+	flags.resize(numFlags);
+	for (FlagDescription &flag : flags) {
+		flag.label = stream.readSint16LE();
+		flag.flag = (byte)stream.readSint16LE();
+	}
+}
+
+void HotMultiframeInvTypeSceneChange::readData(Common::SeekableReadStream &stream) {
+	uint16 numItems = stream.readUint16LE();
+	_itemUses.resize(numItems);
+	for (ItemUse &use : _itemUses) {
+		use.readData(stream);
+	}
+
+	// The fallback block has the same layout; its item id and lose/return byte
+	// are present in the data, but the engine never looks at them
+	_defaultItemUse.readData(stream);
+
+	uint16 numHotspots = stream.readUint16LE();
+	_hotspots.resize(numHotspots);
+	for (HotspotDescription &hotspot : _hotspots) {
+		hotspot.readData(stream);
+	}
+}
+
+void HotMultiframeInvTypeSceneChange::execute() {
+	switch (_state) {
+	case kBegin:
+		_activeUse = nullptr;
+		_state = kRun;
+		// fall through
+	case kRun:
+		_hasHotspot = false;
+		for (const HotspotDescription &hotspot : _hotspots) {
+			if (hotspot.frameID == NancySceneState.getSceneInfo().frameID) {
+				_hasHotspot = true;
+				_hotspot = hotspot.coords;
+			}
+		}
+
+		break;
+	case kActionTrigger:
+		if (!_activeUse) {
+			for (const ItemUse &use : _itemUses) {
+				if (use.itemID == NancySceneState.getHeldItem()) {
+					_activeUse = &use;
+					break;
+				}
+			}
+
+			if (_activeUse) {
+				if (_activeUse->loseItem) {
+					NancySceneState.setHeldItem(-1);
+				} else {
+					// Puts the item back in the inventory, which also empties the cursor
+					NancySceneState.addItemToInventory(_activeUse->itemID);
+				}
+			} else {
+				_activeUse = &_defaultItemUse;
+			}
+
+			g_nancy->_sound->loadSound(_activeUse->sound);
+			g_nancy->_sound->playSound(_activeUse->sound);
+			showSubtitle(_activeUse->ccText);
+
+			for (const FlagDescription &flag : _activeUse->flags) {
+				NancySceneState.setEventFlag(flag);
+			}
+
+			break;
+		}
+
+		// The scene change waits for the sound to finish playing
+		if (!g_nancy->_sound->isSoundPlaying(_activeUse->sound)) {
+			if (_activeUse->sceneID != kNoScene) {
+				SceneChangeDescription sceneChange;
+				sceneChange.sceneID = _activeUse->sceneID;
+				sceneChange.continueSceneSound = kContinueSceneSound;
+				NancySceneState.changeScene(sceneChange);
+			}
+
+			_isDone = true;
+		}
+
 		break;
 	}
 }
@@ -278,6 +469,104 @@ void MapCallHotMultiframe::execute() {
 	case kActionTrigger:
 		MapCall::execute();
 		break;
+	}
+}
+
+void SceneChangeWithExtras::readData(Common::SeekableReadStream &stream) {
+	readDataNancy16(stream);
+
+	if (_extras & kStreamName) {
+		readFilename(stream, _streamName);
+	}
+
+	if (_extras & (kSingleFlag | kFlagList)) {
+		_flags.descs.resize((_extras & kFlagList) ? stream.readUint16LE() : 1);
+		for (FlagDescription &desc : _flags.descs) {
+			desc.label = stream.readSint16LE();
+			desc.flag = stream.readUint16LE();
+		}
+	}
+
+	if (_extras & kHotspots) {
+		_hoverCursor = (CursorManager::CursorType)stream.readUint32LE();
+
+		_hotspots.resize(stream.readUint16LE());
+		for (HotspotDescription &hotspot : _hotspots) {
+			hotspot.readData(stream);
+		}
+	}
+}
+
+void SceneChangeWithExtras::execute() {
+	if ((_extras & kHotspots) && _state != kActionTrigger) {
+		// Wait for a click
+		_state = kRun;
+		_hasHotspot = false;
+
+		for (const HotspotDescription &hotspot : _hotspots) {
+			if (hotspot.frameID == NancySceneState.getSceneInfo().frameID) {
+				_hasHotspot = true;
+				_hotspot = hotspot.coords;
+			}
+		}
+
+		return;
+	}
+
+	_hasHotspot = false;
+
+	if (_extras & kStreamName) {
+		NancySceneState.getStreams().changeScene(_streamName, _sceneChange);
+	} else {
+		NancySceneState.changeScene(_sceneChange);
+	}
+
+	// The flags come with the scene change, and get left alone without one
+	if (_sceneChange.sceneID != kNoScene) {
+		_flags.execute();
+	}
+
+	_isDone = true;
+}
+
+void BeginStream::readData(Common::SeekableReadStream &stream) {
+	readFilename(stream, _sceneName);
+	_frameID = stream.readUint32LE();
+	readFilename(stream, _streamName);
+	_flags.read(stream);
+}
+
+void BeginStream::execute() {
+	NancySceneState.getStreams().begin(_streamName, _sceneName, _frameID, _flags);
+	_isDone = true;
+}
+
+void EndStream::readData(Common::SeekableReadStream &stream) {
+	readFilename(stream, _streamName);
+}
+
+void EndStream::execute() {
+	NancySceneState.getStreams().end(_streamName);
+	_isDone = true;
+}
+
+void OnSceneChange::readData(Common::SeekableReadStream &stream) {
+	readFilename(stream, _streamName);
+	_flag.label = stream.readSint16LE();
+	_flag.flag = stream.readByte();
+}
+
+void OnSceneChange::execute() {
+	const Common::String sceneName = NancySceneState.getStreams().getSceneName(_streamName);
+
+	if (_state == kBegin) {
+		_sceneName = sceneName;
+		_state = kRun;
+	}
+
+	if (!sceneName.equalsIgnoreCase(_sceneName)) {
+		NancySceneState.setEventFlag(_flag);
+		_isDone = true;
 	}
 }
 

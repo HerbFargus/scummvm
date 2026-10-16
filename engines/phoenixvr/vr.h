@@ -40,14 +40,15 @@ class VR {
 	struct Animation {
 		struct Frame {
 			Common::Array<byte> blockData;
-			int restartAtFrame = -1;
 			void render(Graphics::Surface &pic) const;
 		};
 
 		Common::String name;
 		Common::Array<Frame> frames;
+		int restartAtFrame = -1;
 
 		bool active = false;
+		bool stopRequested = false;
 		float t = 0;
 		float speed = 25.0f;
 
@@ -62,6 +63,8 @@ class VR {
 	float _hint = 0;
 	bool _showWaves = false;
 	float _wavesT = 0;
+	bool _ignoreRightPixel = false;
+	bool _v2 = false;
 
 public:
 	static VR loadStatic(const Graphics::PixelFormat &format, Common::SeekableReadStream &s);
@@ -71,6 +74,10 @@ public:
 	void stopAnimation(const Common::String &name);
 	Graphics::Surface &getSurface() { return *_pic->surfacePtr(); }
 	void showWaves() { _showWaves = true; }
+
+private:
+	template<typename ColorType>
+	void renderVR(Graphics::Screen *screen, float ax, float ay, float fov, float dt, RegionSet *regSet);
 };
 } // namespace PhoenixVR
 

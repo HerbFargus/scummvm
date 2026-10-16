@@ -58,6 +58,7 @@
 #include "tinsel/pid.h"
 #include "tinsel/polygons.h"
 #include "tinsel/psx_archive.h"
+#include "tinsel/psx_japan_font.h"
 #include "tinsel/savescn.h"
 #include "tinsel/scn.h"
 #include "tinsel/sound.h"
@@ -528,6 +529,13 @@ void SetNewScene(SCNHANDLE scene, int entrance, int transition) {
 		g_HookScene.scene = 0;
 	}
 
+	// Skip DW1 introduction if Escape was pressed by switching to title screen
+	if (WasDw1IntroSkipped()) {
+		g_NextScene.scene = _vm->_handle->GetDw1TitleSceneHandle();
+		g_NextScene.entry = 1;
+		g_NextScene.trans = TRANS_DEF;
+	}
+
 	// Workaround for "Missing Red Dragon in square" bug in Discworld 1 PSX, act IV.
 	// This happens with the original interpreter on PSX too: the red dragon in Act IV
 	// doesn't show up inside the square at the right time. Original game required the
@@ -985,6 +993,8 @@ TinselEngine::~TinselEngine() {
 	ResetVarsTinlib();	// tinlib.cpp
 	ResetVarsTinsel();	// tinsel.cpp
 
+	ClosePsxJapanFont();
+
 	CoroScheduler.destroy();
 }
 
@@ -1100,6 +1110,11 @@ Common::Error TinselEngine::run() {
 
 	// Actors, globals and inventory icons
 	LoadBasicChunks();
+
+	// External font
+	if (TinselV1PSXJapan) {
+		OpenPsxJapanFont();
+	}
 
 	// Continuous game processes
 	CreateConstProcesses();

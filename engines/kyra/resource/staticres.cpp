@@ -1455,7 +1455,8 @@ const char *const KyraEngine_HoF::_languageExtension[] = {
 	"ITA",      Italian and Spanish were never included
 	"SPA"*/
 	"JPN",
-	"POL"
+	"POL",
+	"KOR"
 };
 
 const char *const KyraEngine_HoF::_scriptLangExt[] = {

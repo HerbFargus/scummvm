@@ -563,8 +563,16 @@ void Game::playTot(int32 function) {
 
 	if (function <= 0) {
 		while (!_vm->shouldQuit()) {
-			if (_vm->_inter->_variables)
+			if (_vm->_inter->_variables && _vm->getGameType() != kGameTypeAdi4) {
+				// Display a wait cursor when loading a TOT file in memory.
+				// The original had a cache system for TOT files (not implemented in ScummVM).
+				// If the TOT file was already in the cache, the wait cursor was not be displayed.
+				// We disable this in Adi4, as it cause cursor flickering when some small helper
+				// TOT files are repeatedly loaded. The flickering was not present in the original,
+				// maybe because those very ephemeral cursor changes were squashed by the Win32
+				// cursor API.
 				_vm->_draw->animateCursor(4);
+			}
 
 			if (function != -1) {
 				_vm->_inter->initControlVars(1);
@@ -1184,14 +1192,36 @@ Common::String Game::formatSubNameInCallStack(const Common::String &totFile, int
 		const char *space = strchr(name.c_str(), ' ');
 		if (space)
 			name = Common::String(space + 1);
-	}
-	if (!name.empty())
+
 		return Common::String::format("sub_%d_%s", offset, name.c_str());
+	}
+
 	return Common::String::format("sub_%d", offset);
 }
 
 Common::String Game::getGobStack() {
 	uint stackSize = _globalFuncCallStack.size();
+
+	Common::Array<Common::String> totsToLoad;
+	// Load function names
+	for (uint i = 0; i < stackSize; i++) {
+		const FuncCall &fc = _globalFuncCallStack[i];
+		if (!fc.callingTot.empty()
+				&& Common::find(totsToLoad.begin(), totsToLoad.end(), fc.callingTot) == totsToLoad.end()
+				&& _totFunctions.find(fc.callingTot) < 0)
+			totsToLoad.push_back(fc.callingTot);
+
+		if (fc.calledTot.empty() && fc.calledTot != fc.callingTot
+				&& Common::find(totsToLoad.begin(), totsToLoad.end(), fc.calledTot) == totsToLoad.end()
+				&& _totFunctions.find(fc.calledTot) < 0)
+			totsToLoad.push_back(fc.calledTot);
+	}
+
+	Common::Array<Common::String> loadedTots;
+	for (Common::String &tot : totsToLoad) {
+		if (_totFunctions.load(tot))
+			loadedTots.push_back(tot);
+	}
 
 	Common::Array<Common::String> positions;
 	Common::Array<Common::String> functions;
@@ -1244,6 +1274,10 @@ Common::String Game::getGobStack() {
 										 tags[i].c_str());
 	}
 	result += "------------------------\n";
+
+	for (Common::String &tot : loadedTots)
+		_totFunctions.unload(tot);
+
 	return result;
 }
 
