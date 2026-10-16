@@ -867,6 +867,7 @@ static ObjRef managerStartLoop(Object *self, Tuple *, Dict *) {
 		uint32 due = now + 50;
 		bool ticked = false;
 		Common::Array<TimerObject *> timers = em->_timers;
+		bool lastTicked = false;
 		for (uint i = 0; i < timers.size() && em->_running; i++) {
 			Ref<TimerObject> t(timers[i]);
 			double frequency = attrDouble(t.get(), "tickFrequency", 30.0);
@@ -884,17 +885,37 @@ static ObjRef managerStartLoop(Object *self, Tuple *, Dict *) {
 					hooks.beforeTick(em, ticks + 1);
 					ticked = true;
 				}
+				lastTicked = i + 1 == timers.size();
 				Object *receiver = t->getDict()->getItemString("eventReciever");
 				if (receiver && receiver != g_none) {
 					ObjRef event = newEvent(kClassTimer, kTimerTick, newFloat(delta).get());
+					uint32 t0 = g_system->getMillis();
 					if (!callMethod(receiver, "Raise", 1, event.get())) {
 						em->_running = false;
 						return ObjRef();
 					}
+					debugC(3, kDebugScript, "yagaevents: timer %u took %u ms (wall %u)", i, g_system->getMillis() - t0, t0);
 				}
 			}
 			if ((int32)(t->_next - due) < 0)
 				due = t->_next;
+		}
+		// A movie's frames come on its own clock. Left to the render timer
+		// (installed last, after the game code's), which runs at the same
+		// rate but out of step, they would be shown two at once or not at
+		// all, so a frame that comes due draws the screen then and there
+		if (em->_running && !timers.empty() && !lastTicked && videoFrameDue()) {
+			Ref<TimerObject> t(timers.back());
+			Object *receiver = t->getDict()->getItemString("eventReciever");
+			if (receiver && receiver != g_none) {
+				uint32 at = g_system->getMillis();
+				ObjRef event = newEvent(kClassTimer, kTimerTick, newFloat((at - t->_last) / 1000.0).get());
+				t->_last = at;
+				if (!callMethod(receiver, "Raise", 1, event.get())) {
+					em->_running = false;
+					return ObjRef();
+				}
+			}
 		}
 		if (ticked) {
 			ticks++;

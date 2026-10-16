@@ -65,6 +65,25 @@ void Display::present() {
 	g_system->updateScreen();
 }
 
+void blendClipped(Graphics::ManagedSurface &dst, const Graphics::Surface &src, Common::Rect srcRect, Common::Rect dstRect, uint alpha) {
+	srcRect.clip(Common::Rect(0, 0, src.w, src.h));
+	if (srcRect.isEmpty() || dstRect.isEmpty())
+		return;
+	Common::Rect clipped = dstRect;
+	clipped.clip(Common::Rect(0, 0, dst.w, dst.h));
+	if (clipped.isEmpty())
+		return;
+	// The part of the source that lands inside, in proportion when scaled
+	int sw = srcRect.width(), sh = srcRect.height(), dw = dstRect.width(), dh = dstRect.height();
+	Common::Rect s(srcRect.left + (clipped.left - dstRect.left) * sw / dw,
+		srcRect.top + (clipped.top - dstRect.top) * sh / dh,
+		srcRect.left + (clipped.right - dstRect.left) * sw / dw,
+		srcRect.top + (clipped.bottom - dstRect.top) * sh / dh);
+	if (s.isEmpty())
+		return;
+	dst.blendBlitFrom(src, s, clipped, Graphics::FLIP_NONE, MS_ARGB(alpha, 255, 255, 255));
+}
+
 bool Display::saveScreenshot(const Common::Path &path) {
 	if (!_open)
 		return false;

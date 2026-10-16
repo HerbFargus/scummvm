@@ -341,8 +341,7 @@ static ObjRef imageStringRender(Object *self, Tuple *args, Dict *) {
 				if (target)
 					renderThrough(target.get(), f->_image.get(), opacity, dst, src);
 				else
-					g_display->surface().blendBlitFrom(*f->_strip, src, Common::Point(dst.left, dst.top),
-						Graphics::FLIP_NONE, MS_ARGB(alpha, 255, 255, 255));
+					blendClipped(g_display->surface(), *f->_strip, src, dst, alpha);
 			}
 			x += g.w - kOverlap + kerning;
 		}

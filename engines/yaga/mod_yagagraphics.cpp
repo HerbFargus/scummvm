@@ -427,11 +427,7 @@ static void drawSurface(Graphics::ManagedSurface &dst, const Graphics::Surface &
 		dst.blitFrom(src, srcRect, dstRect);
 		return;
 	}
-	uint alpha = (uint)(CLIP(opacity, 0.0, 1.0) * 255.0 + 0.5);
-	if (srcRect.width() == dstRect.width() && srcRect.height() == dstRect.height())
-		dst.blendBlitFrom(src, srcRect, Common::Point(dstRect.left, dstRect.top), Graphics::FLIP_NONE, MS_ARGB(alpha, 255, 255, 255));
-	else
-		dst.blendBlitFrom(src, srcRect, dstRect, Graphics::FLIP_NONE, MS_ARGB(alpha, 255, 255, 255));
+	blendClipped(dst, src, srcRect, dstRect, (uint)(CLIP(opacity, 0.0, 1.0) * 255.0 + 0.5));
 }
 
 ObjRef newLayerImage(const Common::SharedPtr<AnimData> &anim, const Graphics::Surface *surface) {
@@ -772,7 +768,9 @@ static ObjRef targetRenderBegin(Object *, Tuple *args, Dict *) {
 }
 
 static ObjRef targetRenderEnd(Object *, Tuple *, Dict *) {
+	uint32 t0 = g_system->getMillis();
 	g_display->present();
+	debugC(3, kDebugScript, "yagagraphics: present took %u ms", g_system->getMillis() - t0);
 	return ObjRef(g_none);
 }
 

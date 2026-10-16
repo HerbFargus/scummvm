@@ -76,18 +76,34 @@ struct VideoObject : public EngineObject {
 		if (!_decoder || !_started)
 			return;
 		while (_decoder->needsUpdate()) {
+			uint32 t0 = g_system->getMillis();
 			const Graphics::Surface *f = _decoder->decodeNextFrame();
+			debugC(3, kDebugScript, "yagasprite: %s frame %d at %u ms, wall %u, decoded in %u ms", _path.c_str(), _decoder->getCurFrame(), _decoder->getTime(), t0, g_system->getMillis() - t0);
 			if (!f)
 				break;
 			_frame = f;
 		}
 	}
 
+	// Answered from the movie's clock, not by decoding: a frame decoded
+	// here (the scenes ask on every game tick) would wait for the next
+	// render to be shown, a different wait each time
 	bool isPlaying() {
-		advance();
-		return _decoder && _started && !_decoder->endOfVideo();
+		if (!_decoder || !_started || _decoder->endOfVideo())
+			return false;
+		uint32 length = _decoder->getDuration().msecs();
+		return !length || _decoder->getTime() < length;
 	}
 };
+
+bool videoFrameDue() {
+	for (uint i = 0; i < g_videos.size(); i++) {
+		VideoObject *v = g_videos[i];
+		if (v->_decoder && v->_started && !v->_decoder->endOfVideo() && v->_decoder->needsUpdate())
+			return true;
+	}
+	return false;
+}
 
 // Ends the movies that are playing. The scripts have no way to skip one
 // (the intro runs almost three minutes), so a click or a key does it
@@ -733,7 +749,7 @@ static ObjRef spriteRender(Object *self, Tuple *args, Dict *) {
 			ObjRef img = p.image ? p.image : newLayerImage(imageAnimShared(anim), &l);
 			renderThrough(target.get(), img.get(), opacity, Common::Rect(p.x, p.y, p.x + l.w, p.y + l.h), Common::Rect(0, 0, l.w, l.h));
 		} else {
-			g_display->surface().blendBlitFrom(l, Common::Point(p.x, p.y), Graphics::FLIP_NONE, MS_ARGB(alpha, 255, 255, 255));
+			blendClipped(g_display->surface(), l, Common::Rect(0, 0, l.w, l.h), Common::Rect(p.x, p.y, p.x + l.w, p.y + l.h), alpha);
 		}
 	}
 	setRenderRect(s, s->_drawn);

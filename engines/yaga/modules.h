@@ -110,6 +110,8 @@ bool playbackMouthShape(Python::Object *o, uint32 *mask);
 void advanceSprites();
 // Ends any movie that is playing
 void skipVideos();
+// Whether a playing movie has a new frame to show
+bool videoFrameDue();
 
 // yagasound: a decoder for audio by file extension (.mp3, .wav, .flac, .ogg);
 // takes the stream, null if it cannot be decoded

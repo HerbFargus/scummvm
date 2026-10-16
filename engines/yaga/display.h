@@ -52,6 +52,12 @@ private:
 
 extern Display *g_display;
 
+// Alpha-blends srcRect of src into dstRect of dst (scaled if they differ),
+// clipped to dst first: ManagedSurface::blendBlitFrom clips the right and
+// bottom edges against the source's size, not its own, and so draws nothing
+// of a sprite that runs a pixel off the edge
+void blendClipped(Graphics::ManagedSurface &dst, const Graphics::Surface &src, Common::Rect srcRect, Common::Rect dstRect, uint alpha);
+
 } // End of namespace Yaga
 
 #endif // YAGA_DISPLAY_H
