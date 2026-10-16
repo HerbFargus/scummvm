@@ -35,6 +35,7 @@ namespace Python {
 
 void initMarshalModule();
 void initStructModule(Module *m);
+void initSreModule(Module *m);
 
 // ---- imp -------------------------------------------------------------------------
 
@@ -1524,6 +1525,7 @@ void initStandardModules(Interpreter *vm) {
 	vm->addNativeModule("thread", initThread, false);
 	vm->addNativeModule("_codecs", initCodecs, false);
 	vm->addNativeModule("struct", initStructModule, false);
+	vm->addNativeModule("_sre", initSreModule, true);
 
 	g_statResultType.getSets = g_statGetSets;
 	g_statResultType.getAttr = genericGetAttr;

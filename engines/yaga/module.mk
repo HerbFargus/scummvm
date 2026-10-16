@@ -27,6 +27,7 @@ MODULE_OBJS = \
 	python/object.o \
 	python/parser.o \
 	python/sequence.o \
+	python/sre.o \
 	python/stdmodules.o \
 	python/str.o \
 	python/struct.o \
