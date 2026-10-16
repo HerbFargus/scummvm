@@ -1362,8 +1362,16 @@ static ObjRef typeGetAttr(Object *o, Str *name) {
 		typeReady(type);
 	Type *metatype = o->_type;
 	// Special attributes
-	if (name->equals("__name__"))
+	if (name->equals("__name__")) {
+		// A built-in type's name is the part after its module, as CPython's
+		// type_name gives it: yagascene.Point is "Point"
+		if (!(type->_flags & kTypeHeap)) {
+			const char *dot = strrchr(type->_name.c_str(), '.');
+			if (dot)
+				return newStr(dot + 1);
+		}
 		return newStr(type->_name);
+	}
 	if (name->equals("__dict__"))
 		return ObjRef(type->_dict.get()); // CPython wraps this in a read-only proxy
 	if (name->equals("__bases__"))
@@ -1384,6 +1392,9 @@ static ObjRef typeGetAttr(Object *o, Str *name) {
 		Object *mod = type->_dict->getItemString("__module__");
 		if (mod)
 			return ObjRef(mod);
+		const char *dot = strrchr(type->_name.c_str(), '.');
+		if (dot && !(type->_flags & kTypeHeap))
+			return newStr(Common::String(type->_name.c_str(), dot - type->_name.c_str()));
 		return newStr("__builtin__");
 	}
 	ObjRef metaAttribute = lookupType(metatype, name);
