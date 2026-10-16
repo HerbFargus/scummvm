@@ -52,7 +52,8 @@ games shipped with.
   yagascene (positions, scenes, point colliders) and yagasprite (sprites,
   talkies and Bink movies) are written in part. The rest of them, and yaga
   and yagacollisionlib, are tracing stand-ins that log what the scripts ask
-  of them. Flipped sprites are not drawn flipped yet.
+  of them. Sprites are never drawn flipped: the engine has hFlip and
+  vFlip, but neither game's scripts or data ever set them.
 
 Testing: `yaga_ticks=N` stops after N game ticks, `yaga_shots=a,b,...`
 saves the screen after those ticks into `yaga_shot_dir`, and
