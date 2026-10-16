@@ -24,6 +24,7 @@ MODULE_OBJS = \
 	python/long.o \
 	python/marshal.o \
 	python/object.o \
+	python/parser.o \
 	python/sequence.o \
 	python/stdmodules.o \
 	python/str.o \

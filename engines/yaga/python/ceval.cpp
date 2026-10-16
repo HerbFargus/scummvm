@@ -1890,7 +1890,18 @@ ObjRef evalCodeEx(Code *co, Dict *globals, Object *locals,
 		return ObjRef();
 	}
 
+	// Code that is not optimised (it uses exec or import *) looks its
+	// arguments up by name
+	if ((co->_flags & (kCoNewLocals | kCoOptimized)) == kCoNewLocals && co->_argCount > 0 &&
+	    f->_locals && isInstanceOf(f->_locals.get(), &g_dictType)) {
+		Dict *ld = (Dict *)f->_locals.get();
+		for (int32 j = 0; j < co->_nLocals && j < (int32)co->_varNames->_size; j++)
+			if (fast[j])
+				ld->setItem(co->_varNames->get(j), fast[j]);
+	}
+
 	// Cells for this function's cell variables, and the free variables passed in
+
 	uint32 ncells = co->_cellVars ? co->_cellVars->_size : 0;
 	uint32 nfree = co->_freeVars ? co->_freeVars->_size : 0;
 	for (uint32 i = 0; i < ncells; i++) {

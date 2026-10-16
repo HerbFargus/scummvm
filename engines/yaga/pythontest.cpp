@@ -130,8 +130,16 @@ private:
 class BufferSink : public OutputSink {
 public:
 	Common::String _text;
-	void writeStdout(const char *s, uint32 len) override { _text += Common::String(s, len); }
-	void writeStderr(const char *s, uint32 len) override { _text += Common::String(s, len); }
+	// At debug level 3 the output is also logged as it happens
+	void writeStdout(const char *s, uint32 len) override {
+		_text += Common::String(s, len);
+		debugN(3, "%s", Common::String(s, len).c_str());
+	}
+	void writeStderr(const char *s, uint32 len) override {
+		_text += Common::String(s, len);
+		debugN(3, "%s", Common::String(s, len).c_str());
+	}
+
 };
 
 } // End of anonymous namespace
