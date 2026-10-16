@@ -30,6 +30,13 @@
 namespace Yaga {
 namespace Python {
 
+// struct.error, which every failure here raises
+static Object *g_structError = nullptr;
+
+static Object *structError() {
+	return g_structError ? g_structError : g_excValueError;
+}
+
 struct FormatCode {
 	char code;
 	int size;
@@ -86,7 +93,7 @@ static const FormatCode *findCode(const Format &f, char c) {
 	for (const FormatCode *e = f.table; e->code; e++)
 		if (e->code == c)
 			return e;
-	setErrorString(g_excValueError, "bad char in struct format");
+	setErrorString(structError(), "bad char in struct format");
 	return nullptr;
 }
 
@@ -103,7 +110,7 @@ static int32 calcSize(const char *fmt) {
 			while (Common::isDigit(*fmt))
 				num = num * 10 + (*fmt++ - '0');
 			if (!*fmt) {
-				setErrorString(g_excValueError, "repeat count given without format specifier");
+				setErrorString(structError(), "repeat count given without format specifier");
 				return -1;
 			}
 			c = *fmt++;
@@ -144,13 +151,13 @@ static bool argAsInt64(Object *o, int64 *out) {
 	}
 	if (isInstanceOf(o, &g_longType))
 		return longAsInt64(o, out);
-	setErrorString(g_excTypeError, "required argument is not an integer");
+	setErrorString(structError(), "required argument is not an integer");
 	return false;
 }
 
 static ObjRef structPack(Object *, Tuple *args, Dict *) {
 	if (args->_size < 1) {
-		setErrorString(g_excTypeError, "struct.pack requires at least one argument");
+		setErrorString(structError(), "struct.pack requires at least one argument");
 		return ObjRef();
 	}
 	Str *fmtStr = asStr(args->get(0));
@@ -179,13 +186,13 @@ static ObjRef structPack(Object *, Tuple *args, Dict *) {
 				out += '\0';
 		if (c == 's' || c == 'p') {
 			if (argi >= args->_size) {
-				setErrorString(g_excTypeError, "insufficient arguments to pack");
+				setErrorString(structError(), "insufficient arguments to pack");
 				return ObjRef();
 			}
 			Str *s = asStr(args->get(argi++));
 			if (!s) {
 				clearError();
-				setErrorString(g_excTypeError, "argument for 's' must be a string");
+				setErrorString(structError(), "argument for 's' must be a string");
 				return ObjRef();
 			}
 			int32 n = c == 'p' ? MIN<int32>(s->_len, num - 1) : MIN<int32>(s->_len, num);
@@ -202,7 +209,7 @@ static ObjRef structPack(Object *, Tuple *args, Dict *) {
 				continue;
 			}
 			if (argi >= args->_size) {
-				setErrorString(g_excTypeError, "insufficient arguments to pack");
+				setErrorString(structError(), "insufficient arguments to pack");
 				return ObjRef();
 			}
 			Object *v = args->get(argi++);
@@ -210,7 +217,7 @@ static ObjRef structPack(Object *, Tuple *args, Dict *) {
 				Str *s = asStr(v);
 				if (!s || s->_len != 1) {
 					clearError();
-					setErrorString(g_excTypeError, "char format require string of length 1");
+					setErrorString(structError(), "char format require string of length 1");
 					return ObjRef();
 				}
 				out += s->_data[0];
@@ -237,7 +244,7 @@ static ObjRef structPack(Object *, Tuple *args, Dict *) {
 		}
 	}
 	if (argi != args->_size) {
-		setErrorString(g_excTypeError, "too many arguments for pack format");
+		setErrorString(structError(), "too many arguments for pack format");
 		return ObjRef();
 	}
 	return newStr(out);
@@ -254,7 +261,7 @@ static ObjRef structUnpack(Object *, Tuple *args, Dict *) {
 	if (size < 0)
 		return ObjRef();
 	if (size != (int32)data->_len) {
-		setErrorString(g_excValueError, "unpack str size does not match format");
+		setErrorString(structError(), "unpack str size does not match format");
 		return ObjRef();
 	}
 	const char *fmt = fmtStr->_data;
@@ -356,8 +363,14 @@ void initStructModule(Module *m) {
 		ObjRef f(new BuiltinFunction(d, nullptr));
 		moduleAddObject(m, d->name, f.get());
 	}
-	// struct.error is a string exception in Python 2.2
-	moduleAddObject(m, "error", newStr("struct.error").get());
+	ObjRef error = newExceptionClass("struct.error", nullptr);
+	if (g_structError)
+		decRef(g_structError);
+	g_structError = error.get();
+	incRef(g_structError);
+	moduleAddObject(m, "error", error.get());
+
+
 }
 
 } // End of namespace Python

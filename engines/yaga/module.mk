@@ -32,7 +32,9 @@ MODULE_OBJS = \
 	python/sysmodule.o \
 	python/typeobj.o \
 	python/unicode.o \
-	python/vm.o
+	python/vm.o \
+	python/zlibmodule.o
+
 
 # This module can be built as a plugin
 ifeq ($(ENABLE_YAGA), DYNAMIC_PLUGIN)

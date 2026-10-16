@@ -1346,7 +1346,11 @@ static void initImpNative(Module *m) {
 	initImp(m);
 }
 
+void registerZlibModule(Interpreter *vm);
+
 void initStandardModules(Interpreter *vm) {
+	registerZlibModule(vm);
+
 	vm->addNativeModule("imp", initImpNative, false);
 	vm->addNativeModule("marshal", initMarshalNative, false);
 	vm->addNativeModule("nt", initNt, false);

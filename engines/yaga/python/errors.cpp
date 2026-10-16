@@ -168,7 +168,21 @@ void badInternalCall() {
 	setErrorString(g_excSystemError, "bad argument to internal function");
 }
 
+// As PyErr_NewException: a classic class "module.Name", based on Exception
+ObjRef newExceptionClass(const char *dottedName, Object *base) {
+	const char *dot = strrchr(dottedName, '.');
+	if (!dot) {
+		badInternalCall();
+		return ObjRef();
+	}
+	Ref<Dict> dict = newDict();
+	dict->setItemString("__module__", newStr(dottedName, dot - dottedName).get());
+	Ref<Tuple> bases = tuplePack(1, base ? base : g_excException);
+	return newClassObj(bases.get(), dict.get(), newStr(dot + 1).get());
+}
+
 ObjRef newException(Object *type, const char *msg) {
+
 	Ref<Str> s = newStr(msg);
 	return callFunction(type, 1, s.get());
 }

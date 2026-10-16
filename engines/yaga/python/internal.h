@@ -138,6 +138,8 @@ enum { kCompileExec = 0, kCompileEval = 1, kCompileSingle = 2 };
 // Exceptions
 void initExceptions();
 ObjRef newException(Object *type, const char *msg);
+ObjRef newExceptionClass(const char *dottedName, Object *base);
+
 
 // Slot wrappers and helpers for new-style types
 void typeInheritSlots(Type *t);
