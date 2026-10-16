@@ -1168,7 +1168,11 @@ static void inheritSlots(Type *t, Type *base) {
 	COPYSLOT(descrGet);
 	COPYSLOT(descrSet);
 	COPYSLOT(init);
-	COPYSLOT(newObj);
+	// As CPython's inherit_special: a native type based directly on object
+	// does not get object's constructor, which would build the wrong layout
+	if (base != &g_objectType || (t->_flags & kTypeHeap))
+		COPYSLOT(newObj);
+
 	// As CPython: getattr and setattr are inherited separately
 	if (!t->getAttr)
 		t->getAttr = base->getAttr;

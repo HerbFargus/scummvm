@@ -37,7 +37,9 @@
 #include "yaga/console.h"
 #include "yaga/detection.h"
 #include "yaga/installer.h"
+#include "yaga/modules.h"
 #include "yaga/pyhost.h"
+#include "yaga/resources.h"
 #include "yaga/pythontest.h"
 //#include "yaga/scripthandler.h"
 #include "yaga/text.h"
@@ -255,7 +257,12 @@ Common::Error YagaEngine::runScripts() {
 	GameFileSystem fs(root, gameDir, _targetName);
 	LogSink sink;
 	Python::Interpreter vm(&fs, &sink);
+	Resources resources(root, gameDir, &fs);
 	registerEngineStubs(&vm);
+	// The engine modules written so far take over from their stand-ins
+	registerYagares(&vm, &resources);
+	registerYagaxml(&vm, &resources);
+
 	bool ok = runLauncher(&vm, &fs, exeName, ConfMan.hasKey("yaga_import_all"));
 
 	if (!ok)

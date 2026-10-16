@@ -6,8 +6,11 @@ MODULE_OBJS = \
 	console.o \
 	installer.o \
 	metaengine.o \
+	mod_yagares.o \
+	mod_yagaxml.o \
 	pyhost.o \
 	pythontest.o \
+	resources.o \
 	scripthandler.o \
 	text.o \
 	video.o \
