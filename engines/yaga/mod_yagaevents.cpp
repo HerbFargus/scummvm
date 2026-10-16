@@ -458,11 +458,15 @@ static void pumpInput(EventManagerObject *em) {
 		case Common::EVENT_RBUTTONUP: {
 			bool down = e.type == Common::EVENT_LBUTTONDOWN || e.type == Common::EVENT_RBUTTONDOWN;
 			bool right = e.type == Common::EVENT_RBUTTONDOWN || e.type == Common::EVENT_RBUTTONUP;
+			if (down)
+				skipVideos();
 			dispatch(em, kClassMouse, down ? kInputButtonDown : kInputButtonUp, down ? 1 : 0, right ? 1 : 0);
 			break;
 		}
 		case Common::EVENT_KEYDOWN: {
 			int32 raw = rawKeyCode(e.kbd);
+			if (!e.kbdRepeat)
+				skipVideos();
 			if (raw >= 0 && !e.kbdRepeat)
 				dispatch(em, kClassKeyboard, kInputButtonDown, 1, raw);
 			int32 typed = typedKeyCode(e.kbd);
@@ -510,6 +514,7 @@ struct TestHooks {
 				continue;
 			debug(1, "yaga: test click at (%u, %u), tick %u", clicks[i + 1], clicks[i + 2], tick);
 			dispatchMouseAt(em, clicks[i + 1], clicks[i + 2]);
+			skipVideos();
 			dispatch(em, kClassMouse, kInputButtonDown, 1);
 			dispatch(em, kClassMouse, kInputButtonUp, 0);
 		}
@@ -552,6 +557,7 @@ static ObjRef managerStartLoop(Object *self, Tuple *, Dict *) {
 
 	while (em->_running && !g_engine->shouldQuit()) {
 		pumpInput(em);
+		advanceSprites();
 		now = g_system->getMillis();
 		uint32 due = now + 50;
 		bool ticked = false;

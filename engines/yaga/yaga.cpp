@@ -266,7 +266,7 @@ Common::Error YagaEngine::runScripts() {
 	registerYagares(&vm, &resources);
 	registerYagaxml(&vm, &resources);
 	registerYagaevents();
-	registerYagagraphics();
+	registerYagagraphics(&resources);
 	registerYagascene();
 	registerYagasprite();
 

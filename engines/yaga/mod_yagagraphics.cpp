@@ -20,16 +20,25 @@
  */
 
 #include "common/debug.h"
+#include "common/hashmap.h"
+#include "common/memstream.h"
 #include "common/system.h"
+#include "graphics/blit.h"
+#include "graphics/cursor.h"
+#include "graphics/cursorman.h"
+#include "image/icocur.h"
 
 #include "yaga/detection.h"
 #include "yaga/display.h"
+#include "yaga/imageanim.h"
 #include "yaga/modules.h"
+#include "yaga/resources.h"
 #include "yaga/pyhost.h"
 #include "yaga/python/internal.h"
 
-// yagagraphics: the graphics system, its one video device and the render
-// target the game draws into. Images and animations are still stand-ins.
+// yagagraphics: the graphics system, its one video device, the render
+// target the game draws into and its cursors, and the animations (IImageAnim)
+// sprites draw. Drawing into images (IImage) is still a stand-in.
 
 namespace Yaga {
 
@@ -92,6 +101,12 @@ static Type g_colorType("yagagraphics.Color", &g_objectType);
 static Type g_systemType("yagagraphics.GraphicsSystem", &g_objectType);
 static Type g_deviceType("yagagraphics.VideoDevice", &g_objectType);
 static Type g_targetType("yagagraphics.RenderTarget", &g_objectType);
+static Type g_imageAnimType("yagagraphics.IImageAnim", &g_objectType);
+static Type g_animFrameType("yagagraphics.Frame", &g_objectType);
+static Type g_animLayerType("yagagraphics.Layer", &g_objectType);
+static Type g_imageType("yagagraphics.IImage", &g_objectType);
+
+static Resources *g_res = nullptr;
 
 // Fills attributes from positional or keyword arguments, with defaults
 static bool fillAttrs(Object *o, const char *fname, const char *const *names, const int32 *defaults, uint32 count, Tuple *args, Dict *kw) {
@@ -173,6 +188,260 @@ static ObjRef colorRepr(Object *o) {
 	return attrsRepr(o, "Color", g_colorNames, 4);
 }
 
+ObjRef newRect(int32 x, int32 y, int32 w, int32 h) {
+	ObjRef r(new EngineObject(&g_rectType));
+	setEngineAttr(r.get(), "x", newInt(x).get());
+	setEngineAttr(r.get(), "y", newInt(y).get());
+	setEngineAttr(r.get(), "width", newInt(w).get());
+	setEngineAttr(r.get(), "height", newInt(h).get());
+	return r;
+}
+
+// ---- Images and animations -----------------------------------------------------------
+
+// IImage: a layer's picture, or a blank one from CreateImage
+struct ImageObject : public EngineObject {
+	Common::SharedPtr<AnimData> _anim; // keeps a layer's pixels alive
+	const Graphics::Surface *_surface;
+	Graphics::Surface _own;
+	explicit ImageObject(Type *t) : EngineObject(t), _surface(nullptr) {}
+	~ImageObject() override {
+		_own.free();
+	}
+	void setSize() {
+		setEngineAttr(this, "width", newInt(_surface ? _surface->w : 0).get());
+		setEngineAttr(this, "height", newInt(_surface ? _surface->h : 0).get());
+		setEngineAttr(this, "pixelFmt", newInt(6).get()); // PXL_A8R8G8B8
+	}
+};
+
+static ObjRef newImage(const Common::SharedPtr<AnimData> &anim, const Graphics::Surface *surface) {
+	Ref<ImageObject> img(new ImageObject(&g_imageType));
+	img->_anim = anim;
+	img->_surface = surface;
+	img->setSize();
+	return ObjRef(img.get());
+}
+
+// IImage(other) shares the other image's pixels
+static ObjRef imageNew(Type *t, Tuple *args, Dict *) {
+	Ref<ImageObject> img(new ImageObject(t));
+	if (args->_size && isInstanceOf(args->get(0), &g_imageType)) {
+		ImageObject *src = (ImageObject *)args->get(0);
+		if (src->_surface == &src->_own) {
+			img->_own.copyFrom(src->_own);
+			img->_surface = &img->_own;
+		} else {
+			img->_anim = src->_anim;
+			img->_surface = src->_surface;
+		}
+	}
+	img->setSize();
+	return ObjRef(img.get());
+}
+
+static ObjRef imageRepr(Object *o) {
+	ImageObject *img = (ImageObject *)o;
+	return newStr(Common::String::format("<IImage %dx%d>", img->_surface ? img->_surface->w : 0, img->_surface ? img->_surface->h : 0));
+}
+
+// CreateImage(width, height, format): a blank image
+static ObjRef systemCreateImage(Object *, Tuple *args, Dict *) {
+	if (!checkArgs("CreateImage", args, 2, 3))
+		return ObjRef();
+	int32 w, h;
+	if (!asInt(args->get(0), &w) || !asInt(args->get(1), &h))
+		return ObjRef();
+	Ref<ImageObject> img(new ImageObject(&g_imageType));
+	if (w > 0 && h > 0 && w < 4096 && h < 4096) {
+		img->_own.create(w, h, Graphics::BlendBlit::getSupportedPixelFormat());
+		memset(img->_own.getPixels(), 0, img->_own.pitch * h);
+		img->_surface = &img->_own;
+	}
+	img->setSize();
+	return ObjRef(img.get());
+}
+
+struct ImageAnimObject : public EngineObject {
+	Common::SharedPtr<AnimData> _anim;
+	Common::String _locator;
+	Ref<List> _frames; // made when first asked for
+	explicit ImageAnimObject(Type *t) : EngineObject(t) {}
+};
+
+AnimData *imageAnimData(Object *o) {
+	if (!isInstanceOf(o, &g_imageAnimType))
+		return nullptr;
+	return ((ImageAnimObject *)o)->_anim.get();
+}
+
+double imageAnimFps(Object *o) {
+	Object *v = o->getDict() ? o->getDict()->getItemString("framesPerSecond") : nullptr;
+	double fps;
+	if (!v || !asDouble(v, &fps) || fps <= 0) {
+		clearError();
+		return 15.0;
+	}
+	return fps;
+}
+
+Common::String imageAnimLocator(Object *o) {
+	return isInstanceOf(o, &g_imageAnimType) ? ((ImageAnimObject *)o)->_locator : Common::String();
+}
+
+// IImageAnim(resource): the resource's frames, decoded once
+static ObjRef imageAnimNew(Type *t, Tuple *args, Dict *) {
+	if (!checkArgs("IImageAnim", args, 1, 1))
+		return ObjRef();
+	Object *res = args->get(0);
+	Str *data = resourceData(res);
+	if (!data)
+		return ObjRef();
+	ResourceObject *r = (ResourceObject *)res;
+	if (!r->_anim) {
+		AnimData *decoded = decodeAnim((const byte *)data->_data, data->_len, r->_path);
+		if (!decoded) {
+			warning("yaga: %s is not an animation", r->_path.c_str());
+			decoded = new AnimData();
+		}
+		r->_anim = Common::SharedPtr<AnimData>(decoded);
+	}
+	Ref<ImageAnimObject> a(new ImageAnimObject(t));
+	a->_anim = r->_anim;
+	a->_locator = r->_path;
+	Common::Rect b = a->_anim->bounds();
+	setEngineAttr(a.get(), "framesPerSecond", newInt(15).get());
+	setEngineAttr(a.get(), "locator", newStr(r->_path).get());
+	setEngineAttr(a.get(), "width", newInt(b.width()).get());
+	setEngineAttr(a.get(), "height", newInt(b.height()).get());
+	debugC(2, kDebugScript, "yagagraphics: %s, %u frames", r->_path.c_str(), a->_anim->frames.size());
+	return ObjRef(a.get());
+}
+
+// frames[i].layers[j], with each layer's name, pos, mask and image
+static ObjRef imageAnimGetFrames(Object *o) {
+	ImageAnimObject *a = (ImageAnimObject *)o;
+	if (a->_frames)
+		return ObjRef(a->_frames.get());
+	Ref<List> frames = newList();
+	for (uint i = 0; i < a->_anim->frames.size(); i++) {
+		const AnimFrame &f = a->_anim->frames[i];
+		ObjRef frame(new EngineObject(&g_animFrameType));
+		Ref<List> layers = newList();
+		for (uint j = 0; j < f.layers.size(); j++) {
+			const AnimLayer &l = f.layers[j];
+			ObjRef layer(new EngineObject(&g_animLayerType));
+			setEngineAttr(layer.get(), "name", newStr(l.name).get());
+			setEngineAttr(layer.get(), "pos", newPoint(l.x, l.y, 0).get());
+			setEngineAttr(layer.get(), "mask", newIntOrLong(l.mask).get());
+			setEngineAttr(layer.get(), "image", newImage(a->_anim, &l.surface).get());
+			layers->append(layer.get());
+		}
+		setEngineAttr(frame.get(), "layers", layers.get());
+		setEngineAttr(frame.get(), "pos", newPoint(0, 0, 0).get());
+		frames->append(frame.get());
+	}
+	a->_frames = frames;
+	return ObjRef(frames.get());
+}
+
+// The engine's in-memory compression; nothing to gain from it here
+static ObjRef imageAnimCompress(Object *self, Tuple *, Dict *) {
+	return ObjRef(self);
+}
+
+static ObjRef imageAnimIsDone(Object *, Tuple *, Dict *) {
+	return newInt(1);
+}
+
+static const MethodDef g_imageAnimMethods[] = {
+	{ "Compress", imageAnimCompress, kMethVarArgs, nullptr },
+	{ "IsAnimDone", imageAnimIsDone, kMethVarArgs, nullptr },
+	{ nullptr, nullptr, 0, nullptr }
+};
+
+static const GetSetDef g_imageAnimGetSets[] = {
+	{ "frames", imageAnimGetFrames, nullptr },
+	{ nullptr, nullptr, nullptr }
+};
+
+static const MethodDef g_systemMethods[] = {
+	{ "CreateImage", systemCreateImage, kMethVarArgs, nullptr },
+	{ nullptr, nullptr, 0, nullptr }
+};
+
+// ---- Cursors --------------------------------------------------------------------------
+
+// The game loads its .cur files under ids of its own choosing
+static Common::HashMap<int32, Graphics::Cursor *> g_cursors;
+static int32 g_cursorId = -1;
+
+static void freeCursors() {
+	for (Common::HashMap<int32, Graphics::Cursor *>::iterator it = g_cursors.begin(); it != g_cursors.end(); ++it)
+		delete it->_value;
+	g_cursors.clear();
+	g_cursorId = -1;
+}
+
+// LoadCursorFile(path, id): returns the id, or 0 if it cannot be read
+static ObjRef targetLoadCursor(Object *, Tuple *args, Dict *) {
+	if (!checkArgs("LoadCursorFile", args, 2, 2))
+		return ObjRef();
+	ObjRef pathObj = str(args->get(0));
+	int32 id;
+	if (!pathObj || !asInt(args->get(1), &id))
+		return ObjRef();
+	if (g_cursors.contains(id))
+		return newInt(id);
+	Common::String path = ((Str *)pathObj.get())->toString();
+	Common::String bytes;
+	if (!g_res->read(path, bytes)) {
+		debugC(1, kDebugScript, "yagagraphics: no cursor %s", path.c_str());
+		return newInt(0);
+	}
+	Common::MemoryReadStream stream((const byte *)bytes.c_str(), bytes.size());
+	Image::IcoCurDecoder decoder;
+	Graphics::Cursor *cursor = nullptr;
+	if (decoder.open(stream) && decoder.numItems())
+		cursor = decoder.loadItemAsCursor(0);
+	if (!cursor) {
+		warning("yaga: %s is not a cursor", path.c_str());
+		return newInt(0);
+	}
+	g_cursors[id] = cursor;
+	return newInt(id);
+}
+
+static ObjRef targetSetCursor(Object *, Tuple *args, Dict *) {
+	if (!checkArgs("SetCursorByID", args, 1, 1))
+		return ObjRef();
+	int32 id;
+	if (!asInt(args->get(0), &id))
+		return ObjRef();
+	if (id != g_cursorId && g_cursors.contains(id)) {
+		CursorMan.replaceCursor(g_cursors[id]);
+		g_cursorId = id;
+	}
+	return ObjRef(g_none);
+}
+
+static ObjRef targetGetCursorVisible(Object *) {
+	return newBool(CursorMan.isVisible());
+}
+
+static int targetSetCursorVisible(Object *, Object *v) {
+	int on = v ? isTrue(v) : 0;
+	if (on < 0)
+		return -1;
+	CursorMan.showMouse(on != 0);
+	return 0;
+}
+
+static const GetSetDef g_targetGetSets[] = {
+	{ "cursorVisible", targetGetCursorVisible, targetSetCursorVisible },
+	{ nullptr, nullptr, nullptr }
+};
+
 // ---- The render target ---------------------------------------------------------------
 
 static int32 attrInt(Object *o, const char *name, int32 fallback) {
@@ -204,6 +473,8 @@ static ObjRef targetRenderEnd(Object *, Tuple *, Dict *) {
 static const MethodDef g_targetMethods[] = {
 	{ "RenderBegin", targetRenderBegin, kMethVarArgs, nullptr },
 	{ "RenderEnd", targetRenderEnd, kMethVarArgs, nullptr },
+	{ "LoadCursorFile", targetLoadCursor, kMethVarArgs, nullptr },
+	{ "SetCursorByID", targetSetCursor, kMethVarArgs, nullptr },
 	{ nullptr, nullptr, 0, nullptr }
 };
 
@@ -267,9 +538,16 @@ static void fillYagagraphics(Module *m) {
 		g_colorType.repr = colorRepr;
 		readyEngineType(&g_colorType, nullptr, nullptr, false);
 		g_systemType.newObj = systemNew;
-		readyEngineType(&g_systemType, nullptr, nullptr, true);
+		readyEngineType(&g_systemType, g_systemMethods, nullptr, true);
 		readyEngineType(&g_deviceType, g_deviceMethods, nullptr, true);
-		readyEngineType(&g_targetType, g_targetMethods, nullptr, true);
+		readyEngineType(&g_targetType, g_targetMethods, g_targetGetSets, true);
+		g_imageAnimType.newObj = imageAnimNew;
+		readyEngineType(&g_imageAnimType, g_imageAnimMethods, g_imageAnimGetSets, true);
+		readyEngineType(&g_animFrameType, nullptr, nullptr, true);
+		readyEngineType(&g_animLayerType, nullptr, nullptr, true);
+		g_imageType.newObj = imageNew;
+		g_imageType.repr = imageRepr;
+		readyEngineType(&g_imageType, nullptr, nullptr, true);
 	}
 	addConstants(m, "GraphicsHardware", g_hardware);
 	addConstants(m, "PixelFormat", g_pixelFormats);
@@ -285,10 +563,14 @@ static void fillYagagraphics(Module *m) {
 	moduleAddObject(m, "GraphicsSystem", &g_systemType);
 	moduleAddObject(m, "VideoDevice", &g_deviceType);
 	moduleAddObject(m, "RenderTarget", &g_targetType);
+	moduleAddObject(m, "IImageAnim", &g_imageAnimType);
+	moduleAddObject(m, "IImage", &g_imageType);
 }
 
-void registerYagagraphics() {
+void registerYagagraphics(Resources *resources) {
+	g_res = resources;
 	g_graphicsSystem = nullptr;
+	freeCursors();
 	registerEngineModule("yagagraphics", fillYagagraphics);
 }
 

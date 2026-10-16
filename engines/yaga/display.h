@@ -32,6 +32,7 @@ namespace Yaga {
 class Display {
 public:
 	Display() : _open(false) {}
+	~Display() { _converted.free(); }
 
 	bool isOpen() const { return _open; }
 	// Sets the screen mode; the scripts ask for 640x480
@@ -46,6 +47,7 @@ public:
 private:
 	bool _open;
 	Graphics::ManagedSurface _surface;
+	Graphics::Surface _converted; // in the screen's format
 };
 
 extern Display *g_display;

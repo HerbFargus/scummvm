@@ -22,6 +22,9 @@
 #ifndef YAGA_MODULES_H
 #define YAGA_MODULES_H
 
+#include "common/ptr.h"
+
+#include "yaga/imageanim.h"
 #include "yaga/python/object.h"
 #include "yaga/python/vm.h"
 
@@ -36,6 +39,7 @@ class Resources;
 struct ResourceObject : public Python::Object {
 	Common::String _path;
 	Python::Ref<Python::Str> _data;
+	Common::SharedPtr<AnimData> _anim; // decoded once, for IImageAnim
 	ResourceObject(Python::Type *t, const Common::String &path, Python::Str *data);
 };
 
@@ -66,10 +70,27 @@ struct ConstDef {
 };
 void addConstants(Python::Module *m, const char *className, const ConstDef *defs);
 
+// yagascene's Point: a value, so sprites copy the ones they are given
+Python::ObjRef newPoint(int32 x, int32 y, int32 z);
+Python::ObjRef copyPoint(Python::Object *o); // anything else is returned as it is
+bool pointXY(Python::Object *o, int32 *x, int32 *y); // false if not a point (no error set)
+
+// yagagraphics
+Python::ObjRef newRect(int32 x, int32 y, int32 w, int32 h);
+// The decoded frames behind an IImageAnim, or null
+AnimData *imageAnimData(Python::Object *o);
+double imageAnimFps(Python::Object *o);
+Common::String imageAnimLocator(Python::Object *o);
+
+// yagasprite: advances every playing sprite, once per loop
+void advanceSprites();
+// Ends any movie that is playing
+void skipVideos();
+
 void registerYagares(Python::Interpreter *vm, Resources *resources);
 void registerYagaxml(Python::Interpreter *vm, Resources *resources);
 void registerYagaevents();
-void registerYagagraphics();
+void registerYagagraphics(Resources *resources);
 void registerYagascene();
 void registerYagasprite();
 

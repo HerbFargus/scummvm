@@ -6,6 +6,7 @@ MODULE_OBJS = \
 	console.o \
 	display.o \
 	engineobject.o \
+	imageanim.o \
 	installer.o \
 	metaengine.o \
 	mod_yagaevents.o \

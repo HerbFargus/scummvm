@@ -23,6 +23,7 @@
 #include "common/file.h"
 #include "common/system.h"
 #include "engines/util.h"
+#include "graphics/blit.h"
 #include "image/png.h"
 
 #include "yaga/display.h"
@@ -43,9 +44,11 @@ void Display::open(int width, int height) {
 			++f;
 	}
 	initGraphics(width, height, formats);
-	_surface.create(width, height, g_system->getScreenFormat());
+	// Drawn in the format the alpha blitter works in, converted when shown
+	_surface.create(width, height, Graphics::BlendBlit::getSupportedPixelFormat());
+	_converted.create(width, height, g_system->getScreenFormat());
 	_open = true;
-	debug(1, "yaga: display %dx%d, %d bits", width, height, _surface.format.bytesPerPixel * 8);
+	debug(1, "yaga: display %dx%d, %d bits", width, height, _converted.format.bytesPerPixel * 8);
 }
 
 void Display::clear() {
@@ -56,7 +59,9 @@ void Display::clear() {
 void Display::present() {
 	if (!_open)
 		return;
-	g_system->copyRectToScreen(_surface.getPixels(), _surface.pitch, 0, 0, _surface.w, _surface.h);
+	Graphics::crossBlit((byte *)_converted.getPixels(), (const byte *)_surface.getPixels(), _converted.pitch, _surface.pitch,
+		_surface.w, _surface.h, _converted.format, _surface.format);
+	g_system->copyRectToScreen(_converted.getPixels(), _converted.pitch, 0, 0, _converted.w, _converted.h);
 	g_system->updateScreen();
 }
 
@@ -66,7 +71,7 @@ bool Display::saveScreenshot(const Common::Path &path) {
 	Common::DumpFile out;
 	if (!out.open(path, true))
 		return false;
-	return Image::writePNG(out, *_surface.surfacePtr());
+	return Image::writePNG(out, _converted);
 }
 
 } // End of namespace Yaga

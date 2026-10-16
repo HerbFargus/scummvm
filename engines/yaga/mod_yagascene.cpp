@@ -39,6 +39,7 @@ static Type g_pointType("yagascene.Point", &g_objectType);
 static Type g_sinkType("yagascene.ISceneEventSink", &g_objectType);
 static Type g_sceneManagerType("yagascene.SceneManager", &g_objectType);
 static Type g_sceneType("yagascene.Scene", &g_objectType);
+static Type g_colliderType("yagascene.PointCollider", &g_objectType);
 
 // ---- Point ------------------------------------------------------------------------------
 
@@ -113,6 +114,38 @@ static const GetSetDef g_pointGetSets[] = {
 	{ nullptr, nullptr, nullptr }
 };
 
+ObjRef newPoint(int32 x, int32 y, int32 z) {
+	Ref<PointObject> p(new PointObject(&g_pointType));
+	p->_coords[0] = newInt(x);
+	p->_coords[1] = newInt(y);
+	p->_coords[2] = newInt(z);
+	return ObjRef(p.get());
+}
+
+ObjRef copyPoint(Object *o) {
+	if (!isInstanceOf(o, &g_pointType))
+		return ObjRef(o);
+	Ref<PointObject> p(new PointObject(&g_pointType));
+	for (int i = 0; i < 3; i++)
+		p->_coords[i] = ((PointObject *)o)->_coords[i];
+	return ObjRef(p.get());
+}
+
+bool pointXY(Object *o, int32 *x, int32 *y) {
+	if (!isInstanceOf(o, &g_pointType))
+		return false;
+	double d[2];
+	for (int i = 0; i < 2; i++) {
+		if (!asDouble(((PointObject *)o)->_coords[i].get(), &d[i])) {
+			clearError();
+			d[i] = 0;
+		}
+	}
+	*x = (int32)d[0];
+	*y = (int32)d[1];
+	return true;
+}
+
 // ---- ISceneEventSink: the base of the game's sprite callbacks ------------------------
 
 static ObjRef sinkNoop(Object *, Tuple *, Dict *) {
@@ -134,6 +167,22 @@ static ObjRef sinkNew(Type *type, Tuple *, Dict *) {
 static ObjRef managerCreateScene(Object *, Tuple *, Dict *) {
 	return ObjRef(new EngineObject(&g_sceneType));
 }
+
+// CreatePointCollider(x, y, z): what sprites' Intersect tests against
+static ObjRef sceneCreatePointCollider(Object *, Tuple *args, Dict *) {
+	if (!checkArgs("CreatePointCollider", args, 0, 3))
+		return ObjRef();
+	ObjRef c(new EngineObject(&g_colliderType));
+	static const char *const names[] = { "x", "y", "z" };
+	for (uint32 i = 0; i < 3; i++)
+		setEngineAttr(c.get(), names[i], i < args->_size ? args->get(i) : newInt(0).get());
+	return c;
+}
+
+static const MethodDef g_sceneMethods[] = {
+	{ "CreatePointCollider", sceneCreatePointCollider, kMethVarArgs, nullptr },
+	{ nullptr, nullptr, 0, nullptr }
+};
 
 static const MethodDef g_managerMethods[] = {
 	{ "CreateScene", managerCreateScene, kMethVarArgs | kMethKeywords, nullptr },
@@ -167,7 +216,8 @@ static void fillYagascene(Module *m) {
 		typeReady(&g_sinkType);
 		g_sceneManagerType.newObj = managerNew;
 		readyEngineType(&g_sceneManagerType, g_managerMethods, nullptr, true);
-		readyEngineType(&g_sceneType, nullptr, nullptr, true);
+		readyEngineType(&g_sceneType, g_sceneMethods, nullptr, true);
+		readyEngineType(&g_colliderType, nullptr, nullptr, false);
 	}
 	addConstants(m, "SceneEvents", g_sceneEvents);
 	moduleAddObject(m, "Point", &g_pointType);

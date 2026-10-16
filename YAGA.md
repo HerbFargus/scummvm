@@ -39,15 +39,18 @@ games shipped with.
 - Python VM: done, with a compiler, and checked against CPython 2.2.3
   with a probe suite (the games' own standard library included).
 - Boot: both games start through their own McMillan bootstrap and run
-  their event loop: the Atari and Humongous logos and the opening movie
-  play, and a click or key skips them.
+  their event loop: the logos and opening movies play (a click or a key
+  skips a movie, as the scripts offer no way to), and the first room
+  draws with its characters. The game then waits on its first spoken
+  line, which needs yagasound.
 - Engine modules: yagares (the .he archives), yagaxml and yagaevents (the
-  event loop: timers, mouse and keyboard) are written. yagagraphics,
-  yagascene and yagasprite are written in part (the render target,
-  positions and scenes, and Bink movies); the rest of them, and yaga,
-  yagasound, yagafont and yagacollisionlib, are tracing stand-ins that log
-  what the scripts ask of them. So images, sprites and sound are not there
-  yet.
+  event loop: timers, mouse and keyboard) are written. yagagraphics
+  (render target, cursors, MNG/RLE animations), yagascene (positions,
+  scenes, point colliders) and yagasprite (sprites and Bink movies) are
+  written in part. The rest of them, and yaga, yagasound, yagafont and
+  yagacollisionlib, are tracing stand-ins that log what the scripts ask of
+  them. So there is no sound or text yet, drawing into images (the save
+  screen) is missing, and talkies and lipsync are stand-ins.
 
 Testing: `yaga_ticks=N` stops after N game ticks, `yaga_shots=a,b,...`
 saves the screen after those ticks into `yaga_shot_dir`, and
