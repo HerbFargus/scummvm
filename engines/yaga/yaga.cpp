@@ -37,6 +37,7 @@
 #include "yaga/console.h"
 #include "yaga/detection.h"
 #include "yaga/installer.h"
+#include "yaga/pythontest.h"
 //#include "yaga/scripthandler.h"
 #include "yaga/text.h"
 #include "yaga/video.h"
@@ -71,6 +72,12 @@ Common::String YagaEngine::getGameId() const {
 }
 
 Common::Error YagaEngine::run() {
+	// Python VM test mode: run the .pyc files in a folder and quit
+	if (ConfMan.hasKey("yaga_python_test")) {
+		runPythonTests(ConfMan.get("yaga_python_test"), ConfMan.get("yaga_python_test_out"));
+		return Common::kNoError;
+	}
+
 	//Graphics::PixelFormat outputPixelFormat = Graphics::PixelFormat(2, 5, 5, 5, 0, 10, 5, 0, 0);
 	Graphics::PixelFormat outputPixelFormat = Graphics::PixelFormat::createFormatRGBA32();
 

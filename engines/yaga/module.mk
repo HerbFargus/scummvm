@@ -6,10 +6,32 @@ MODULE_OBJS = \
 	console.o \
 	installer.o \
 	metaengine.o \
+	pythontest.o \
 	scripthandler.o \
 	text.o \
 	video.o \
-	yaga.o
+	yaga.o \
+	python/builtins.o \
+	python/ceval.o \
+	python/class.o \
+	python/compile.o \
+	python/dict.o \
+	python/errors.o \
+	python/file.o \
+	python/float.o \
+	python/func.o \
+	python/int.o \
+	python/long.o \
+	python/marshal.o \
+	python/object.o \
+	python/sequence.o \
+	python/stdmodules.o \
+	python/str.o \
+	python/struct.o \
+	python/sysmodule.o \
+	python/typeobj.o \
+	python/unicode.o \
+	python/vm.o
 
 # This module can be built as a plugin
 ifeq ($(ENABLE_YAGA), DYNAMIC_PLUGIN)
