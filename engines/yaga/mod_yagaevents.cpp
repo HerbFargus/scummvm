@@ -447,12 +447,15 @@ static int32 typedKeyCode(const Common::KeyState &k) {
 	return -1;
 }
 
-static void pumpInput(EventManagerObject *em) {
+// Returns whether the mouse moved
+static bool pumpInput(EventManagerObject *em) {
 	Common::Event e;
+	bool moved = false;
 	while (g_system->getEventManager()->pollEvent(e)) {
 		switch (e.type) {
 		case Common::EVENT_MOUSEMOVE:
 			dispatchMouseAt(em, e.mouse.x, e.mouse.y);
+			moved = true;
 			break;
 		case Common::EVENT_LBUTTONDOWN:
 		case Common::EVENT_LBUTTONUP:
@@ -486,6 +489,7 @@ static void pumpInput(EventManagerObject *em) {
 			break;
 		}
 	}
+	return moved;
 }
 
 // Test hooks, so a run can be checked without anyone at the controls:
@@ -852,7 +856,11 @@ static ObjRef managerStartLoop(Object *self, Tuple *, Dict *) {
 	em->_running = true;
 
 	while (em->_running && !g_engine->shouldQuit()) {
-		pumpInput(em);
+		// The pointer is the hardware cursor, which the backend only moves
+		// when the screen is updated: do that as it moves, not only when the
+		// game draws (10 to 15 times a second)
+		if (pumpInput(em))
+			g_system->updateScreen();
 		pumpStreams(em);
 		advanceSprites();
 		now = g_system->getMillis();
