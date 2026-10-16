@@ -23,7 +23,7 @@
 #define YAGA_STUBOVERLAYS_H
 
 // Temporary scaffolding for the tracing stand-ins: the little behaviour the
-// boot path needs to get through (one graphics system, a 640x480 mode). Run
+// boot path needs to get through (the system object). Run
 // in a stand-in module's namespace; anything not defined here stays a traced
 // stand-in. The real engine modules replace all of this.
 
@@ -35,60 +35,24 @@ struct StubOverlay {
 };
 
 static const StubOverlay g_stubOverlays[] = {
-	{ "yagagraphics", R"PY(
-class GraphicsHardware:
-    SYSTEM_SOFTWARE = 0
-    SYSTEM_HARDWARE = 1
-
-class PixelFormat:
-    PXL_UNKNOWN = 0
-    PXL_R5G6B5 = 1
-    PXL_X1R5G5B5 = 2
-    PXL_A1R5G5B5 = 3
-    PXL_R8G8B8 = 4
-    PXL_X8R8G8B8 = 5
-    PXL_A8R8G8B8 = 6
-
-class TargetType:
-    TARGET_WINDOWED = 0
-    TARGET_FULL_SCREEN = 1
-
-class VideoMode:
-    def __init__(self, width=640, height=480, format=PixelFormat.PXL_R5G6B5):
-        self.width = width
-        self.height = height
-        self.format = format
-
-class _VideoDevice(_Stub):
-    def __init__(self):
-        self.modes = [VideoMode(640, 480, PixelFormat.PXL_R5G6B5), VideoMode(640, 480, PixelFormat.PXL_X1R5G5B5)]
-        self.currentMode = VideoMode(640, 480, PixelFormat.PXL_R5G6B5)
-    def CreateRenderTarget(self, mode, buffers, targetType):
-        target = _stub('yagagraphics.RenderTarget')
-        target.width = mode.width
-        target.height = mode.height
-        target.format = mode.format
-        return target
-
-class _GraphicsSystem(_Stub):
-    def __init__(self):
-        self.systemType = GraphicsHardware.SYSTEM_SOFTWARE
-        self.primaryVideoDev = _VideoDevice()
-        self.videoDevices = [self.primaryVideoDev]
-
-_graphicsSystem = None
-
-def GraphicsSystem():
-    global _graphicsSystem
-    if _graphicsSystem is None:
-        _graphicsSystem = _GraphicsSystem()
-    return _graphicsSystem
-)PY" },
 	{ "yaga", R"PY(
+class _UInt32Seq:
+    def __init__(self):
+        self.items = []
+    def __iadd__(self, value):
+        self.items.append(value)
+        return self
+    def __iter__(self):
+        return iter(self.items)
+    def __len__(self):
+        return len(self.items)
+
 class _System(_Stub):
     def __init__(self):
         self.systemMemoryTotal = 512 * 1024 * 1024
         self.systemMemoryAvail = 256 * 1024 * 1024
+    def CreateUInt32Seq(self):
+        return _UInt32Seq()
 
 _system = None
 

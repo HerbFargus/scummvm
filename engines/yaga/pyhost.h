@@ -77,6 +77,14 @@ private:
 // "Script"), and they answer with more stand-ins
 void registerEngineStubs(Python::Interpreter *vm);
 
+// An engine module written in part: fill adds the real names to the
+// stand-in module, and every other name stays a traced stand-in
+void registerEngineModule(const char *name, Python::ModuleInitFunc fill);
+
+// genericGetAttr, giving a traced stand-in for a missing name, for native
+// objects whose methods are not all written yet
+Python::ObjRef stubFallbackGetAttr(Python::Object *o, Python::Str *name);
+
 // Runs the game's executable as McMillan Installer's launcher does: the
 // bootstrap modules, then the bytecode archive on sys.path, then the scripts.
 // Returns false (with the error logged) if a script raised.

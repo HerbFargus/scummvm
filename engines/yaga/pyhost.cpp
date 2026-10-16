@@ -20,6 +20,7 @@
  */
 
 #include "common/debug.h"
+#include "common/hash-str.h"
 #include "common/memstream.h"
 #include "common/savefile.h"
 #include "common/stream.h"
@@ -311,6 +312,12 @@ static Common::String describeArgs(Tuple *args) {
 	return out;
 }
 
+static ObjRef stubGetAttr(Object *o, Str *name);
+
+ObjRef stubFallbackGetAttr(Object *o, Str *name) {
+	return stubGetAttr(o, name);
+}
+
 static ObjRef stubGetAttr(Object *o, Str *name) {
 	ObjRef r = genericGetAttr(o, name);
 	if (r)
@@ -521,6 +528,12 @@ static ObjRef overlayStub(Object *, Tuple *args, Dict *) {
 
 static const MethodDef g_overlayStubDef = { "_stub", overlayStub, kMethVarArgs, nullptr };
 
+static Common::HashMap<Common::String, ModuleInitFunc> g_moduleFills;
+
+void registerEngineModule(const char *name, ModuleInitFunc fill) {
+	g_moduleFills[name] = fill;
+}
+
 static void initStubModule(Module *placeholder) {
 	initStubTypes();
 	Object *nameObj = placeholder->_dict->getItemString("__name__");
@@ -544,6 +557,8 @@ static void initStubModule(Module *placeholder) {
 		if (!code)
 			warning("yaga: overlay for %s failed: %s", o->module, formatError().c_str());
 	}
+	if (g_moduleFills.contains(name))
+		g_moduleFills[name](m.get());
 }
 
 

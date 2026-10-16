@@ -44,8 +44,34 @@ extern Python::Type g_resourceType;
 // The bytes of a resource argument (a Resource object), or null with a TypeError
 Python::Str *resourceData(Python::Object *o);
 
+// A native engine object whose attributes live in its own dict
+struct EngineObject : public Python::Object {
+	Python::Ref<Python::Dict> _dict;
+	explicit EngineObject(Python::Type *t);
+	Python::Dict *getDict() override { return _dict.get(); }
+	void setDict(Python::Dict *d) override { _dict = d; }
+};
+
+// Readies an engine type. With traced set, names it lacks are traced
+// stand-ins (for objects not fully written yet) rather than AttributeErrors
+void readyEngineType(Python::Type *t, const Python::MethodDef *methods, const Python::GetSetDef *getSets, bool traced);
+
+// Sets an attribute in an engine object's dict
+void setEngineAttr(Python::Object *o, const char *name, Python::Object *value);
+
+// A class of named constants, such as EEventClass.CLASS_TIMER
+struct ConstDef {
+	const char *name;
+	int32 value;
+};
+void addConstants(Python::Module *m, const char *className, const ConstDef *defs);
+
 void registerYagares(Python::Interpreter *vm, Resources *resources);
 void registerYagaxml(Python::Interpreter *vm, Resources *resources);
+void registerYagaevents();
+void registerYagagraphics();
+void registerYagascene();
+void registerYagasprite();
 
 } // End of namespace Yaga
 

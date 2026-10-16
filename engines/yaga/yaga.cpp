@@ -36,6 +36,7 @@
 #include "yaga/audiofile.h"
 #include "yaga/console.h"
 #include "yaga/detection.h"
+#include "yaga/display.h"
 #include "yaga/installer.h"
 #include "yaga/modules.h"
 #include "yaga/pyhost.h"
@@ -256,12 +257,18 @@ Common::Error YagaEngine::runScripts() {
 	Common::FSNode root(ConfMan.getPath("path"));
 	GameFileSystem fs(root, gameDir, _targetName);
 	LogSink sink;
+	Display display;
+	g_display = &display;
 	Python::Interpreter vm(&fs, &sink);
 	Resources resources(root, gameDir, &fs);
 	registerEngineStubs(&vm);
 	// The engine modules written so far take over from their stand-ins
 	registerYagares(&vm, &resources);
 	registerYagaxml(&vm, &resources);
+	registerYagaevents();
+	registerYagagraphics();
+	registerYagascene();
+	registerYagasprite();
 
 	bool ok = runLauncher(&vm, &fs, exeName, ConfMan.hasKey("yaga_import_all"));
 

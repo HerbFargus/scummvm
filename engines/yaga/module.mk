@@ -4,9 +4,15 @@ MODULE_OBJS = \
 	animation.o \
 	audiofile.o \
 	console.o \
+	display.o \
+	engineobject.o \
 	installer.o \
 	metaengine.o \
+	mod_yagaevents.o \
+	mod_yagagraphics.o \
 	mod_yagares.o \
+	mod_yagascene.o \
+	mod_yagasprite.o \
 	mod_yagaxml.o \
 	pyhost.o \
 	pythontest.o \
