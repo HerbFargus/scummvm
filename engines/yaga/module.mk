@@ -6,6 +6,7 @@ MODULE_OBJS = \
 	console.o \
 	installer.o \
 	metaengine.o \
+	pyhost.o \
 	pythontest.o \
 	scripthandler.o \
 	text.o \
@@ -43,6 +44,5 @@ endif
 
 # Include common rules
 include $(srcdir)/rules.mk
-
 # Detection objects
 DETECT_OBJS += $(MODULE)/detection.o

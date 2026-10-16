@@ -146,7 +146,23 @@ bool Installer::parseToc(Common::SeekableReadStream *stream) {
 	return true;
 }
 
+Common::String Installer::extractRaw(const InstallerEntry &entry) {
+	_file.seek(_archiveOffset + entry.dataOffset, SEEK_SET);
+	Common::String data;
+	char buf[4096];
+	uint32 left = entry.dataSize;
+	while (left > 0) {
+		uint32 n = _file.read(buf, MIN<uint32>(left, sizeof(buf)));
+		if (n == 0)
+			break;
+		data += Common::String(buf, n);
+		left -= n;
+	}
+	return data;
+}
+
 Common::String Installer::extractData(uint entry) {
+
 	if (entry >= _entries.size()) {
 		warning("Installer: invalid entry index %u", entry);
 		return nullptr;

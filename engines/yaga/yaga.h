@@ -46,6 +46,9 @@ private:
 	Common::RandomSource _randomSource;
 
 	void changeCursor(const Common::String &cursorName);
+	// Boots the game's Python scripts
+	Common::Error runScripts();
+
 
 protected:
 	// Engine APIs

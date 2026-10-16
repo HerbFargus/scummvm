@@ -37,6 +37,7 @@
 #include "yaga/console.h"
 #include "yaga/detection.h"
 #include "yaga/installer.h"
+#include "yaga/pyhost.h"
 #include "yaga/pythontest.h"
 //#include "yaga/scripthandler.h"
 #include "yaga/text.h"
@@ -77,6 +78,9 @@ Common::Error YagaEngine::run() {
 		runPythonTests(ConfMan.get("yaga_python_test"), ConfMan.get("yaga_python_test_out"));
 		return Common::kNoError;
 	}
+	if (!ConfMan.hasKey("yaga_demo"))
+		return runScripts();
+
 
 	//Graphics::PixelFormat outputPixelFormat = Graphics::PixelFormat(2, 5, 5, 5, 0, 10, 5, 0, 0);
 	Graphics::PixelFormat outputPixelFormat = Graphics::PixelFormat::createFormatRGBA32();
@@ -232,6 +236,30 @@ void YagaEngine::changeCursor(const Common::String &cursorName) {
 	delete cursor;
 	cursorDecoder.close();
 	cursorFile.close();
+}
+
+} // End of namespace Yaga
+
+namespace Yaga {
+
+Common::Error YagaEngine::runScripts() {
+	Common::String gameDir, exeName;
+	if (getGameId() == "puttpepsbirthday") {
+		gameDir = "Putt-Putt PBS";
+		exeName = "PuttPuttPBS.exe";
+	} else {
+		gameDir = "Pajama Sam LRS";
+		exeName = "PajamaLRS.exe";
+	}
+	Common::FSNode root(ConfMan.getPath("path"));
+	GameFileSystem fs(root, gameDir, _targetName);
+	LogSink sink;
+	Python::Interpreter vm(&fs, &sink);
+	registerEngineStubs(&vm);
+	bool ok = runLauncher(&vm, &fs, exeName);
+	if (!ok)
+		warning("yaga: the scripts stopped with an error: %s", vm.lastError().c_str());
+	return Common::kNoError;
 }
 
 } // End of namespace Yaga

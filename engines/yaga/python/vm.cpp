@@ -99,7 +99,10 @@ ObjRef initNativeModule(const char *name) {
 		getModuleDict()->delItem(newStr(name).get());
 		return ObjRef();
 	}
-	return rm;
+	// The init function may have put a different object in sys.modules
+	Object *final = getModuleDict()->getItemString(name);
+	return final ? ObjRef(final) : rm;
+
 }
 
 void Interpreter::setArgv(const Common::Array<Common::String> &argv) {

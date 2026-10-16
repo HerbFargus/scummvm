@@ -103,7 +103,11 @@ public:
 	/** All entries from the Table of Contents, in order. */
 	const Common::Array<InstallerEntry> &getEntries() const { return _entries; }
 
+	/** The entry's bytes as stored (binary-safe; still compressed if it was). */
+	Common::String extractRaw(const InstallerEntry &entry);
+
 	Common::String extractData(uint entry);
+
 
 	/**
 	 * Allocate a buffer and read the raw data for @p entry from the file.
