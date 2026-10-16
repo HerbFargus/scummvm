@@ -55,6 +55,11 @@ games shipped with.
   of them. Sprites are never drawn flipped: the engine has hFlip and
   vFlip, but neither game's scripts or data ever set them.
 
+Replacement audio: a file in the game's extra path (ScummVM's Paths
+option) at the same path as a sound, with a .flac, .ogg, .wav or .mp3
+extension, plays in its place; for a movie (movies/<name>.da2) it replaces
+the soundtrack, kept in step with the picture.
+
 Testing: `yaga_ticks=N` stops after N game ticks, `yaga_shots=a,b,...`
 saves the screen after those ticks into `yaga_shot_dir`, and
 `yaga_clicks=tick:x:y,...` clicks at those ticks, and `yaga_probe=<python>`
