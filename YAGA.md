@@ -36,5 +36,12 @@ games shipped with.
 ## Status
 
 - Detection: both games.
-- Python VM: in progress.
-- Engine modules (yagagraphics, yagasprite, yagasound, ...): not started.
+- Python VM: done, with a compiler, and checked against CPython 2.2.3
+  with a probe suite (the games' own standard library included).
+- Boot: both games start through their own McMillan bootstrap and run
+  as far as starting the event loop.
+- Engine modules: yagares (the .he archives) and yagaxml are written.
+  The others (yaga, yagaevents, yagagraphics, yagasprite, yagascene,
+  yagasound, yagafont, yagacollisionlib) are tracing stand-ins that log
+  what the scripts ask of them, so nothing is drawn or heard yet.
+
