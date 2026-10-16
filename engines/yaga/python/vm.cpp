@@ -215,8 +215,9 @@ ObjRef execCodeModule(const char *name, Code *co) {
 	return ObjRef(result);
 }
 
-// The default importer knows the native modules and anything already in
-// sys.modules; the games install their own importer (iu.py) over it
+// The default importer knows the native modules, and finds .pyc files in the
+// directories on the path (sys.path, or a package's __path__). The games
+// install their own importer (iu.py) over it.
 static ObjRef findAndLoad(const char *fullname, const char *subname, Object *path) {
 	bool extension;
 	if (!path && isNativeModule(subname, &extension) && !extension) {
@@ -226,8 +227,59 @@ static ObjRef findAndLoad(const char *fullname, const char *subname, Object *pat
 		if (errorOccurred())
 			return ObjRef();
 	}
+	ObjRef dirs(path);
+	if (!dirs)
+		dirs = sysGetObject("path");
+	if (!dirs || !isInstanceOf(dirs.get(), &g_listType))
+		return ObjRef(g_none);
+	FileSystem *fs = Interpreter::instance()->fileSystem();
+	List *l = (List *)dirs.get();
+	for (uint32 i = 0; i < l->size(); i++) {
+		if (!isInstanceOf(l->get(i), &g_strType))
+			continue;
+		Common::String dir = ((Str *)l->get(i))->toString();
+		Common::String base = dir.empty() ? Common::String(subname) : dir + "\\" + subname;
+		uint32 size, mtime;
+		if (fs->stat(base, &size, &mtime) == 2 && fs->stat(base + "\\__init__.pyc", &size, &mtime) == 1) {
+			// A package
+			Module *m = addModule(fullname);
+			ObjRef rm(m);
+			Ref<List> pkgPath = newList();
+			pkgPath->append(newStr(base).get());
+			m->_dict->setItemString("__path__", pkgPath.get());
+			ObjRef f = newFileObject((base + "\\__init__.pyc").c_str(), "rb");
+			if (!f)
+				return ObjRef();
+			ObjRef data = callMethod(f.get(), "read", 0);
+			if (!data)
+				return ObjRef();
+			Str *s = (Str *)data.get();
+			ObjRef code = marshalLoads(s->_data + 8, s->_len - 8);
+			if (!code)
+				return ObjRef();
+			return execCodeModule(fullname, (Code *)code.get());
+		}
+		if (fs->stat(base + ".pyc", &size, &mtime) == 1) {
+			ObjRef f = newFileObject((base + ".pyc").c_str(), "rb");
+			if (!f)
+				return ObjRef();
+			ObjRef data = callMethod(f.get(), "read", 0);
+			if (!data)
+				return ObjRef();
+			Str *s = (Str *)data.get();
+			if (s->_len < 8) {
+				setErrorFormat(g_excImportError, "Bad magic number in %.200s", (base + ".pyc").c_str());
+				return ObjRef();
+			}
+			ObjRef code = marshalLoads(s->_data + 8, s->_len - 8);
+			if (!code)
+				return ObjRef();
+			return execCodeModule(fullname, (Code *)code.get());
+		}
+	}
 	return ObjRef(g_none);
 }
+
 
 static ObjRef importSubmodule(Object *mod, const char *subname, const char *fullname) {
 	Dict *modules = getModuleDict();

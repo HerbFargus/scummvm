@@ -148,6 +148,11 @@ void runPythonTests(const Common::String &dir, const Common::String &outDir) {
 	TestFileSystem fs(root);
 	BufferSink sink;
 	Interpreter vm(&fs, &sink);
+	Common::Array<Common::String> path;
+	path.push_back("");
+	path.push_back("lib");
+	vm.setPath(path);
+
 	int passed = 0, failed = 0;
 	for (uint i = 0; i < files.size(); i++) {
 		Common::String name = files[i].getName();

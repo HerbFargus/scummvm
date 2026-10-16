@@ -77,7 +77,7 @@ ObjRef getLocals() {
 
 Frame::Frame(Code *code, Dict *globals, Object *locals, Frame *back) : Object(&g_frameType),
 	_back(back), _code(code), _globals(globals), _stack(nullptr), _stackTop(0), _blockCount(0),
-	_lasti(-1), _lineno(code->_firstLineNo), _savedExc(false) {
+	_lasti(-1), _lineno(code->_firstLineNo), _savedExc(false), _resumeAt(-1), _finished(false) {
 	Ref<Str> builtinsName = internStr("__builtins__");
 	if (!back || back->_globals.get() != globals) {
 		Object *b = globals->getItem(builtinsName.get());
@@ -613,6 +613,10 @@ ObjRef evalFrame(Frame *f) {
 		return ObjRef();
 	f->_back = g_ts->frame;
 	g_ts->frame = f;
+	if (f->_resumeAt >= 0) {
+		next = first + f->_resumeAt;
+		f->_resumeAt = -1;
+	}
 
 #define PUSH(o) (stack[sp++] = (o))
 #define POP() (stack[--sp])
@@ -1042,8 +1046,10 @@ ObjRef evalFrame(Frame *f) {
 			break;
 
 		case kYieldValue:
-			setErrorString(g_excSystemError, "generators are not supported");
-			x = nullptr;
+			retval = ObjRef(POP());
+			DECREF(retval.get());
+			f->_resumeAt = INSTR_OFFSET();
+			why = kWhyYield;
 			break;
 
 		case kExecStmt: {
@@ -1766,12 +1772,15 @@ ObjRef evalFrame(Frame *f) {
 			break;
 	}
 
-	// Pop the remaining stack entries
-	while (sp > 0) {
-		Object *v = POP();
-		XDECREF(v);
+	// Pop the remaining stack entries, unless suspended in a yield
+	if (why != kWhyYield) {
+		while (sp > 0) {
+			Object *v = POP();
+			XDECREF(v);
+		}
+		f->_finished = true;
 	}
-	if (why != kWhyReturn)
+	if (why != kWhyReturn && why != kWhyYield)
 		retval.reset();
 	resetExcInfo();
 	g_ts->frame = f->_back.get();
@@ -1905,15 +1914,94 @@ ObjRef evalCodeEx(Code *co, Dict *globals, Object *locals,
 	}
 #undef SETLOCAL
 
-	if (co->_flags & kCoGenerator) {
-		setErrorString(g_excSystemError, "generators are not supported");
-		return ObjRef();
-	}
+	if (co->_flags & kCoGenerator)
+		return newGenerator(f);
 	return evalFrame(f);
+
 }
 
 ObjRef evalCode(Code *code, Dict *globals, Dict *locals) {
 	return evalCodeEx(code, globals, locals, nullptr, 0, nullptr, 0, nullptr, 0, nullptr);
+}
+
+} // End of namespace Python
+} // End of namespace Yaga
+
+namespace Yaga {
+namespace Python {
+
+// ---- Generators (Python 2.2's genobject in ceval.c) ----------------------------------
+
+Type g_generatorType("generator", &g_objectType);
+
+struct Generator : public Object {
+	Ref<Frame> _frame;
+	bool _running;
+	explicit Generator(Frame *f) : Object(&g_generatorType), _frame(f), _running(false) {}
+};
+
+ObjRef newGenerator(Frame *f) {
+	if (!(g_generatorType._flags & kTypeReady))
+		initGeneratorType();
+	return ObjRef(new Generator(f));
+}
+
+static ObjRef generatorIterNext(Object *o) {
+	Generator *gen = (Generator *)o;
+	if (gen->_running) {
+		setErrorString(g_excValueError, "generator already executing");
+		return ObjRef();
+	}
+	Frame *f = gen->_frame.get();
+	if (f->_finished)
+		return ObjRef();
+	gen->_running = true;
+	ObjRef result = evalFrame(f);
+	gen->_running = false;
+	// A return at the end gives None, which ends the iteration
+	if (result && result.get() == g_none && f->_finished)
+		return ObjRef();
+	return result;
+}
+
+static ObjRef generatorIter(Object *o) {
+	return ObjRef(o);
+}
+
+static ObjRef generatorNext(Object *self, Tuple *, Dict *) {
+	ObjRef r = generatorIterNext(self);
+	if (!r && !errorOccurred())
+		setError(g_excStopIteration, g_none);
+	return r;
+}
+
+static const MethodDef g_generatorMethods[] = {
+	{ "next", generatorNext, kMethVarArgs, nullptr },
+	{ nullptr, nullptr, 0, nullptr }
+};
+
+static ObjRef generatorGetFrame(Object *o) {
+	Generator *gen = (Generator *)o;
+	return gen->_frame->_finished ? ObjRef(g_none) : ObjRef(gen->_frame.get());
+}
+
+static ObjRef generatorGetRunning(Object *o) {
+	return newBool(((Generator *)o)->_running);
+}
+
+static const GetSetDef g_generatorGetSets[] = {
+	{ "gi_frame", generatorGetFrame, nullptr },
+	{ "gi_running", generatorGetRunning, nullptr },
+	{ nullptr, nullptr, nullptr }
+};
+
+void initGeneratorType() {
+	g_generatorType.iter = generatorIter;
+	g_generatorType.iterNext = generatorIterNext;
+	g_generatorType.methods = g_generatorMethods;
+	g_generatorType.getSets = g_generatorGetSets;
+	g_generatorType.getAttr = genericGetAttr;
+	typeReady(&g_generatorType);
 }
 
 } // End of namespace Python

@@ -51,6 +51,9 @@ struct Frame : public Object {
 	// The exception being handled when this frame started handling one
 	ObjRef _excType, _excValue, _excTraceback;
 	bool _savedExc;
+	int32 _resumeAt; // a generator's next instruction, or -1
+	bool _finished;
+
 
 	Frame(Code *code, Dict *globals, Object *locals, Frame *back);
 	~Frame() override;

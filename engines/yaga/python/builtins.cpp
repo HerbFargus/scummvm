@@ -810,9 +810,88 @@ static ObjRef builtinBool(Object *, Tuple *args, Dict *) {
 	return newBool(t != 0);
 }
 
-static ObjRef builtinBuffer(Object *, Tuple *, Dict *) {
-	setErrorString(g_excTypeError, "buffer objects are not supported");
-	return ObjRef();
+// A read-only window onto a string, which is all the shipped scripts make
+struct Buffer : public Object {
+	ObjRef _base;
+	int32 _offset, _size;
+	Buffer(Object *base, int32 offset, int32 size) : Object(&g_bufferType), _base(base), _offset(offset), _size(size) {}
+	Str *str() const { return (Str *)_base.get(); }
+	int32 length() const {
+		int32 avail = (int32)str()->_len - _offset;
+		if (avail < 0)
+			avail = 0;
+		return _size < 0 || _size > avail ? avail : _size;
+	}
+};
+
+Type g_bufferType("buffer", &g_objectType);
+
+static int32 bufferLength(Object *o) {
+	return ((Buffer *)o)->length();
+}
+
+static ObjRef bufferItem(Object *o, int32 i) {
+	Buffer *b = (Buffer *)o;
+	if (i < 0 || i >= b->length()) {
+		setErrorString(g_excIndexError, "buffer index out of range");
+		return ObjRef();
+	}
+	return strFromCharacter((uint8)b->str()->_data[b->_offset + i]);
+}
+
+static ObjRef bufferSlice(Object *o, int32 lo, int32 hi) {
+	Buffer *b = (Buffer *)o;
+	int32 n = b->length();
+	if (lo < 0)
+		lo = 0;
+	if (hi > n)
+		hi = n;
+	if (hi < lo)
+		hi = lo;
+	return newStr(b->str()->_data + b->_offset + lo, hi - lo);
+}
+
+static ObjRef bufferStr(Object *o) {
+	Buffer *b = (Buffer *)o;
+	return newStr(b->str()->_data + b->_offset, b->length());
+}
+
+static ObjRef bufferRepr(Object *o) {
+	Buffer *b = (Buffer *)o;
+	return newStr(Common::String::format("<read-only buffer for 0x%08X, size %d, offset %d at 0x%08X>",
+	                                     objectAddress(b->_base.get()), b->_size, b->_offset, objectAddress(o)));
+}
+
+static SequenceMethods g_bufferAsSequence;
+
+static ObjRef builtinBuffer(Object *, Tuple *args, Dict *) {
+	if (!checkArgs("buffer", args, 1, 3))
+		return ObjRef();
+	int32 offset = 0, size = -1;
+	if (args->_size > 1 && !asInt(args->get(1), &offset))
+		return ObjRef();
+	if (args->_size > 2 && !asInt(args->get(2), &size))
+		return ObjRef();
+	Object *base = args->get(0);
+	if (!isInstanceOf(base, &g_strType)) {
+		setErrorString(g_excTypeError, "buffer object expected");
+		return ObjRef();
+	}
+	if (offset < 0) {
+		setErrorString(g_excValueError, "offset must be zero or positive");
+		return ObjRef();
+	}
+	if (!(g_bufferType._flags & kTypeReady)) {
+		g_bufferAsSequence.length = bufferLength;
+		g_bufferAsSequence.item = bufferItem;
+		g_bufferAsSequence.slice = bufferSlice;
+		g_bufferType.asSequence = &g_bufferAsSequence;
+		g_bufferType.str = bufferStr;
+		g_bufferType.repr = bufferRepr;
+		g_bufferType.getAttr = genericGetAttr;
+		typeReady(&g_bufferType);
+	}
+	return ObjRef(new Buffer(base, offset, size));
 }
 
 static ObjRef builtinExecfile(Object *, Tuple *args, Dict *) {

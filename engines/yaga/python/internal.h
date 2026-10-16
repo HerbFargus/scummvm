@@ -96,6 +96,9 @@ ObjRef evalCodeEx(Code *co, Dict *globals, Object *locals,
                   Object **defs, uint32 defCount, Tuple *closure);
 ObjRef functionCall(Object *func, Tuple *args, Dict *kw);
 Frame *currentFrame();
+ObjRef newGenerator(Frame *f);
+void initGeneratorType();
+
 void addTraceback(Frame *f);
 Dict *getBuiltins();
 Dict *getGlobals();

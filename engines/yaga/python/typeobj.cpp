@@ -1443,6 +1443,11 @@ static int typeCompare(Object *a, Object *b) {
 	return x < y ? -1 : x > y ? 1 : 0;
 }
 
+static bool typeHash(Object *o, int32 *out) {
+	*out = hashPointer(o);
+	return true;
+}
+
 static ObjRef typeMroMethod(Object *self, Tuple *, Dict *) {
 	return sequenceList(((Type *)self)->_mro.get());
 }
@@ -1736,6 +1741,8 @@ void typeInitAll() {
 	g_typeType.call = typeCall;
 	g_typeType.repr = typeRepr;
 	g_typeType.compare = typeCompare;
+	g_typeType.hash = typeHash;
+
 	g_typeType.newObj = typeNew;
 	g_typeType.init = objectInit;
 	g_typeType.methods = g_typeMethods;
