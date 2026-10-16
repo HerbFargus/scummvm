@@ -535,8 +535,17 @@ static Common::String funcNameDesc(Object *func) {
 	return Common::String(typeName(func)) + " object";
 }
 
+// Python functions (and methods bound to them) take their arguments from the
+// stack; other calls pop them first, as CPython's do_call, which matters to
+// reference counts (cPickle's memo depends on them)
+static bool callKeepsStack(Object *func) {
+	if (isType(func, &g_functionType))
+		return true;
+	return isType(func, &g_methodType) && ((Method *)func)->_self && isType(((Method *)func)->_func.get(), &g_functionType);
+}
+
 // Builds a keyword dict for a call, as CPython's update_keyword_args
-static ObjRef callWithStack(Object *func, Object **stack, int na, int nk, Object *stararg, Object *kwdict) {
+static ObjRef callWithStack(Object *func, Object **stack, int na, int nk, Object *stararg, Object *kwdict, bool popArgs = false) {
 	Ref<Dict> kwargs;
 	if (kwdict) {
 		if (!isInstanceOf(kwdict, &g_dictType)) {
@@ -581,6 +590,14 @@ static ObjRef callWithStack(Object *func, Object **stack, int na, int nk, Object
 		args = newTuple(na);
 		for (int i = 0; i < na; i++)
 			args->set(i, stack[i]);
+	}
+	if (popArgs) {
+		for (int i = 0; i < na + 2 * nk; i++) {
+			Object *o = stack[i];
+			incRef(g_none);
+			stack[i] = g_none;
+			decRef(o);
+		}
 	}
 	return call(func, args.get(), kwargs.get());
 }
@@ -1601,10 +1618,11 @@ ObjRef evalFrame(Frame *f) {
 			Object **pfunc = stack + sp - n - 1;
 			Object *func = *pfunc;
 			ObjRef r;
-			if (nk == 0)
+			bool keepStack = callKeepsStack(func);
+			if (nk == 0 && keepStack)
 				r = fastCall(func, pfunc + 1, na);
 			else
-				r = callWithStack(func, pfunc + 1, na, nk, nullptr, nullptr);
+				r = callWithStack(func, pfunc + 1, na, nk, nullptr, nullptr, !keepStack);
 			while (sp > pfunc - stack) {
 				w = POP();
 				DECREF(w);
@@ -1629,7 +1647,7 @@ ObjRef evalFrame(Frame *f) {
 			int extra = ((flags & 1) ? 1 : 0) + ((flags & 2) ? 1 : 0);
 			Object **pfunc = stack + sp - n - 1 - extra;
 			Object *func = *pfunc;
-			ObjRef r = callWithStack(func, pfunc + 1, na, nk, stararg, kwdict);
+			ObjRef r = callWithStack(func, pfunc + 1, na, nk, stararg, kwdict, true);
 			while (sp > pfunc - stack) {
 				w = POP();
 				DECREF(w);

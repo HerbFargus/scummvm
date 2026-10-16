@@ -16,6 +16,8 @@ MODULE_OBJS = \
 	python/ceval.o \
 	python/class.o \
 	python/compile.o \
+	python/cpickle.o \
+	python/cstringio.o \
 	python/dict.o \
 	python/errors.o \
 	python/file.o \

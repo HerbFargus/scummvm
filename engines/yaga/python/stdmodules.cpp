@@ -36,6 +36,8 @@ namespace Python {
 void initMarshalModule();
 void initStructModule(Module *m);
 void initSreModule(Module *m);
+void initCPickleModule(Module *m);
+void initCStringIOModule(Module *m);
 
 // ---- imp -------------------------------------------------------------------------
 
@@ -1526,6 +1528,8 @@ void initStandardModules(Interpreter *vm) {
 	vm->addNativeModule("_codecs", initCodecs, false);
 	vm->addNativeModule("struct", initStructModule, false);
 	vm->addNativeModule("_sre", initSreModule, true);
+	vm->addNativeModule("cPickle", initCPickleModule, false);
+	vm->addNativeModule("cStringIO", initCStringIOModule, false);
 
 	g_statResultType.getSets = g_statGetSets;
 	g_statResultType.getAttr = genericGetAttr;

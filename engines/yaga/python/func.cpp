@@ -337,6 +337,12 @@ static ObjRef moduleGetAttr(Object *o, Str *name) {
 		return ObjRef(v);
 	if (name->equals("__class__"))
 		return ObjRef(&g_moduleType);
+	// Methods inherited from object, such as __reduce__
+	ObjRef descr = lookupType(o->_type, name);
+	if (descr) {
+		DescrGetFunc f = descr->_type->descrGet;
+		return f ? f(descr.get(), o, o->_type) : descr;
+	}
 	setErrorFormat(g_excAttributeError, "'module' object has no attribute '%.400s'", name->_data);
 	return ObjRef();
 }
