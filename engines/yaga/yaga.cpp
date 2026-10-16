@@ -268,8 +268,8 @@ Common::Error YagaEngine::runScripts() {
 	registerYagaevents();
 	registerYagagraphics(&resources);
 	registerYagascene();
-	registerYagasprite();
-	registerYagasound();
+	registerYagasprite(&resources);
+	registerYagasound(&resources);
 	registerYagafont();
 
 	bool ok = runLauncher(&vm, &fs, exeName, ConfMan.hasKey("yaga_import_all"));

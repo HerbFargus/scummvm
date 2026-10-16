@@ -20,6 +20,7 @@
  */
 
 #include "common/archive.h"
+#include "common/config-manager.h"
 #include "common/compression/unzip.h"
 #include "common/debug.h"
 
@@ -54,6 +55,49 @@ Resources::Resources(const Common::FSNode &atariRoot, const Common::String &game
 				indexFolder(children[i]);
 	}
 	debug(1, "yaga: %u .he archives", _archives.size());
+	if (ConfMan.hasKey("extrapath")) {
+		Common::FSNode extra(ConfMan.getPath("extrapath"));
+		if (extra.isDirectory())
+			indexReplacements(extra, "", 0);
+		if (!_replacements.empty())
+			debug(1, "yaga: %u replacement files in the extra path", _replacements.size());
+	}
+}
+
+void Resources::indexReplacements(const Common::FSNode &dir, const Common::String &prefix, int depth) {
+	Common::FSList children;
+	if (depth > 5 || !dir.getChildren(children, Common::FSNode::kListAll))
+		return;
+	for (uint i = 0; i < children.size(); i++) {
+		Common::String name = children[i].getName();
+		name.toLowercase();
+		if (children[i].isDirectory())
+			indexReplacements(children[i], prefix + name + "/", depth + 1);
+		else
+			_replacements[prefix + name] = children[i];
+	}
+}
+
+Common::SeekableReadStream *Resources::openAudioReplacement(const Common::String &path, Common::String &extension) {
+	if (_replacements.empty())
+		return nullptr;
+	Common::String p = normalise(path);
+	p.toLowercase();
+	int dot = p.findLastOf('.');
+	int slash = p.findLastOf('/');
+	if (dot > slash)
+		p = Common::String(p.c_str(), dot);
+	static const char *const kExtensions[] = { ".flac", ".ogg", ".wav", ".mp3" };
+	for (uint i = 0; i < ARRAYSIZE(kExtensions); i++) {
+		if (!_replacements.contains(p + kExtensions[i]))
+			continue;
+		Common::SeekableReadStream *s = _replacements[p + kExtensions[i]].createReadStream();
+		if (s) {
+			extension = kExtensions[i];
+			return s;
+		}
+	}
+	return nullptr;
 }
 
 Resources::~Resources() {

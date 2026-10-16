@@ -19,6 +19,7 @@
  *
  */
 
+#include "audio/audiostream.h"
 #include "common/debug.h"
 #include "common/hashmap.h"
 #include "common/hash-str.h"
@@ -31,6 +32,7 @@
 #include "yaga/display.h"
 #include "yaga/imageanim.h"
 #include "yaga/modules.h"
+#include "yaga/resources.h"
 #include "yaga/pyhost.h"
 #include "yaga/yaga.h"
 #include "yaga/python/internal.h"
@@ -41,6 +43,8 @@
 namespace Yaga {
 
 using namespace Python;
+
+static Resources *g_res = nullptr;
 
 static Type g_videoType("yagasprite.IVideoElement", &g_objectType);
 
@@ -120,6 +124,19 @@ static ObjRef videoNew(Type *t, Tuple *args, Dict *) {
 	} else {
 		debugC(1, kDebugScript, "yagasprite: movie %s, %ux%u, %u frames", v->_path.c_str(),
 			v->_decoder->getWidth(), v->_decoder->getHeight(), v->_decoder->getFrameCount());
+		// A replacement soundtrack from the extra path plays in place of the
+		// movie's own, kept in step with the picture
+		Common::String extension;
+		Common::SeekableReadStream *replacement = g_res ? g_res->openAudioReplacement(v->_path, extension) : nullptr;
+		Audio::SeekableAudioStream *track = replacement ? makeAudioStream(replacement, extension) : nullptr;
+		if (track) {
+			for (uint i = 0; i < v->_decoder->getAudioTrackCount(); i++)
+				v->_decoder->setAudioTrackMute(i, true);
+			if (v->_decoder->addStreamTrack(track))
+				debugC(1, kDebugScript, "yagasprite: %s soundtrack replaced by its %s", v->_path.c_str(), extension.c_str());
+			else
+				delete track;
+		}
 	}
 	setEngineAttr(v.get(), "volume", newFloat(1.0).get());
 	return ObjRef(v.get());
@@ -876,7 +893,8 @@ static void fillYagasprite(Module *m) {
 	moduleAddObject(m, "TalkieSprite", &g_talkieSpriteType);
 }
 
-void registerYagasprite() {
+void registerYagasprite(Resources *resources) {
+	g_res = resources;
 	registerEngineModule("yagasprite", fillYagasprite);
 }
 

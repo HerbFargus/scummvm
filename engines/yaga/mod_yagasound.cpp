@@ -20,7 +20,9 @@
  */
 
 #include "audio/audiostream.h"
+#include "audio/decoders/flac.h"
 #include "audio/decoders/mp3.h"
+#include "audio/decoders/vorbis.h"
 #include "audio/decoders/wave.h"
 #include "audio/mixer.h"
 #include "common/debug.h"
@@ -30,6 +32,7 @@
 #include "yaga/detection.h"
 #include "yaga/modules.h"
 #include "yaga/pyhost.h"
+#include "yaga/resources.h"
 #include "yaga/python/internal.h"
 
 // yagasound: sounds (WAV effects, MP3 dialogue and music) on the ScummVM
@@ -44,12 +47,35 @@ static const ConstDef g_systemFlags[] = {
 	{ nullptr, 0 }
 };
 
+static Resources *g_res = nullptr;
+
 static Type g_soundType("yagasound.ISound", &g_objectType);
+
+Audio::SeekableAudioStream *makeAudioStream(Common::SeekableReadStream *s, const Common::String &extension) {
+	if (extension.equalsIgnoreCase(".mp3")) {
+#ifdef USE_MAD
+		return Audio::makeMP3Stream(s, DisposeAfterUse::YES);
+#endif
+	} else if (extension.equalsIgnoreCase(".flac")) {
+#ifdef USE_FLAC
+		return Audio::makeFLACStream(s, DisposeAfterUse::YES);
+#endif
+	} else if (extension.equalsIgnoreCase(".ogg")) {
+#ifdef USE_VORBIS
+		return Audio::makeVorbisStream(s, DisposeAfterUse::YES);
+#endif
+	} else {
+		return Audio::makeWAVStream(s, DisposeAfterUse::YES);
+	}
+	delete s;
+	return nullptr;
+}
 static Type g_soundSystemType("yagasound.SoundSystem", &g_objectType);
 
 struct SoundObject : public EngineObject {
 	Common::String _path;
 	Ref<Str> _data; // the streams read from it
+	Common::String _extension; // which decoder: the game's file, or its replacement
 	Audio::Mixer::SoundType _soundType;
 	Audio::SoundHandle _handle;
 	bool _started;
@@ -62,22 +88,9 @@ struct SoundObject : public EngineObject {
 			g_system->getMixer()->stopHandle(_handle);
 	}
 
-	bool isMp3() const {
-		return _path.hasSuffixIgnoreCase(".mp3");
-	}
-
 	// A fresh stream over the data each time it plays
 	Audio::SeekableAudioStream *makeStream() const {
-		Common::MemoryReadStream *s = new Common::MemoryReadStream((const byte *)_data->_data, _data->_len);
-		if (isMp3()) {
-#ifdef USE_MAD
-			return Audio::makeMP3Stream(s, DisposeAfterUse::YES);
-#else
-			delete s;
-			return nullptr;
-#endif
-		}
-		return Audio::makeWAVStream(s, DisposeAfterUse::YES);
+		return makeAudioStream(new Common::MemoryReadStream((const byte *)_data->_data, _data->_len), _extension);
 	}
 
 	bool isPlaying() const {
@@ -99,6 +112,21 @@ static ObjRef soundNew(Type *t, Tuple *args, Dict *) {
 	Ref<SoundObject> s(new SoundObject(t));
 	s->_path = ((ResourceObject *)args->get(0))->_path;
 	s->_data = data;
+	s->_extension = s->_path.hasSuffixIgnoreCase(".mp3") ? ".mp3" : ".wav";
+	// A replacement from the extra path, such as a re-voiced line
+	Common::String extension;
+	Common::SeekableReadStream *replacement = g_res ? g_res->openAudioReplacement(s->_path, extension) : nullptr;
+	if (replacement) {
+		Common::String bytes;
+		char buf[16384];
+		uint32 n;
+		while ((n = replacement->read(buf, sizeof(buf))) > 0)
+			bytes += Common::String(buf, n);
+		delete replacement;
+		s->_data = newStr(bytes);
+		s->_extension = extension;
+		debugC(1, kDebugScript, "yagasound: %s replaced by its %s", s->_path.c_str(), extension.c_str());
+	}
 	// The mixer's volume controls: the score, dialogue, and everything else
 	Common::String p = s->_path;
 	p.toLowercase();
@@ -238,7 +266,8 @@ static void fillYagasound(Module *m) {
 	moduleAddObject(m, "SoundSystem", &g_soundSystemType);
 }
 
-void registerYagasound() {
+void registerYagasound(Resources *resources) {
+	g_res = resources;
 	g_soundSystem = nullptr;
 	registerEngineModule("yagasound", fillYagasound);
 }

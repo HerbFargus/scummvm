@@ -31,6 +31,10 @@
 // The yaga* engine modules the game's scripts import (yaga.dll,
 // yagares.dll, ...). Those not written yet are tracing stand-ins (pyhost.h).
 
+namespace Audio {
+class SeekableAudioStream;
+}
+
 namespace Yaga {
 
 class Resources;
@@ -107,6 +111,10 @@ void advanceSprites();
 // Ends any movie that is playing
 void skipVideos();
 
+// yagasound: a decoder for audio by file extension (.mp3, .wav, .flac, .ogg);
+// takes the stream, null if it cannot be decoded
+Audio::SeekableAudioStream *makeAudioStream(Common::SeekableReadStream *s, const Common::String &extension);
+
 // yagasound, for anything with isPlaying and duration
 bool soundIsPlaying(Python::Object *o);
 double soundDuration(Python::Object *o);
@@ -116,8 +124,8 @@ void registerYagaxml(Python::Interpreter *vm, Resources *resources);
 void registerYagaevents();
 void registerYagagraphics(Resources *resources);
 void registerYagascene();
-void registerYagasprite();
-void registerYagasound();
+void registerYagasprite(Resources *resources);
+void registerYagasound(Resources *resources);
 void registerYagafont();
 
 } // End of namespace Yaga

@@ -46,6 +46,12 @@ public:
 	bool has(const Common::String &path);
 	uint archiveCount() const { return _archives.size(); }
 
+	// A replacement for a sound or a movie's soundtrack from the game's extra
+	// path (ScummVM's "Extra path" option): the same path with any of these
+	// extensions, such as talkies/sam/pj4pc_sam_00055.wav for the .mp3.
+	// Null if there is none; extension gets the one found
+	Common::SeekableReadStream *openAudioReplacement(const Common::String &path, Common::String &extension);
+
 private:
 	struct HeArchive {
 		Common::String stem; // "rooms" for rooms.he
@@ -54,11 +60,13 @@ private:
 	};
 
 	void indexFolder(const Common::FSNode &dir);
+	void indexReplacements(const Common::FSNode &dir, const Common::String &prefix, int depth);
 	HeArchive *findArchive(const Common::String &stem);
 	static Common::String normalise(const Common::String &path);
 
 	Common::Array<HeArchive> _archives;
 	GameFileSystem *_fs;
+	Common::HashMap<Common::String, Common::FSNode> _replacements; // lower-case path -> file
 };
 
 } // End of namespace Yaga
