@@ -41,6 +41,16 @@ const ADGameDescription gameDescriptions[] = {
 		GUIO1(GUIO_NONE)
 	},
 
+	{
+		"puttpepsbirthday",
+		nullptr,
+		AD_ENTRY1s("rooms.he", "8db59e429f9e58673c8b2df431e5955a", 320127227),
+		Common::EN_ANY,
+		Common::kPlatformWindows,
+		ADGF_UNSTABLE,
+		GUIO1(GUIO_NONE)
+	},
+
 	AD_TABLE_END_MARKER
 };
 
