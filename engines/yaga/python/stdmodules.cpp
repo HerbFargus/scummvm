@@ -1338,6 +1338,97 @@ static void initCodecs(Module *m) {
 	}
 }
 
+// ---- imageop -------------------------------------------------------------------------
+
+static Object *g_imageopError = nullptr;
+
+static bool imageopCheck(Str *image, int32 size, int32 x, int32 y) {
+	if (size != 1 && size != 2 && size != 4) {
+		setErrorString(g_imageopError, "Size should be 1, 2 or 4");
+		return false;
+	}
+	if ((int64)image->_len != (int64)size * x * y) {
+		setErrorString(g_imageopError, "String has incorrect length");
+		return false;
+	}
+	return true;
+}
+
+// Nearest-neighbour scaling, as imageop.scale
+static ObjRef imageopScale(Object *, Tuple *args, Dict *) {
+	if (!checkArgs("scale", args, 6, 6))
+		return ObjRef();
+	Str *image = asStr(args->get(0));
+	int32 size, x, y, newx, newy;
+	if (!image || !asInt(args->get(1), &size) || !asInt(args->get(2), &x) || !asInt(args->get(3), &y) ||
+	    !asInt(args->get(4), &newx) || !asInt(args->get(5), &newy))
+		return ObjRef();
+	if (!imageopCheck(image, size, x, y))
+		return ObjRef();
+	if (newx < 0 || newy < 0) {
+		setErrorString(g_excSystemError, "Negative size passed to PyString_FromStringAndSize");
+		return ObjRef();
+	}
+	Ref<Str> r(new Str((uint32)(newx * newy * size)));
+	char *out = r->_data;
+	for (int32 iy = 0; iy < newy; iy++) {
+		for (int32 ix = 0; ix < newx; ix++) {
+			int32 oix = ix * x / newx;
+			int32 oiy = iy * y / newy;
+			memcpy(out, image->_data + (oiy * x + oix) * size, size);
+			out += size;
+		}
+	}
+	return r;
+}
+
+// Cropping, with pixels outside the image set to 0, as imageop.crop
+static ObjRef imageopCrop(Object *, Tuple *args, Dict *) {
+	if (!checkArgs("crop", args, 8, 8))
+		return ObjRef();
+	Str *image = asStr(args->get(0));
+	int32 size, x, y, x1, y1, x2, y2;
+	if (!image || !asInt(args->get(1), &size) || !asInt(args->get(2), &x) || !asInt(args->get(3), &y) ||
+	    !asInt(args->get(4), &x1) || !asInt(args->get(5), &y1) || !asInt(args->get(6), &x2) || !asInt(args->get(7), &y2))
+		return ObjRef();
+	if (!imageopCheck(image, size, x, y))
+		return ObjRef();
+	int32 xstep = x1 < x2 ? 1 : -1;
+	int32 ystep = y1 < y2 ? 1 : -1;
+	int32 nlen = (ABS(x2 - x1) + 1) * (ABS(y2 - y1) + 1) * size;
+	Ref<Str> r(new Str((uint32)nlen));
+	char *out = r->_data;
+	for (int32 iy = y1; iy != y2 + ystep; iy += ystep) {
+		for (int32 ix = x1; ix != x2 + xstep; ix += xstep) {
+			if (iy < 0 || ix < 0 || iy >= y || ix >= x)
+				memset(out, 0, size);
+			else
+				memcpy(out, image->_data + (iy * x + ix) * size, size);
+			out += size;
+		}
+	}
+	return r;
+}
+
+static const MethodDef g_imageopMethods[] = {
+	{ "scale", imageopScale, kMethVarArgs, nullptr },
+	{ "crop", imageopCrop, kMethVarArgs, nullptr },
+	{ nullptr, nullptr, 0, nullptr }
+};
+
+static void initImageop(Module *m) {
+	ObjRef error = newExceptionClass("imageop.error", nullptr);
+	if (g_imageopError)
+		decRef(g_imageopError);
+	g_imageopError = error.get();
+	incRef(g_imageopError);
+	moduleAddObject(m, "error", error.get());
+	for (const MethodDef *d = g_imageopMethods; d->name; d++) {
+		ObjRef f(new BuiltinFunction(d, nullptr));
+		moduleAddObject(m, d->name, f.get());
+	}
+}
+
 static void initMarshalNative(Module *) {
 	initMarshalModule();
 }
@@ -1350,6 +1441,8 @@ void registerZlibModule(Interpreter *vm);
 
 void initStandardModules(Interpreter *vm) {
 	registerZlibModule(vm);
+	vm->addNativeModule("imageop", initImageop, false);
+
 
 	vm->addNativeModule("imp", initImpNative, false);
 	vm->addNativeModule("marshal", initMarshalNative, false);
