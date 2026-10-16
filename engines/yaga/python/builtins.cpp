@@ -43,7 +43,7 @@ static ObjRef builtinImport(Object *, Tuple *args, Dict *kw) {
 }
 
 static ObjRef builtinAbs(Object *, Tuple *args, Dict *) {
-	if (!checkArgs("abs", args, 1, 1))
+	if (!checkOneArg("abs", args))
 		return ObjRef();
 	return numberAbsolute(args->get(0));
 }
@@ -79,7 +79,7 @@ static ObjRef builtinApply(Object *, Tuple *args, Dict *) {
 }
 
 static ObjRef builtinCallable(Object *, Tuple *args, Dict *) {
-	if (!checkArgs("callable", args, 1, 1))
+	if (!checkOneArg("callable", args))
 		return ObjRef();
 	return newBool(callable(args->get(0)));
 }
@@ -143,11 +143,11 @@ static ObjRef builtinCompile(Object *, Tuple *args, Dict *) {
 static ObjRef builtinDelattr(Object *, Tuple *args, Dict *) {
 	if (!checkArgs("delattr", args, 2, 2))
 		return ObjRef();
-	Str *name = asStr(args->get(1));
-	if (!name || setAttr(args->get(0), name, nullptr) < 0)
+	if (setAttr(args->get(0), (Str *)args->get(1), nullptr) < 0)
 		return ObjRef();
 	return ObjRef(g_none);
 }
+
 
 // dir() as CPython 2.2 computes it: a sorted list of attribute names
 static int mergeDictKeys(Dict *result, Object *dict) {
@@ -377,7 +377,7 @@ static ObjRef builtinHasattr(Object *, Tuple *args, Dict *) {
 }
 
 static ObjRef builtinHash(Object *, Tuple *args, Dict *) {
-	if (!checkArgs("hash", args, 1, 1))
+	if (!checkOneArg("hash", args))
 		return ObjRef();
 	int32 h;
 	if (!hash(args->get(0), &h))
@@ -386,7 +386,7 @@ static ObjRef builtinHash(Object *, Tuple *args, Dict *) {
 }
 
 static ObjRef builtinHex(Object *, Tuple *args, Dict *) {
-	if (!checkArgs("hex", args, 1, 1))
+	if (!checkOneArg("hex", args))
 		return ObjRef();
 	Object *v = args->get(0);
 	NumberMethods *nb = v->_type->asNumber;
@@ -398,7 +398,7 @@ static ObjRef builtinHex(Object *, Tuple *args, Dict *) {
 }
 
 static ObjRef builtinOct(Object *, Tuple *args, Dict *) {
-	if (!checkArgs("oct", args, 1, 1))
+	if (!checkOneArg("oct", args))
 		return ObjRef();
 	Object *v = args->get(0);
 	NumberMethods *nb = v->_type->asNumber;
@@ -410,7 +410,7 @@ static ObjRef builtinOct(Object *, Tuple *args, Dict *) {
 }
 
 static ObjRef builtinId(Object *, Tuple *args, Dict *) {
-	if (!checkArgs("id", args, 1, 1))
+	if (!checkOneArg("id", args))
 		return ObjRef();
 	return newIntOrLong(objectAddress(args->get(0)));
 }
@@ -461,7 +461,7 @@ static ObjRef builtinIter(Object *, Tuple *args, Dict *) {
 }
 
 static ObjRef builtinLen(Object *, Tuple *args, Dict *) {
-	if (!checkArgs("len", args, 1, 1))
+	if (!checkOneArg("len", args))
 		return ObjRef();
 	int32 n = length(args->get(0));
 	if (n < 0 && errorOccurred())
@@ -564,7 +564,7 @@ static ObjRef minMax(Tuple *args, int op, const char *name) {
 		}
 	}
 	if (!w)
-		setErrorFormat(g_excValueError, "%s() arg is an empty sequence", name);
+		setErrorString(g_excValueError, "min() or max() arg is an empty sequence");
 	return w;
 }
 
@@ -572,7 +572,7 @@ static ObjRef builtinMin(Object *, Tuple *args, Dict *) { return minMax(args, kL
 static ObjRef builtinMax(Object *, Tuple *args, Dict *) { return minMax(args, kGT, "max"); }
 
 static ObjRef builtinOrd(Object *, Tuple *args, Dict *) {
-	if (!checkArgs("ord", args, 1, 1))
+	if (!checkOneArg("ord", args))
 		return ObjRef();
 	Object *o = args->get(0);
 	if (isInstanceOf(o, &g_strType)) {
@@ -613,9 +613,10 @@ static ObjRef builtinRange(Object *, Tuple *args, Dict *) {
 		if (args->_size == 3 && !asInt(args->get(2), &istep))
 			return ObjRef();
 	} else {
-		checkArgs("range", args, 1, 3);
+		setErrorString(g_excTypeError, "range() requires 1-3 int arguments");
 		return ObjRef();
 	}
+
 	if (istep == 0) {
 		setErrorString(g_excValueError, "range() arg 3 must not be zero");
 		return ObjRef();
@@ -673,7 +674,7 @@ static ObjRef builtinReduce(Object *, Tuple *args, Dict *) {
 }
 
 static ObjRef builtinReload(Object *, Tuple *args, Dict *) {
-	if (!checkArgs("reload", args, 1, 1))
+	if (!checkOneArg("reload", args))
 		return ObjRef();
 	Object *m = args->get(0);
 	if (!isType(m, &g_moduleType)) {
@@ -691,7 +692,7 @@ static ObjRef builtinReload(Object *, Tuple *args, Dict *) {
 }
 
 static ObjRef builtinRepr(Object *, Tuple *args, Dict *) {
-	if (!checkArgs("repr", args, 1, 1))
+	if (!checkOneArg("repr", args))
 		return ObjRef();
 	return repr(args->get(0));
 }
@@ -727,8 +728,7 @@ static ObjRef builtinRound(Object *, Tuple *args, Dict *) {
 static ObjRef builtinSetattr(Object *, Tuple *args, Dict *) {
 	if (!checkArgs("setattr", args, 3, 3))
 		return ObjRef();
-	Str *name = asStr(args->get(1));
-	if (!name || setAttr(args->get(0), name, args->get(2)) < 0)
+	if (setAttr(args->get(0), (Str *)args->get(1), args->get(2)) < 0)
 		return ObjRef();
 	return ObjRef(g_none);
 }
@@ -738,7 +738,7 @@ static ObjRef builtinUnichr(Object *, Tuple *args, Dict *) {
 	if (!checkArgs("unichr", args, 1, 1) || !asInt(args->get(0), &x))
 		return ObjRef();
 	if (x < 0 || x > 0xffff) {
-		setErrorString(g_excValueError, "unichr() arg not in range(65536) (narrow Python build)");
+		setErrorString(g_excValueError, "unichr() arg not in range(0x10000) (narrow Python build)");
 		return ObjRef();
 	}
 	Unicode *u = new Unicode();

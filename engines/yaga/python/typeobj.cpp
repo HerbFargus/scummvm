@@ -1169,10 +1169,12 @@ static void inheritSlots(Type *t, Type *base) {
 	COPYSLOT(descrSet);
 	COPYSLOT(init);
 	COPYSLOT(newObj);
-	if (!t->getAttr && !t->setAttr) {
+	// As CPython: getattr and setattr are inherited separately
+	if (!t->getAttr)
 		t->getAttr = base->getAttr;
+	if (!t->setAttr)
 		t->setAttr = base->setAttr;
-	}
+
 	if (!t->compare && !t->richCompare && !t->hash) {
 		t->compare = base->compare;
 		t->richCompare = base->richCompare;
@@ -1368,6 +1370,12 @@ static ObjRef typeGetAttr(Object *o, Str *name) {
 		return ObjRef(type->_mro.get());
 	if (name->equals("__class__"))
 		return ObjRef(metatype);
+	if (name->equals("__flags__")) {
+		// Py_TPFLAGS_DEFAULT, plus HEAPTYPE and BASETYPE as they apply
+		int32 flags = 0x1eb | ((type->_flags & kTypeHeap) ? 1 << 9 : 0) | ((type->_flags & kTypeBaseType) ? 1 << 10 : 0);
+		return newInt(flags);
+	}
+
 	if (name->equals("__module__")) {
 		Object *mod = type->_dict->getItemString("__module__");
 		if (mod)

@@ -516,7 +516,7 @@ ObjRef strJoin(Str *sep, Object *orig) {
 }
 
 static ObjRef strJoinMethod(Object *selfObj, Tuple *args, Dict *) {
-	if (!checkArgs("join", args, 1, 1))
+	if (!checkOneArg("join", args))
 		return ObjRef();
 	return strJoin((Str *)selfObj, args->get(0));
 }
@@ -997,11 +997,9 @@ static ObjRef getNextArg(Object *args, int32 arglen, int32 *argidx) {
 
 static bool formatFloatArg(Common::String &out, int flags, int prec, char type, Object *v, int width) {
 	double x;
-	if (!asDouble(v, &x)) {
-		clearError();
-		setErrorString(g_excTypeError, "float argument required");
+	if (!asDouble(v, &x))
 		return false;
-	}
+
 	if (prec < 0)
 		prec = 6;
 	if (prec > 50)
@@ -1298,7 +1296,16 @@ ObjRef strFormat(Object *formatObj, Object *args) {
 					setErrorString(g_excTypeError, "%c requires int or char");
 					return ObjRef();
 				}
+				if (x < 0) {
+					setErrorString(g_excOverflowError, "unsigned byte integer is less than minimum");
+					return ObjRef();
+				}
+				if (x > 255) {
+					setErrorString(g_excOverflowError, "unsigned byte integer is greater than maximum");
+					return ObjRef();
+				}
 				ch = (char)x;
+
 			}
 			piece = Common::String(&ch, 1);
 			if (width > 1) {

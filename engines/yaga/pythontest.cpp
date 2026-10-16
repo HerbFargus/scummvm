@@ -161,6 +161,14 @@ void runPythonTests(const Common::String &dir, const Common::String &outDir) {
 	path.push_back("lib");
 	vm.setPath(path);
 
+	// Each test starts with only the modules there were before the first
+	Common::Array<Common::String> initialModules;
+	{
+		int32 pos = 0;
+		Object *k;
+		while (getModuleDict()->next(&pos, &k, nullptr))
+			initialModules.push_back(((Str *)k)->toString());
+	}
 	int passed = 0, failed = 0;
 	for (uint i = 0; i < files.size(); i++) {
 		Common::String name = files[i].getName();
@@ -180,6 +188,22 @@ void runPythonTests(const Common::String &dir, const Common::String &outDir) {
 		}
 		delete in;
 		sink._text.clear();
+		{
+			Ref<List> keys = dictKeys(getModuleDict()).as<List>();
+			for (uint32 k = 0; k < keys->size(); k++) {
+				Common::String modName = ((Str *)keys->get(k))->toString();
+				bool keep = false;
+				for (uint m = 0; m < initialModules.size(); m++)
+					keep |= initialModules[m] == modName;
+				if (!keep)
+					getModuleDict()->delItem(keys->get(k));
+			}
+			ObjRef stdoutObj = sysGetObject("stdout");
+			if (stdoutObj)
+				fileSoftSpace(stdoutObj.get(), 0);
+
+		}
+
 		// A fresh __main__ for each test
 		getModuleDict()->delItem(newStr("__main__").get());
 		clearError();

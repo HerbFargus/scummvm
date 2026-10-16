@@ -21,6 +21,8 @@
 
 #include "yaga/python/object.h"
 #include "yaga/python/internal.h"
+#include "yaga/python/eval.h"
+
 
 // Classic classes and their instances, as CPython 2.2's classobject.c. The
 // special methods are looked up through the instance (and so through
@@ -263,7 +265,10 @@ Instance::Instance(ClassObj *cls, Dict *dict) : Object(&g_instanceType), _class(
 Instance::~Instance() {
 }
 
+static ObjRef instanceGetAttr2(Instance *inst, Str *name);
+
 ObjRef newInstance(Object *klass, Object *argObj, Object *kwObj) {
+
 	if (!isType(klass, &g_classType)) {
 		badInternalCall();
 		return ObjRef();
@@ -273,11 +278,11 @@ ObjRef newInstance(Object *klass, Object *argObj, Object *kwObj) {
 	Ref<Dict> dict = newDict();
 	Instance *inst = new Instance((ClassObj *)klass, dict.get());
 	ObjRef rinst(inst);
-	ObjRef init = instanceGetAttr(inst, NAME(g_strInit, "__init__"));
+	// Not through __getattr__, as CPython's PyInstance_New
+	ObjRef init = instanceGetAttr2(inst, NAME(g_strInit, "__init__"));
 	if (!init) {
-		if (!errorMatches(g_excAttributeError))
+		if (errorOccurred())
 			return ObjRef();
-		clearError();
 		if ((arg && arg->_size != 0) || (kw && kw->_used != 0)) {
 			setErrorString(g_excTypeError, "this constructor takes no arguments");
 			return ObjRef();
@@ -894,28 +899,57 @@ static ObjRef instanceCall(Object *self, Tuple *args, Dict *kw) {
 	return call(func.get(), args, kw);
 }
 
-// Instances with a __del__ method run it when their last reference goes,
-// and may come back to life doing so
-bool instanceFinalize(Instance *inst) {
-	ClassObj *found;
-	ObjRef del = classLookup(inst->_class.get(), NAME(g_strDel, "__del__"), &found);
-	if (!del)
+// Objects with a __del__ method run it when their last reference goes, and
+// may come back to life doing so (CPython's instance_dealloc and subtype_dealloc)
+bool finalizeObject(Object *o) {
+	if (!g_ts)
 		return true;
-	inst->_refs = 1;
+	Str *name = NAME(g_strDel, "__del__");
+	if (isType(o, &g_instanceType)) {
+		ClassObj *found;
+		if (!classLookup(((Instance *)o)->_class.get(), name, &found))
+			return true;
+	} else if (!lookupType(o->_type, name)) {
+		return true;
+	}
+	o->_refs = 1;
 	{
 		ObjRef errType, errValue, errTb;
 		fetchError(&errType, &errValue, &errTb);
-		ObjRef bound = instanceGetAttr2(inst, g_strDel);
+		ObjRef bound;
+		if (isType(o, &g_instanceType)) {
+			bound = instanceGetAttr2((Instance *)o, name);
+		} else {
+			ObjRef f = lookupType(o->_type, name);
+			if (f && f->_type->descrGet)
+				bound = f->_type->descrGet(f.get(), o, o->_type);
+		}
 		ObjRef res;
 		if (bound)
 			res = callObject(bound.get(), nullptr);
 		if (!res && errorOccurred()) {
-			Common::String msg = formatError();
-			writeToStderr(Common::String::format("Exception %s in %s ignored\n", msg.c_str(), "<__del__ method>").c_str());
+			// Reported and ignored, as "Exception E: v in <bound method ...> ignored"
+			ObjRef t, v, tb;
+			fetchError(&t, &v, &tb);
+			normalizeException(&t, &v, &tb);
+			clearError();
+			ObjRef r = repr(bound ? bound.get() : g_none);
+			// As PyErr_WriteUnraisable: the type with str(), the value with repr()
+			ObjRef ts = str(t.get());
+			ObjRef vs = v && v.get() != g_none ? repr(v.get()) : ObjRef();
+			clearError();
+			Common::String msg = "Exception ";
+			msg += ts ? ((Str *)ts.get())->toString() : "?";
+			if (vs)
+				msg += ": " + ((Str *)vs.get())->toString();
+			msg += " in ";
+			msg += r ? ((Str *)r.get())->toString() : "?";
+			msg += " ignored\n";
+			writeToStderr(msg.c_str());
 		}
 		restoreError(errType.get(), errValue.get(), errTb.get());
 	}
-	if (--inst->_refs > 0)
+	if (--o->_refs > 0)
 		return false; // resurrected
 	return true;
 }
@@ -1094,7 +1128,8 @@ bool isInstance(Object *inst, Object *cls) {
 		return false;
 	}
 	if (!abstractGetBases(cls)) {
-		setErrorString(g_excTypeError, "isinstance() arg 2 must be a class or type");
+		setErrorString(g_excTypeError, "isinstance() arg 2 must be a class, type, or tuple of classes and types");
+
 		return false;
 	}
 	ObjRef icls = getAttrString(inst, "__class__");
@@ -1194,7 +1229,9 @@ void initClassTypes() {
 	m.assSubscript = instanceAssSubscript;
 
 	Type &t = g_instanceType;
+	t._flags |= kTypeCheckTypes; // the instance slots do their own coercion
 	t.asNumber = &n;
+
 	t.asSequence = &s;
 	t.asMapping = &m;
 	t.repr = instanceRepr;

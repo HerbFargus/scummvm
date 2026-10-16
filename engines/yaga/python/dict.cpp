@@ -395,7 +395,7 @@ static ObjRef dictItemsMethod(Object *selfObj, Tuple *args, Dict *) {
 
 static ObjRef dictHasKey(Object *selfObj, Tuple *args, Dict *) {
 	DICT_SELF
-	if (!checkArgs("has_key", args, 1, 1))
+	if (!checkOneArg("has_key", args))
 		return ObjRef();
 	int32 h;
 	if (!hash(args->get(0), &h))
@@ -446,7 +446,7 @@ static ObjRef dictCopyMethod(Object *selfObj, Tuple *args, Dict *) {
 }
 
 static ObjRef dictUpdate(Object *selfObj, Tuple *args, Dict *) {
-	if (!checkArgs("update", args, 1, 1))
+	if (!checkOneArg("update", args))
 		return ObjRef();
 	if (dictMerge((Dict *)selfObj, args->get(0), true) < 0)
 		return ObjRef();
@@ -661,44 +661,49 @@ static ObjRef dictIterSlot(Object *o) {
 	return ObjRef(new DictIter((Dict *)o, 0));
 }
 
-static ObjRef dictNew(Type *type, Tuple *args, Dict *kw) {
+// dict.__new__ makes an empty dict; dict.__init__ fills it, as in CPython 2.2
+static ObjRef dictNew(Type *type, Tuple *, Dict *) {
+	return ObjRef(type == &g_dictType ? new Dict() : new Dict(type));
+}
+
+static int dictInit(Object *self, Tuple *args, Dict *kw) {
 	if (!noKeywords("dict", kw) || !checkArgs("dict", args, 0, 1))
-		return ObjRef();
-	Ref<Dict> d(type == &g_dictType ? new Dict() : new Dict(type));
+		return -1;
+	Dict *d = (Dict *)self;
 	if (args->_size == 1) {
 		Object *arg = args->get(0);
 		if (hasAttrString(arg, "keys")) {
-			if (dictMerge(d.get(), arg, true) < 0)
-				return ObjRef();
+			if (dictMerge(d, arg, true) < 0)
+				return -1;
 		} else {
 			// A sequence of pairs
 			ObjRef it = getIter(arg);
 			if (!it)
-				return ObjRef();
+				return -1;
 			for (int32 i = 0;; i++) {
 				ObjRef item = iterNext(it.get());
 				if (!item) {
 					if (errorOccurred())
-						return ObjRef();
+						return -1;
 					break;
 				}
 				ObjRef pair = sequenceTuple(item.get());
 				if (!pair) {
 					clearError();
 					setErrorFormat(g_excTypeError, "cannot convert dictionary update sequence element #%d to a sequence", i);
-					return ObjRef();
+					return -1;
 				}
 				Tuple *t = (Tuple *)pair.get();
 				if (t->_size != 2) {
 					setErrorFormat(g_excValueError, "dictionary update sequence element #%d has length %u; 2 is required", i, t->_size);
-					return ObjRef();
+					return -1;
 				}
 				if (d->setItem(t->get(0), t->get(1)) < 0)
-					return ObjRef();
+					return -1;
 			}
 		}
 	}
-	return d;
+	return 0;
 }
 
 static bool dictHashSlot(Object *, int32 *) {
@@ -763,6 +768,8 @@ void initDictType() {
 	t.iter = dictIterSlot;
 	t.methods = g_dictMethods;
 	t.newObj = dictNew;
+	t.init = dictInit;
+
 	t.getAttr = genericGetAttr;
 
 	g_dictIterType.iter = iterSelf;

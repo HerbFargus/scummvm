@@ -35,6 +35,7 @@ inline uint32 objectAddress(Object *o) { return 0x00a00000u + o->_serial * 16u; 
 int32 hashPointer(Object *o);
 
 bool enterRecursiveCall();
+bool finalizeObject(Object *o); // runs __del__; false if the object was resurrected
 void leaveRecursiveCall();
 
 // Numbers

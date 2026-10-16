@@ -520,12 +520,27 @@ error:
 	return false;
 }
 
+// How CPython's PyEval_GetFuncName and PyEval_GetFuncDesc name a callable
+static Common::String funcNameDesc(Object *func) {
+	if (isType(func, &g_methodType))
+		return funcNameDesc(((Method *)func)->_func.get());
+	if (isType(func, &g_functionType))
+		return ((Function *)func)->_name->toString() + "()";
+	if (isType(func, &g_builtinFunctionType))
+		return Common::String(((BuiltinFunction *)func)->_def->name) + "()";
+	if (isType(func, &g_classType))
+		return ((ClassObj *)func)->_name->toString() + " constructor";
+	if (isType(func, &g_instanceType))
+		return ((Instance *)func)->_class->_name->toString() + " instance";
+	return Common::String(typeName(func)) + " object";
+}
+
 // Builds a keyword dict for a call, as CPython's update_keyword_args
 static ObjRef callWithStack(Object *func, Object **stack, int na, int nk, Object *stararg, Object *kwdict) {
 	Ref<Dict> kwargs;
 	if (kwdict) {
 		if (!isInstanceOf(kwdict, &g_dictType)) {
-			setErrorFormat(g_excTypeError, "argument after ** must be a dictionary");
+			setErrorFormat(g_excTypeError, "%s argument after ** must be a dictionary", funcNameDesc(func).c_str());
 			return ObjRef();
 		}
 		kwargs = dictCopy((Dict *)kwdict).as<Dict>();
@@ -552,7 +567,7 @@ static ObjRef callWithStack(Object *func, Object **stack, int na, int nk, Object
 		if (!t) {
 			if (errorMatches(g_excTypeError)) {
 				clearError();
-				setErrorString(g_excTypeError, "argument after * must be a sequence");
+				setErrorFormat(g_excTypeError, "%s argument after * must be a sequence", funcNameDesc(func).c_str());
 			}
 			return ObjRef();
 		}
@@ -1338,7 +1353,13 @@ ObjRef evalFrame(Frame *f) {
 			continue;
 
 		case kBuildTuple: {
+			if (oparg == 0) {
+				Ref<Tuple> empty = newTuple(0);
+				PUSH(empty.release());
+				continue;
+			}
 			Tuple *t = new Tuple(oparg);
+
 			for (int i = oparg; --i >= 0;) {
 				w = POP();
 				t->_items[i] = w; // takes the reference

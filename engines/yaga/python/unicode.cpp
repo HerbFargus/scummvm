@@ -208,10 +208,18 @@ ObjRef unicodeFormat(Object *fmt, Object *args) {
 
 static ObjRef unicodeRepr(Object *o) {
 	Unicode *u = (Unicode *)o;
-	Common::String out = "u'";
+	// Double quotes if the text has single quotes but no double ones, as str
+	bool hasSingle = false, hasDouble = false;
+	for (uint32 i = 0; i < u->_chars.size(); i++) {
+		hasSingle |= u->_chars[i] == '\'';
+		hasDouble |= u->_chars[i] == '"';
+	}
+	char quote = hasSingle && !hasDouble ? '"' : '\'';
+	Common::String out = "u";
+	out += quote;
 	for (uint32 i = 0; i < u->_chars.size(); i++) {
 		uint32 c = u->_chars[i];
-		if (c == '\'' || c == '\\') {
+		if (c == (uint32)quote || c == '\\') {
 			out += '\\';
 			out += (char)c;
 		} else if (c == '\t') {
@@ -229,7 +237,7 @@ static ObjRef unicodeRepr(Object *o) {
 			out += (char)c;
 		}
 	}
-	out += "'";
+	out += quote;
 	return newStr(out);
 }
 

@@ -1205,8 +1205,13 @@ static ObjRef codecsLookup(Object *, Tuple *args, Dict *) {
 			return r;
 		}
 	}
-	setErrorString(g_excLookupError, "unknown encoding");
+	if (!path || ((List *)path)->size() == 0)
+		setErrorString(g_excLookupError, "no codec search functions registered: can't find encoding");
+	else
+		setErrorFormat(g_excLookupError, "unknown encoding: %s", enc->_data);
+
 	return ObjRef();
+
 }
 
 static ObjRef codecDecode(Tuple *args, const char *encoding) {

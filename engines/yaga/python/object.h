@@ -173,13 +173,15 @@ struct Object {
 	int32 _refs;
 	Type *_type;
 	uint32 _serial; // stands in for the object's address (id, default order and hash)
+	Dict *_extraDict; // the __dict__ of instances of Python subclasses of native types
 
 	explicit Object(Type *type);
 	virtual ~Object();
 
 	// The instance dict, for objects that have one
-	virtual Dict *getDict() { return nullptr; }
-	virtual void setDict(Dict *d) {}
+	virtual Dict *getDict() { return _extraDict; }
+	virtual void setDict(Dict *d);
+
 };
 
 // A method table entry for native types
@@ -681,6 +683,8 @@ const char *typeName(Object *o);
 
 // Argument parsing helpers for native functions
 bool checkArgs(const char *fname, Tuple *args, uint32 min, uint32 max);
+bool checkOneArg(const char *fname, Tuple *args);
+
 bool noKeywords(const char *fname, Dict *kw);
 
 } // End of namespace Python

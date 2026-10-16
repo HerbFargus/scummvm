@@ -27,14 +27,24 @@ namespace Python {
 
 static uint32 g_nextSerial = 1;
 
-Object::Object(Type *type) : _refs(0), _type(type), _serial(g_nextSerial++) {
+Object::Object(Type *type) : _refs(0), _type(type), _serial(g_nextSerial++), _extraDict(nullptr) {
 	if (type && (type->_flags & kTypeHeap))
 		incRef(type);
 }
 
 Object::~Object() {
+	if (_extraDict)
+		decRef(_extraDict);
 	if (_type && (_type->_flags & kTypeHeap))
 		decRef(_type);
+}
+
+void Object::setDict(Dict *d) {
+	if (d)
+		incRef(d);
+	if (_extraDict)
+		decRef(_extraDict);
+	_extraDict = d;
 }
 
 void incRef(Object *o) {
@@ -54,6 +64,9 @@ void decRef(Object *o) {
 		o->_refs = 0x40000000;
 		return;
 	}
+	// Instances with __del__ run it first, and may come back to life
+	if ((o->_type == &g_instanceType || (o->_type->_flags & kTypeHeap)) && !finalizeObject(o))
+		return;
 	if (!g_pendingDeletes)
 		g_pendingDeletes = new Common::Array<Object *>();
 	if (g_deleting) {
@@ -294,18 +307,8 @@ static int defaultCompare(Object *v, Object *w) {
 		uint32 vv = objectAddress(v), ww = objectAddress(w);
 		return vv < ww ? -1 : vv > ww ? 1 : 0;
 	}
-	if (isInstanceOf(v, &g_unicodeType) || isInstanceOf(w, &g_unicodeType)) {
-		int c = unicodeCompare(v, w);
-		if (c == -1 && errorOccurred()) {
-			// Like CPython, fall back to the default order if they cannot be compared
-			if (!errorMatches(g_excUnicodeError))
-				return -2;
-			clearError();
-		} else {
-			return c;
-		}
-	}
 	if (v == g_none)
+
 		return -1;
 	if (w == g_none)
 		return 1;
@@ -500,7 +503,7 @@ bool callable(Object *o) {
 ObjRef call(Object *func, Tuple *args, Dict *kw) {
 	CallFunc f = func->_type->call;
 	if (!f) {
-		setErrorFormat(g_excTypeError, "object of type '%.200s' is not callable", typeName(func));
+		setErrorFormat(g_excTypeError, "'%.200s' object is not callable", typeName(func));
 		return ObjRef();
 	}
 	ObjRef r = f(func, args, kw && kw->_used ? kw : nullptr);
@@ -528,8 +531,11 @@ ObjRef callFunction(Object *func, uint32 n, ...) {
 
 ObjRef callMethod(Object *o, const char *name, uint32 n, ...) {
 	ObjRef meth = getAttrString(o, name);
-	if (!meth)
+	if (!meth) {
+		// As PyObject_CallMethod, which reports just the name
+		setErrorString(g_excAttributeError, name);
 		return ObjRef();
+	}
 	Ref<Tuple> args = newTuple(n);
 	va_list va;
 	va_start(va, n);
@@ -885,7 +891,8 @@ static ObjRef binopTypeError(Object *v, Object *w, const char *opName) {
 	return ObjRef();
 }
 
-static ObjRef binaryOp(Object *v, Object *w, size_t slot, const char *opName) {
+static ObjRef binaryOp(
+Object *v, Object *w, size_t slot, const char *opName) {
 	ObjRef r = binaryOp1(v, w, slot);
 	if (r && r.get() == g_notImplemented)
 		return binopTypeError(v, w, opName);
@@ -927,7 +934,7 @@ static ObjRef sequenceRepeatOp(IntArgFunc repeatFunc, Object *seq, Object *n) {
 			return ObjRef();
 		count = (int32)v;
 	} else {
-		setErrorString(g_excTypeError, "can't multiply sequence to non-int");
+		setErrorFormat(g_excTypeError, "unsupported operand type(s) for *: '%s' and '%s'", typeName(seq), typeName(n));
 		return ObjRef();
 	}
 	return repeatFunc(seq, count);
@@ -1197,7 +1204,7 @@ bool asDouble(Object *o, double *out) {
 	if (isInstanceOf(o, &g_longType))
 		return longAsDouble(o, out);
 	if (!o->_type->asNumber || !o->_type->asNumber->toFloat || isInstanceOf(o, &g_strType)) {
-		setErrorString(g_excTypeError, "a float is required");
+		badArgument();
 		return false;
 	}
 	ObjRef r = o->_type->asNumber->toFloat(o);
@@ -1231,7 +1238,16 @@ bool checkArgs(const char *fname, Tuple *args, uint32 min, uint32 max) {
 	return false;
 }
 
+// For the functions CPython 2.2 declares METH_O, which word their error differently
+bool checkOneArg(const char *fname, Tuple *args) {
+	if (args->_size == 1)
+		return true;
+	setErrorFormat(g_excTypeError, "%s() takes exactly one argument (%u given)", fname, args->_size);
+	return false;
+}
+
 bool noKeywords(const char *fname, Dict *kw) {
+
 	if (!kw || kw->_used == 0)
 		return true;
 	setErrorFormat(g_excTypeError, "%s() takes no keyword arguments", fname);

@@ -120,8 +120,22 @@ void Interpreter::setPath(const Common::Array<Common::String> &path) {
 	sysSetObject("path", l.get());
 }
 
+// As Py_FlushLine: end a line a "print x," left open
+static void flushLine() {
+	ObjRef out = sysGetObject("stdout");
+	if (out && fileSoftSpace(out.get(), 0))
+		fileWriteString("\n", out.get());
+	clearError();
+}
+
 bool Interpreter::reportError() {
 	_exited = false;
+	{
+		ObjRef t, v, tb;
+		fetchError(&t, &v, &tb);
+		flushLine();
+		restoreError(t.get(), v.get(), tb.get());
+	}
 	if (errorMatches(g_excSystemExit)) {
 		ObjRef type, value, tb;
 		fetchError(&type, &value, &tb);
@@ -170,8 +184,10 @@ bool Interpreter::runCode(Object *code) {
 	ObjRef r = evalCode((Code *)code, d, d);
 	if (!r)
 		return reportError();
+	flushLine();
 	return true;
 }
+
 
 bool Interpreter::execCodeModule(const char *name, Object *code) {
 	ObjRef m = Python::execCodeModule(name, (Code *)code);

@@ -105,7 +105,10 @@ static ObjRef tupleSlice(Object *o, int32 lo, int32 hi) {
 		hi = lo;
 	if (lo == 0 && hi == (int32)t->_size && isType(o, &g_tupleType))
 		return ObjRef(o);
+	if (hi == lo)
+		return newTuple(0);
 	Ref<Tuple> r = newTuple(hi - lo);
+
 	for (int32 i = lo; i < hi; i++)
 		r->set(i - lo, t->get(i));
 	return r;
@@ -277,11 +280,9 @@ Ref<List> newList(uint32 size) {
 
 int listInsert(List *l, int32 where, Object *v) {
 	int32 n = l->_items.size();
-	if (where < 0) {
-		where += n;
-		if (where < 0)
-			where = 0;
-	}
+	// Python 2.2 treats any negative index as the start
+	if (where < 0)
+		where = 0;
 	if (where > n)
 		where = n;
 	incRef(v);
@@ -356,12 +357,8 @@ static int listAssSlice(Object *o, int32 ilow, int32 ihigh, Object *v) {
 			List *b = (List *)v;
 			for (uint32 i = 0; i < b->size(); i++)
 				items.push_back(b->get(i));
-		} else if (isInstanceOf(v, &g_tupleType)) {
-			Tuple *b = (Tuple *)v;
-			for (uint32 i = 0; i < b->_size; i++)
-				items.push_back(b->get(i));
 		} else {
-			setErrorString(g_excTypeError, "must assign list (not \"%.200s\") to slice");
+			setErrorFormat(g_excTypeError, "must assign list (not \"%.200s\") to slice", typeName(v));
 			return -1;
 		}
 	}
@@ -488,7 +485,7 @@ static bool listHash(Object *, int32 *) {
 #define LIST_SELF List *self = (List *)selfObj;
 
 static ObjRef listAppend(Object *selfObj, Tuple *args, Dict *) {
-	if (!checkArgs("append", args, 1, 1))
+	if (!checkOneArg("append", args))
 		return ObjRef();
 	((List *)selfObj)->append(args->get(0));
 	return ObjRef(g_none);
@@ -535,7 +532,7 @@ static ObjRef listPop(Object *selfObj, Tuple *args, Dict *) {
 
 static ObjRef listRemove(Object *selfObj, Tuple *args, Dict *) {
 	LIST_SELF
-	if (!checkArgs("remove", args, 1, 1))
+	if (!checkOneArg("remove", args))
 		return ObjRef();
 	for (uint32 i = 0; i < self->size(); i++) {
 		ObjRef item(self->get(i));
@@ -554,7 +551,7 @@ static ObjRef listRemove(Object *selfObj, Tuple *args, Dict *) {
 
 static ObjRef listIndex(Object *selfObj, Tuple *args, Dict *) {
 	LIST_SELF
-	if (!checkArgs("index", args, 1, 1))
+	if (!checkOneArg("index", args))
 		return ObjRef();
 	for (uint32 i = 0; i < self->size(); i++) {
 		ObjRef item(self->get(i));
@@ -570,7 +567,7 @@ static ObjRef listIndex(Object *selfObj, Tuple *args, Dict *) {
 
 static ObjRef listCount(Object *selfObj, Tuple *args, Dict *) {
 	LIST_SELF
-	if (!checkArgs("count", args, 1, 1))
+	if (!checkOneArg("count", args))
 		return ObjRef();
 	int32 n = 0;
 	for (uint32 i = 0; i < self->size(); i++) {
@@ -724,15 +721,25 @@ static const MethodDef g_listMethods[] = {
 	{ nullptr, nullptr, 0, nullptr }
 };
 
-static ObjRef listNew(Type *type, Tuple *args, Dict *kw) {
+// list.__new__ makes an empty list; list.__init__ fills it, as in CPython 2.2
+static ObjRef listNew(Type *type, Tuple *, Dict *) {
+	return ObjRef(type == &g_listType ? new List() : new List(type));
+}
+
+static int listInit(Object *self, Tuple *args, Dict *kw) {
 	if (!noKeywords("list", kw) || !checkArgs("list", args, 0, 1))
-		return ObjRef();
-	Ref<List> l(type == &g_listType ? new List() : new List(type));
+		return -1;
+	List *l = (List *)self;
+	l->clear();
 	if (args->_size) {
-		if (listExtendInternal(l.get(), args->get(0)) < 0)
-			return ObjRef();
+		ObjRef items = sequenceList(args->get(0));
+		if (!items)
+			return -1;
+		List *src = (List *)items.get();
+		for (uint32 i = 0; i < src->size(); i++)
+			l->append(src->get(i));
 	}
-	return l;
+	return 0;
 }
 
 // ---- Extended slices and subscripts ----------------------------------------
@@ -917,6 +924,7 @@ void initSequenceTypes() {
 	lt.richCompare = listRichCompare;
 	lt.methods = g_listMethods;
 	lt.newObj = listNew;
+	lt.init = listInit;
 	lt.getAttr = genericGetAttr;
 
 	g_sliceType.repr = sliceRepr;
