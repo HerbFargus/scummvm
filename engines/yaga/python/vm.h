@@ -53,6 +53,8 @@ public:
 	// 0 = missing, 1 = file, 2 = directory; size and modification time if found
 	virtual int stat(const Common::String &path, uint32 *size, uint32 *mtime) = 0;
 	virtual bool remove(const Common::String &path) = 0;
+	virtual bool makeDirectory(const Common::String &path) = 0;
+
 	virtual bool listDirectory(const Common::String &path, Common::Array<Common::String> &names) = 0;
 	virtual Common::String currentDirectory() = 0;
 };

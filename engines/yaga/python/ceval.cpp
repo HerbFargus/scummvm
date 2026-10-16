@@ -19,6 +19,7 @@
  *
  */
 
+#include "common/debug.h"
 #include "common/util.h"
 
 #include "yaga/python/object.h"
@@ -624,6 +625,19 @@ static ObjRef fastCall(Object *func, Object **args, int n) {
 
 // ---- The main loop ------------------------------------------------------------------
 
+// Every so many instructions, log where the scripts are, so that a hang shows up
+static uint32 g_instructionCount = 0;
+
+static void logStack() {
+	Common::String out = Common::String::format("python: %u instructions; stack:", g_instructionCount);
+	for (Frame *f = g_ts->frame; f; f = f->_back.get()) {
+		Code *co = f->_code.get();
+		out += Common::String::format("\n  %s:%d in %s", co->_filename ? co->_filename->_data : "?", f->_lineno,
+		                              co->_name ? co->_name->_data : "?");
+	}
+	debug(1, "%s", out.c_str());
+}
+
 ObjRef evalFrame(Frame *f) {
 	Code *co = f->_code.get();
 	const uint8 *first = (const uint8 *)co->_code->_data;
@@ -675,6 +689,9 @@ ObjRef evalFrame(Frame *f) {
 	for (;;) {
 		// Fetch the next instruction
 		f->_lasti = INSTR_OFFSET();
+		if ((++g_instructionCount & 0x3ffffff) == 0)
+			logStack();
+
 		opcode = *next++;
 		if (opcode >= kHaveArgument) {
 			oparg = next[0] | (next[1] << 8);

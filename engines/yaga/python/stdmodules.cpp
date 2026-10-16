@@ -416,6 +416,17 @@ static ObjRef ntAccess(Object *, Tuple *args, Dict *) {
 	return newBool(Interpreter::instance()->fileSystem()->stat(path->_data, &size, &mtime) != 0);
 }
 
+static ObjRef ntMkdir(Object *, Tuple *args, Dict *) {
+	if (!checkArgs("mkdir", args, 1, 2))
+		return ObjRef();
+	Str *path = asStr(args->get(0));
+	if (!path)
+		return ObjRef();
+	if (!Interpreter::instance()->fileSystem()->makeDirectory(path->_data))
+		return osError(path->_data, 17, "File exists");
+	return ObjRef(g_none);
+}
+
 static ObjRef ntUnsupported(Object *, Tuple *, Dict *) {
 	return osError(nullptr, 13, "Permission denied");
 }
@@ -454,7 +465,8 @@ static const MethodDef g_ntMethods[] = {
 	{ "remove", ntRemove, kMethVarArgs, nullptr },
 	{ "unlink", ntRemove, kMethVarArgs, nullptr },
 	{ "access", ntAccess, kMethVarArgs, nullptr },
-	{ "mkdir", ntUnsupported, kMethVarArgs, nullptr },
+	{ "mkdir", ntMkdir, kMethVarArgs, nullptr },
+
 	{ "rmdir", ntUnsupported, kMethVarArgs, nullptr },
 	{ "rename", ntUnsupported, kMethVarArgs, nullptr },
 	{ "chdir", ntUnsupported, kMethVarArgs, nullptr },

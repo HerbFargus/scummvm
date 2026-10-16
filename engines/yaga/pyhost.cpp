@@ -29,6 +29,7 @@
 #include "yaga/detection.h"
 #include "yaga/installer.h"
 #include "yaga/pyhost.h"
+#include "yaga/stuboverlays.h"
 #include "yaga/python/object.h"
 #include "yaga/python/internal.h"
 
@@ -182,6 +183,10 @@ int GameFileSystem::stat(const Common::String &path, uint32 *size, uint32 *mtime
 		delete save;
 		return 1;
 	}
+	Common::String key = saveName(parts);
+	for (uint i = 0; i < _madeDirs.size(); i++)
+		if (_madeDirs[i] == key)
+			return 2;
 	Common::FSNode node = findNode(parts);
 	if (!node.exists())
 		return 0;
@@ -202,7 +207,19 @@ bool GameFileSystem::remove(const Common::String &path) {
 	return g_system->getSavefileManager()->removeSavefile(saveName(parts));
 }
 
-bool GameFileSystem::listDirectory(const Common::String &path, Common::Array<Common::String> &names) {
+bool GameFileSystem::makeDirectory(const Common::String &path) {
+	Common::Array<Common::String> parts;
+	if (!relativeParts(path, parts))
+		return false;
+	uint32 size, mtime;
+	if (stat(path, &size, &mtime) != 0)
+		return false;
+	_madeDirs.push_back(saveName(parts));
+	return true;
+}
+
+bool GameFileSystem::listDirectory(
+const Common::String &path, Common::Array<Common::String> &names) {
 	Common::Array<Common::String> parts;
 	if (!relativeParts(path, parts))
 		return false;
@@ -491,6 +508,19 @@ static ObjRef stubModuleGetAttr(Object *o, Str *name) {
 	return value;
 }
 
+// _stub(name) in an overlay makes a traced stand-in object
+static ObjRef overlayStub(Object *, Tuple *args, Dict *) {
+	if (!checkArgs("_stub", args, 1, 1))
+		return ObjRef();
+	Str *name = asStr(args->get(0));
+	if (!name)
+		return ObjRef();
+	trace("new", name->toString());
+	return newStub(name->toString());
+}
+
+static const MethodDef g_overlayStubDef = { "_stub", overlayStub, kMethVarArgs, nullptr };
+
 static void initStubModule(Module *placeholder) {
 	initStubTypes();
 	Object *nameObj = placeholder->_dict->getItemString("__name__");
@@ -499,7 +529,23 @@ static void initStubModule(Module *placeholder) {
 	Ref<Module> m(new StubModule(name.c_str()));
 	getModuleDict()->setItemString(name.c_str(), m.get());
 	trace("import", name);
+	for (const StubOverlay *o = g_stubOverlays; o->module; o++) {
+		if (name != o->module)
+			continue;
+		Dict *d = m->_dict.get();
+		d->setItemString("__builtins__", getBuiltins());
+		ObjRef stubFunc(new BuiltinFunction(&g_overlayStubDef, nullptr));
+		d->setItemString("_stub", stubFunc.get());
+		d->setItemString("_Stub", &g_stubType);
+
+		ObjRef code = compileString(o->source, (Common::String("<overlay ") + o->module + ">").c_str(), kCompileExec);
+		if (code)
+			code = evalCode((Code *)code.get(), d, d);
+		if (!code)
+			warning("yaga: overlay for %s failed: %s", o->module, formatError().c_str());
+	}
 }
+
 
 void registerEngineStubs(Interpreter *vm) {
 	if (!(g_stubModuleType._flags & kTypeReady)) {

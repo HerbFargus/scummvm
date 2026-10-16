@@ -108,7 +108,12 @@ public:
 		return true;
 	}
 
+	bool makeDirectory(const Common::String &path) override {
+		return false;
+	}
+
 	bool listDirectory(const Common::String &path, Common::Array<Common::String> &names) override {
+
 		Common::FSNode node = resolve(path);
 		Common::FSList list;
 		if (!node.isDirectory() || !node.getChildren(list, Common::FSNode::kListAll))

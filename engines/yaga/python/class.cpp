@@ -912,9 +912,11 @@ bool finalizeObject(Object *o) {
 	} else if (!lookupType(o->_type, name)) {
 		return true;
 	}
+
 	o->_refs = 1;
 	{
 		ObjRef errType, errValue, errTb;
+
 		fetchError(&errType, &errValue, &errTb);
 		ObjRef bound;
 		if (isType(o, &g_instanceType)) {

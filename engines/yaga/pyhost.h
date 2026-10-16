@@ -43,6 +43,7 @@ public:
 	Common::WriteStream *openForWriting(const Common::String &path, bool append) override;
 	int stat(const Common::String &path, uint32 *size, uint32 *mtime) override;
 	bool remove(const Common::String &path) override;
+	bool makeDirectory(const Common::String &path) override;
 	bool listDirectory(const Common::String &path, Common::Array<Common::String> &names) override;
 	Common::String currentDirectory() override { return _home; }
 
@@ -56,7 +57,10 @@ private:
 	Common::String _rootPath; // C:\Program Files\Atari
 	Common::String _home;     // _rootPath\<game folder>
 	Common::String _target;
+	// Folders the game made: its files go to the save folder, so these only need to exist for stat
+	Common::Array<Common::String> _madeDirs;
 };
+
 
 // Where the scripts' output goes: the debug log
 class LogSink : public Python::OutputSink {

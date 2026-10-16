@@ -64,9 +64,18 @@ void decRef(Object *o) {
 		o->_refs = 0x40000000;
 		return;
 	}
-	// Instances with __del__ run it first, and may come back to life
-	if ((o->_type == &g_instanceType || (o->_type->_flags & kTypeHeap)) && !finalizeObject(o))
-		return;
+	// Instances with __del__ run it first, and may come back to life. The
+	// method's own temporaries (its frame holds self) must go at once, not
+	// wait in the queue below, or the object never seems to die.
+	if (o->_type == &g_instanceType || (o->_type->_flags & kTypeHeap)) {
+		bool saved = g_deleting;
+		g_deleting = false;
+		bool dead = finalizeObject(o);
+		g_deleting = saved;
+		if (!dead)
+			return;
+	}
+
 	if (!g_pendingDeletes)
 		g_pendingDeletes = new Common::Array<Object *>();
 	if (g_deleting) {
