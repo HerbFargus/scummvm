@@ -236,8 +236,9 @@ ObjRef execCodeModule(const char *name, Code *co) {
 // install their own importer (iu.py) over it.
 static ObjRef findAndLoad(const char *fullname, const char *subname, Object *path) {
 	bool extension;
-	if (!path && isNativeModule(subname, &extension) && !extension) {
+	if (!path && isNativeModule(subname, &extension)) {
 		ObjRef m = initNativeModule(subname);
+
 		if (m)
 			return m;
 		if (errorOccurred())
