@@ -76,7 +76,8 @@ void registerEngineStubs(Python::Interpreter *vm);
 // Runs the game's executable as McMillan Installer's launcher does: the
 // bootstrap modules, then the bytecode archive on sys.path, then the scripts.
 // Returns false (with the error logged) if a script raised.
-bool runLauncher(Python::Interpreter *vm, GameFileSystem *fs, const Common::String &exeName);
+bool runLauncher(Python::Interpreter *vm, GameFileSystem *fs, const Common::String &exeName, bool importAll = false);
+
 
 } // End of namespace Yaga
 

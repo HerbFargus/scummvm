@@ -1255,6 +1255,71 @@ CODEC(codecLatin1Decode, codecLatin1Encode, "latin-1")
 CODEC(codecUtf8Decode, codecUtf8Encode, "utf-8")
 CODEC(codecMbcsDecode, codecMbcsEncode, "mbcs")
 
+// UTF-16: byteorder -1 little-endian, 1 big-endian, 0 native (little) with a BOM
+static ObjRef utf16Encode(Tuple *args, int defaultOrder) {
+	if (!checkArgs("utf_16_encode", args, 1, 3))
+		return ObjRef();
+	ObjRef u = unicodeFromStr(args->get(0), nullptr, nullptr);
+	if (!u)
+		return ObjRef();
+	int32 order = defaultOrder;
+	if (args->_size > 2 && !asInt(args->get(2), &order))
+		return ObjRef();
+	Common::String out;
+	bool big = order > 0;
+	if (order == 0) {
+		out += (char)0xff;
+		out += (char)0xfe;
+	}
+	const Common::Array<uint32> &chars = ((Unicode *)u.get())->_chars;
+	for (uint32 i = 0; i < chars.size(); i++) {
+		uint32 c = chars[i];
+		char hi = (char)((c >> 8) & 0xff), lo = (char)(c & 0xff);
+		out += big ? hi : lo;
+		out += big ? lo : hi;
+	}
+	return tuplePack(2, newStr(out).get(), newInt(chars.size()).get());
+}
+
+static ObjRef utf16Decode(Tuple *args, int defaultOrder) {
+	if (!checkArgs("utf_16_decode", args, 1, 3))
+		return ObjRef();
+	Str *s = asStr(args->get(0));
+	if (!s)
+		return ObjRef();
+	int32 order = defaultOrder;
+	if (args->_size > 2 && !asInt(args->get(2), &order))
+		return ObjRef();
+	const uint8 *p = (const uint8 *)s->_data;
+	uint32 i = 0;
+	bool big = order > 0;
+	if (order == 0 && s->_len >= 2) {
+		if (p[0] == 0xff && p[1] == 0xfe) {
+			big = false;
+			i = 2;
+		} else if (p[0] == 0xfe && p[1] == 0xff) {
+			big = true;
+			i = 2;
+		}
+	}
+	if ((s->_len - i) % 2) {
+		setErrorString(g_excUnicodeError, "UTF-16 decoding error: truncated data");
+		return ObjRef();
+	}
+	Unicode *u = new Unicode();
+	ObjRef ru(u);
+	for (; i + 1 < s->_len; i += 2)
+		u->_chars.push_back(big ? (p[i] << 8) | p[i + 1] : p[i] | (p[i + 1] << 8));
+	return tuplePack(2, ru.get(), newInt(s->_len).get());
+}
+
+static ObjRef codecUtf16Encode(Object *, Tuple *a, Dict *) { return utf16Encode(a, 0); }
+static ObjRef codecUtf16LeEncode(Object *, Tuple *a, Dict *) { return utf16Encode(a, -1); }
+static ObjRef codecUtf16BeEncode(Object *, Tuple *a, Dict *) { return utf16Encode(a, 1); }
+static ObjRef codecUtf16Decode(Object *, Tuple *a, Dict *) { return utf16Decode(a, 0); }
+static ObjRef codecUtf16LeDecode(Object *, Tuple *a, Dict *) { return utf16Decode(a, -1); }
+static ObjRef codecUtf16BeDecode(Object *, Tuple *a, Dict *) { return utf16Decode(a, 1); }
+
 static ObjRef codecCharmapDecode(Object *, Tuple *args, Dict *) {
 	if (!checkArgs("charmap_decode", args, 1, 3))
 		return ObjRef();
@@ -1328,6 +1393,10 @@ static const MethodDef g_codecsMethods[] = {
 	{ "utf_8_decode", codecUtf8Decode, kMethVarArgs, nullptr }, { "utf_8_encode", codecUtf8Encode, kMethVarArgs, nullptr },
 	{ "mbcs_decode", codecMbcsDecode, kMethVarArgs, nullptr }, { "mbcs_encode", codecMbcsEncode, kMethVarArgs, nullptr },
 	{ "charmap_decode", codecCharmapDecode, kMethVarArgs, nullptr }, { "charmap_encode", codecCharmapEncode, kMethVarArgs, nullptr },
+	{ "utf_16_encode", codecUtf16Encode, kMethVarArgs, nullptr }, { "utf_16_decode", codecUtf16Decode, kMethVarArgs, nullptr },
+	{ "utf_16_le_encode", codecUtf16LeEncode, kMethVarArgs, nullptr }, { "utf_16_le_decode", codecUtf16LeDecode, kMethVarArgs, nullptr },
+	{ "utf_16_be_encode", codecUtf16BeEncode, kMethVarArgs, nullptr }, { "utf_16_be_decode", codecUtf16BeDecode, kMethVarArgs, nullptr },
+
 	{ nullptr, nullptr, 0, nullptr }
 };
 

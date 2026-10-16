@@ -240,6 +240,7 @@ void LogSink::writeStderr(const char *s, uint32 len) {
 
 static Type g_stubType("yaga stub", &g_objectType);
 static Type g_stubModuleType("module", &g_moduleType);
+static Type g_stubMetaType("yaga stub class", &g_typeType); // the classes' metaclass
 
 // One stand-in: any attribute, call or operation gives back another
 struct Stub : public Object {
@@ -393,6 +394,23 @@ static int stubInit(Object *, Tuple *, Dict *) {
 	return 0;
 }
 
+// Engine classes answer for any class attribute too (constants such as
+// PixelFormat.PXL_R5G6B5); the game's own subclasses do not
+static ObjRef stubTypeGetAttr(Object *o, Str *name) {
+	ObjRef r = g_typeType.getAttr(o, name);
+	if (r || !errorMatches(g_excAttributeError))
+		return r;
+	Type *t = (Type *)o;
+	if (!t->_dict->getItemString("__yaga_stub__") || (name->_data[0] == '_' && name->_data[1] == '_'))
+		return r;
+	clearError();
+	Common::String full = t->_name + "." + name->toString();
+	trace("get", full);
+	ObjRef value = newStub(full);
+	t->_dict->setItem(name, value.get());
+	return value;
+}
+
 static NumberMethods g_stubAsNumber;
 static SequenceMethods g_stubAsSequence;
 static MappingMethods g_stubAsMapping;
@@ -425,6 +443,10 @@ static void initStubTypes() {
 	t.newObj = stubNew;
 	t.init = stubInit;
 	typeReady(&t);
+	Type &mt = g_stubMetaType;
+	mt._flags |= kTypeBaseType;
+	mt.getAttr = stubTypeGetAttr;
+	typeReady(&mt);
 }
 
 // A module of stand-ins: names starting with a capital letter are classes the
@@ -452,9 +474,11 @@ static ObjRef stubModuleGetAttr(Object *o, Str *name) {
 		// A class: a new type deriving from the stand-in base
 		Ref<Dict> dict = newDict();
 		dict->setItemString("__module__", modName ? modName : g_none);
+		dict->setItemString("__yaga_stub__", g_none);
 		Ref<Tuple> bases = tuplePack(1, &g_stubType);
 		Ref<Tuple> targs = tuplePack(3, newStr(name->toString()).get(), bases.get(), dict.get());
-		value = typeNew(&g_typeType, targs.get(), nullptr);
+		value = typeNew(&g_stubMetaType, targs.get(), nullptr);
+
 		if (!value)
 			return ObjRef();
 		((Type *)value.get())->_name = full;
@@ -507,7 +531,27 @@ static Common::String maybeInflate(const Common::String &raw) {
 	return ((Str *)out.get())->toString();
 }
 
-bool runLauncher(Interpreter *vm, GameFileSystem *fs, const Common::String &exeName) {
+// A check of the VM against all the game's code: once the game's importer is
+// installed, import every module in the archive (instead of running boot)
+static const char *const kImportAll =
+	"import sys, __builtin__\n"
+	"__builtin__.False = 0\n"
+	"__builtin__.True = 1\n"
+	"__builtin__.false = 0\n"
+	"__builtin__.true = 1\n"
+	"import archive\n"
+	"names = archive.ZlibArchive(sys.path[-1]).contents()\n"
+	"names.sort()\n"
+	"ok = 0\n"
+	"for name in names:\n"
+	"    try:\n"
+	"        __import__(name)\n"
+	"        ok = ok + 1\n"
+	"    except:\n"
+	"        print 'import failed:', name, sys.exc_info()[0], sys.exc_info()[1]\n"
+	"print 'imported', ok, 'of', len(names), 'modules'\n";
+
+bool runLauncher(Interpreter *vm, GameFileSystem *fs, const Common::String &exeName, bool importAll) {
 	Installer installer;
 	if (!installer.open(exeName)) {
 		warning("yaga: cannot read the Python archive in %s", exeName.c_str());
@@ -560,6 +604,11 @@ bool runLauncher(Interpreter *vm, GameFileSystem *fs, const Common::String &exeN
 		// Scripts are stored NUL-terminated
 		uint32 len = strlen(source.c_str());
 		source = Common::String(source.c_str(), len);
+		if (importAll && entries[i].name == "boot") {
+			debug(1, "yaga: importing every module instead of running boot");
+			return vm->runString(kImportAll, "<import all>");
+		}
+
 		debug(1, "yaga: running script %s", entries[i].name.c_str());
 		if (!vm->runString(source.c_str(), entries[i].name.c_str())) {
 			if (vm->exited()) {

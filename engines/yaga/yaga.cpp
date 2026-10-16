@@ -256,7 +256,8 @@ Common::Error YagaEngine::runScripts() {
 	LogSink sink;
 	Python::Interpreter vm(&fs, &sink);
 	registerEngineStubs(&vm);
-	bool ok = runLauncher(&vm, &fs, exeName);
+	bool ok = runLauncher(&vm, &fs, exeName, ConfMan.hasKey("yaga_import_all"));
+
 	if (!ok)
 		warning("yaga: the scripts stopped with an error: %s", vm.lastError().c_str());
 	return Common::kNoError;
