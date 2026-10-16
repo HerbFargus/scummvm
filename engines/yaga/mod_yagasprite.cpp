@@ -151,14 +151,21 @@ static ObjRef videoPause(Object *self, Tuple *, Dict *) {
 }
 
 // Render(camera): the movie fills the screen, centred if it is smaller
-static ObjRef videoRender(Object *self, Tuple *, Dict *) {
+static ObjRef videoRender(Object *self, Tuple *args, Dict *) {
 	VideoObject *v = (VideoObject *)self;
 	v->advance();
-	if (!v->_frame || !v->_started || !g_display || !g_display->isOpen())
+	if (!v->_frame || !v->_started)
 		return ObjRef(g_none);
-	Graphics::ManagedSurface &screen = g_display->surface();
-	Common::Point at((screen.w - v->_frame->w) / 2, (screen.h - v->_frame->h) / 2);
-	screen.blitFrom(*v->_frame, at);
+	Common::Point at((640 - v->_frame->w) / 2, (480 - v->_frame->h) / 2);
+	ObjRef target = offscreenTarget(args->_size ? args->get(0) : nullptr);
+	if (target) {
+		ObjRef img = newImageCopy(*v->_frame);
+		renderThrough(target.get(), img.get(), 1.0, Common::Rect(at.x, at.y, at.x + v->_frame->w, at.y + v->_frame->h), Common::Rect(0, 0, v->_frame->w, v->_frame->h));
+		return ObjRef(g_none);
+	}
+	if (!g_display || !g_display->isOpen())
+		return ObjRef(g_none);
+	g_display->surface().blitFrom(*v->_frame, at);
 	return ObjRef(g_none);
 }
 
@@ -380,8 +387,9 @@ static Type g_plainSpriteType("yagasprite.Sprite", &g_spriteType);
 static Type g_talkieSpriteType("yagasprite.TalkieSprite", &g_spriteType);
 
 struct PlacedLayer {
-	const AnimLayer *layer;
+	const Graphics::Surface *surface;
 	int x, y;
+	ObjRef image; // a picture the game put in the layer's place, kept alive
 };
 
 struct SpriteObject;
@@ -511,12 +519,26 @@ static void advanceSprite(SpriteObject *s) {
 	setEngineAttr(s, "currentFrame", newInt(step % frameCount).get());
 }
 
+// Lipsync: the mouth follows the newest stream attached to the sprite that
+// is still speaking. The game sets renderMask itself between lines
+static void applyLipsync(SpriteObject *s) {
+	for (int i = (int)s->_children.size() - 1; i >= 0; i--) {
+		uint32 mask;
+		if (playbackMouthShape(s->_children[i].get(), &mask)) {
+			setEngineAttr(s, "renderMask", newInt(mask).get());
+			return;
+		}
+	}
+}
+
 void advanceSprites() {
 	Common::Array<ObjRef> live;
 	for (uint i = 0; i < g_sprites.size(); i++)
 		live.push_back(ObjRef(g_sprites[i]));
-	for (uint i = 0; i < live.size(); i++)
+	for (uint i = 0; i < live.size(); i++) {
+		applyLipsync((SpriteObject *)live[i].get());
 		advanceSprite((SpriteObject *)live[i].get());
+	}
 }
 
 // Which blink layer is showing, if any: the engine blinks characters
@@ -574,9 +596,13 @@ static void placeLayers(SpriteObject *s, const char *blink, Common::Array<Placed
 	const AnimFrame &frame = anim->frames[index % anim->frames.size()];
 	int ox, oy;
 	spriteOrigin(s, &ox, &oy);
+	Object *animObj = spriteAnim(s);
 	for (uint i = 0; i < frame.layers.size(); i++) {
 		const AnimLayer &l = frame.layers[i];
-		if (!l.surface.getPixels())
+		// The save slots show their photo by replacing a layer's image
+		ObjRef replaced = imageAnimReplacedImage(animObj, index % anim->frames.size(), i);
+		const Graphics::Surface *surface = replaced ? imageSurface(replaced.get()) : &l.surface;
+		if (!surface || !surface->getPixels())
 			continue;
 		if (l.mask && !(l.mask & wanted))
 			continue;
@@ -588,7 +614,11 @@ static void placeLayers(SpriteObject *s, const char *blink, Common::Array<Placed
 		} else if (s->_layerFlags.contains(name) && !s->_layerFlags[name]) {
 			continue;
 		}
-		PlacedLayer p = { &l, ox + l.x, oy + l.y };
+		PlacedLayer p;
+		p.surface = surface;
+		p.x = ox + l.x;
+		p.y = oy + l.y;
+		p.image = replaced;
 		out.push_back(p);
 	}
 }
@@ -596,9 +626,9 @@ static void placeLayers(SpriteObject *s, const char *blink, Common::Array<Placed
 static void setRenderRect(SpriteObject *s, const Common::Array<PlacedLayer> &placed) {
 	if (placed.empty())
 		return;
-	Common::Rect r(placed[0].x, placed[0].y, placed[0].x + placed[0].layer->surface.w, placed[0].y + placed[0].layer->surface.h);
+	Common::Rect r(placed[0].x, placed[0].y, placed[0].x + placed[0].surface->w, placed[0].y + placed[0].surface->h);
 	for (uint i = 1; i < placed.size(); i++)
-		r.extend(Common::Rect(placed[i].x, placed[i].y, placed[i].x + placed[i].layer->surface.w, placed[i].y + placed[i].layer->surface.h));
+		r.extend(Common::Rect(placed[i].x, placed[i].y, placed[i].x + placed[i].surface->w, placed[i].y + placed[i].surface->h));
 	setEngineAttr(s, "renderRect", newRect(r.left, r.top, r.width(), r.height()).get());
 }
 
@@ -610,14 +640,13 @@ static ObjRef spriteInit(Object *, Tuple *, Dict *) {
 	return ObjRef(g_none);
 }
 
-// Reading a position gives a copy: a Point is a value in the engine
+// Reading a position gives a copy: a Point is a value in the engine. The
+// usual lookup first, so a subclass's own position property wins
 static ObjRef spriteGetAttr(Object *o, Str *name) {
-	if (name->equals("position")) {
-		Object *pos = o->getDict()->getItemString("position");
-		if (pos)
-			return copyPoint(pos);
-	}
-	return stubFallbackGetAttr(o, name);
+	ObjRef r = stubFallbackGetAttr(o, name);
+	if (r && name->equals("position"))
+		return copyPoint(r.get());
+	return r;
 }
 
 static int spriteSetAttr(Object *o, Str *name, Object *value) {
@@ -668,20 +697,27 @@ static ObjRef spriteStop(Object *self, Tuple *, Dict *) {
 	return ObjRef(g_none);
 }
 
-static ObjRef spriteRender(Object *self, Tuple *, Dict *) {
+// Render(camera): onto the screen, or through the camera's own target
+static ObjRef spriteRender(Object *self, Tuple *args, Dict *) {
 	SpriteObject *s = (SpriteObject *)self;
 	advanceSprite(s);
-	if (!g_display || !g_display->isOpen())
+	ObjRef target = offscreenTarget(args->_size ? args->get(0) : nullptr);
+	if (!target && (!g_display || !g_display->isOpen()))
 		return ObjRef(g_none);
 	placeLayers(s, blinkLayer(s), s->_drawn);
 	Object *anim = spriteAnim(s);
 	s->_drawnAnim = anim ? ObjRef(anim) : ObjRef();
 	double opacity = CLIP(dictDouble(s, "opacity", 1.0), 0.0, 1.0);
 	uint alpha = (uint)(opacity * 255.0 + 0.5);
-	Graphics::ManagedSurface &screen = g_display->surface();
 	for (uint i = 0; i < s->_drawn.size(); i++) {
 		const PlacedLayer &p = s->_drawn[i];
-		screen.blendBlitFrom(p.layer->surface, Common::Point(p.x, p.y), Graphics::FLIP_NONE, MS_ARGB(alpha, 255, 255, 255));
+		const Graphics::Surface &l = *p.surface;
+		if (target) {
+			ObjRef img = p.image ? p.image : newLayerImage(imageAnimShared(anim), &l);
+			renderThrough(target.get(), img.get(), opacity, Common::Rect(p.x, p.y, p.x + l.w, p.y + l.h), Common::Rect(0, 0, l.w, l.h));
+		} else {
+			g_display->surface().blendBlitFrom(l, Common::Point(p.x, p.y), Graphics::FLIP_NONE, MS_ARGB(alpha, 255, 255, 255));
+		}
 	}
 	setRenderRect(s, s->_drawn);
 	return ObjRef(g_none);
@@ -705,7 +741,7 @@ static ObjRef spriteIntersect(Object *self, Tuple *args, Dict *) {
 	else
 		placeLayers(s, nullptr, placed);
 	for (uint i = 0; i < placed.size(); i++) {
-		const Graphics::Surface &surf = placed[i].layer->surface;
+		const Graphics::Surface &surf = *placed[i].surface;
 		int lx = (int)x - placed[i].x, ly = (int)y - placed[i].y;
 		if (lx < 0 || ly < 0 || lx >= surf.w || ly >= surf.h)
 			continue;

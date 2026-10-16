@@ -86,6 +86,21 @@ double imageAnimFps(Python::Object *o);
 Common::String imageAnimLocator(Python::Object *o);
 // The pixels behind an IImage, or null
 const Graphics::Surface *imageSurface(Python::Object *o);
+Common::SharedPtr<AnimData> imageAnimShared(Python::Object *o);
+// The picture the game has put in place of an animation layer's, if any
+Python::ObjRef imageAnimReplacedImage(Python::Object *anim, uint frame, uint layer);
+// IImages over a layer's pixels, or over a copy of a surface
+Python::ObjRef newLayerImage(const Common::SharedPtr<AnimData> &anim, const Graphics::Surface *surface);
+Python::ObjRef newImageCopy(const Graphics::Surface &surface);
+// The camera's target if it is one of the game's own (a screen capture),
+// or null when drawing goes to the screen
+Python::ObjRef offscreenTarget(Python::Object *camera);
+// target.RenderImage(image, opacity, rcDst, rcSrc)
+bool renderThrough(Python::Object *target, Python::Object *image, double opacity, const Common::Rect &dst, const Common::Rect &src);
+
+// yagaevents: the mouth shape a talkie's stream playback wants now, or
+// false if the object is not a playback or has nothing to say
+bool playbackMouthShape(Python::Object *o, uint32 *mask);
 
 // yagasprite: advances every playing sprite, once per loop
 void advanceSprites();

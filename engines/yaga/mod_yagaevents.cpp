@@ -21,6 +21,8 @@
 
 #include "common/config-manager.h"
 #include "common/debug.h"
+#include "common/endian.h"
+#include "common/ptr.h"
 #include "common/events.h"
 #include "common/system.h"
 #include "common/tokenizer.h"
@@ -370,8 +372,8 @@ static ObjRef managerNoop(Object *, Tuple *, Dict *) {
 
 // Hands an event to every receiver registered for its class. A receiver
 // that raises is reported and skipped, as a C++ engine would carry on
-static void dispatch(EventManagerObject *em, int32 eventClass, int32 eventType, int32 value, int32 elementID = 0) {
-	ObjRef event = newEvent(eventClass, eventType, newInt(value).get(), elementID);
+static void dispatch(EventManagerObject *em, int32 eventClass, int32 eventType, int32 value, int32 elementID = 0, int32 deviceID = 0) {
+	ObjRef event = newEvent(eventClass, eventType, newInt(value).get(), elementID, deviceID);
 	Common::Array<Receiver> receivers = em->_receivers;
 	for (uint i = 0; i < receivers.size(); i++) {
 		const Receiver &r = receivers[i];
@@ -557,6 +559,286 @@ static double attrDouble(Object *o, const char *name, double fallback) {
 	return d;
 }
 
+// ---- Event streams --------------------------------------------------------------------
+
+// A compiled event stream (.evb; the game asks for .evt). Little-endian:
+// size, count, then per event: time (float), type, parameter, 1.0f, an
+// uninitialised word, 0, group count, and the groups, each a name and
+// key/value fields with NUL-terminated strings
+enum {
+	kEventLipsync = 31415,  // parameter: the mouth shape (phoneme mask)
+	kEventAnimation = 15500 // groups: AnimName, SoundName and Channel
+};
+
+// Every mouth shape some talking animation draws. Anything else (silence
+// is 0) matches no head layer either, so it is drawn as the rest pose
+static const uint32 kMouthShapesDrawn = 0x7bf;
+
+struct StreamField {
+	Common::String key, value;
+};
+
+struct StreamGroup {
+	Common::String name;
+	Common::Array<StreamField> fields;
+};
+
+struct StreamEvent {
+	float time;
+	uint32 type, param;
+	Common::Array<StreamGroup> groups;
+};
+
+struct StreamData {
+	Common::Array<StreamEvent> events;
+};
+
+static bool readCString(const byte *data, uint32 size, uint32 &pos, uint32 len, Common::String &out) {
+	if (pos + len + 1 > size)
+		return false;
+	out = Common::String((const char *)data + pos, len);
+	pos += len + 1;
+	return true;
+}
+
+// Strict: every shipped stream fills its stated size exactly
+static StreamData *parseStream(const byte *data, uint32 size) {
+	if (size < 8 || READ_LE_UINT32(data) != size)
+		return nullptr;
+	uint32 count = READ_LE_UINT32(data + 4);
+	uint32 pos = 8;
+	Common::ScopedPtr<StreamData> s(new StreamData());
+	for (uint32 i = 0; i < count; i++) {
+		if (pos + 28 > size)
+			return nullptr;
+		StreamEvent e;
+		e.time = READ_LE_FLOAT32(data + pos);
+		e.type = READ_LE_UINT32(data + pos + 4);
+		e.param = READ_LE_UINT32(data + pos + 8);
+		uint32 groups = READ_LE_UINT32(data + pos + 24);
+		pos += 28;
+		for (uint32 g = 0; g < groups; g++) {
+			if (pos + 8 > size)
+				return nullptr;
+			StreamGroup group;
+			uint32 nameLen = READ_LE_UINT32(data + pos), fields = READ_LE_UINT32(data + pos + 4);
+			pos += 8;
+			if (!readCString(data, size, pos, nameLen, group.name))
+				return nullptr;
+			for (uint32 f = 0; f < fields; f++) {
+				if (pos + 8 > size)
+					return nullptr;
+				StreamField field;
+				uint32 keyLen = READ_LE_UINT32(data + pos), valueLen = READ_LE_UINT32(data + pos + 4);
+				pos += 8;
+				if (!readCString(data, size, pos, keyLen, field.key) || !readCString(data, size, pos, valueLen, field.value))
+					return nullptr;
+				group.fields.push_back(field);
+			}
+			e.groups.push_back(group);
+		}
+		s->events.push_back(e);
+	}
+	if (pos != size)
+		return nullptr;
+	return s.release();
+}
+
+static Type g_streamType("yagaevents.IEventStream", &g_objectType);
+static Type g_playbackType("yagaevents.EventStreamPlayback", &g_objectType);
+static Type g_elementType("yagaevents.Element", &g_objectType);
+static Type g_attrType("yagaevents.Attribute", &g_objectType);
+
+struct StreamObject : public EngineObject {
+	Common::SharedPtr<StreamData> _data; // empty for a stream that cannot be read
+	explicit StreamObject(Type *t) : EngineObject(t) {}
+};
+
+// IEventStream(resource)
+static ObjRef streamNew(Type *t, Tuple *args, Dict *) {
+	if (!checkArgs("IEventStream", args, 1, 1))
+		return ObjRef();
+	Str *data = resourceData(args->get(0));
+	if (!data)
+		return ObjRef();
+	Ref<StreamObject> s(new StreamObject(t));
+	StreamData *parsed = parseStream((const byte *)data->_data, data->_len);
+	if (!parsed)
+		debugC(1, kDebugScript, "yagaevents: %s is not an event stream", ((ResourceObject *)args->get(0))->_path.c_str());
+	s->_data = Common::SharedPtr<StreamData>(parsed ? parsed : new StreamData());
+	return ObjRef(s.get());
+}
+
+// EventData(i): the groups on event i, as character.CAnimReciever walks them
+static ObjRef eventData(const StreamData *data, int32 index) {
+	if (!data || index < 0 || index >= (int32)data->events.size())
+		return ObjRef(g_none);
+	const StreamEvent &e = data->events[index];
+	Ref<List> groups = newList();
+	for (uint i = 0; i < e.groups.size(); i++) {
+		ObjRef element(new EngineObject(&g_elementType));
+		setEngineAttr(element.get(), "name", newStr(e.groups[i].name).get());
+		Ref<List> attrs = newList();
+		for (uint j = 0; j < e.groups[i].fields.size(); j++) {
+			ObjRef attr(new EngineObject(&g_attrType));
+			setEngineAttr(attr.get(), "key", newStr(e.groups[i].fields[j].key).get());
+			setEngineAttr(attr.get(), "name", newStr(e.groups[i].fields[j].key).get());
+			setEngineAttr(attr.get(), "value", newStr(e.groups[i].fields[j].value).get());
+			attrs->append(attr.get());
+		}
+		setEngineAttr(element.get(), "attrs", attrs.get());
+		groups->append(element.get());
+	}
+	return ObjRef(groups.get());
+}
+
+static ObjRef streamEventData(Object *self, Tuple *args, Dict *) {
+	int32 index;
+	if (!checkArgs("EventData", args, 1, 1) || !asInt(args->get(0), &index))
+		return ObjRef();
+	return eventData(((StreamObject *)self)->_data.get(), index);
+}
+
+static int32 streamLength(Object *o) {
+	return ((StreamObject *)o)->_data->events.size();
+}
+
+static const MethodDef g_streamMethods[] = {
+	{ "EventData", streamEventData, kMethVarArgs, nullptr },
+	{ nullptr, nullptr, 0, nullptr }
+};
+
+static SequenceMethods g_streamAsSequence;
+
+// A stream being played: timed off the clock, like the sound it goes with,
+// so a slow frame cannot walk a mouth out of step with the voice
+struct PlaybackObject;
+static Common::Array<PlaybackObject *> g_playbacks;
+static int32 g_nextPlaybackId = 1;
+
+struct PlaybackObject : public EngineObject {
+	int32 _identity;
+	bool _started;
+	uint32 _startMillis;
+	double _offset;
+	uint32 _fired;
+
+	explicit PlaybackObject(Type *t) : EngineObject(t), _identity(g_nextPlaybackId++), _started(false), _startMillis(0), _offset(0), _fired(0) {
+		setEngineAttr(this, "stream", g_none);
+		// CAnimReciever answers only events whose deviceID is this
+		setEngineAttr(this, "identity", newInt(_identity).get());
+		g_playbacks.push_back(this);
+	}
+	~PlaybackObject() override {
+		for (uint i = 0; i < g_playbacks.size(); i++) {
+			if (g_playbacks[i] == this) {
+				g_playbacks.remove_at(i);
+				break;
+			}
+		}
+	}
+
+	const StreamData *data() {
+		Object *s = getDict()->getItemString("stream");
+		return (s && isInstanceOf(s, &g_streamType)) ? ((StreamObject *)s)->_data.get() : nullptr;
+	}
+
+	double elapsed() const {
+		return (g_system->getMillis() - _startMillis) / 1000.0 + _offset;
+	}
+};
+
+static ObjRef managerCreatePlayback(Object *, Tuple *args, Dict *) {
+	if (!checkArgs("CreateEventStreamPlayback", args, 0, 1))
+		return ObjRef();
+	ObjRef p(new PlaybackObject(&g_playbackType));
+	setEngineAttr(p.get(), "name", args->_size ? args->get(0) : newStr("").get());
+	return p;
+}
+
+static ObjRef playbackRun(Object *self, Tuple *, Dict *) {
+	PlaybackObject *p = (PlaybackObject *)self;
+	p->_started = true;
+	p->_startMillis = g_system->getMillis();
+	p->_fired = 0;
+	return ObjRef(g_none);
+}
+
+static ObjRef playbackStop(Object *self, Tuple *, Dict *) {
+	((PlaybackObject *)self)->_started = false;
+	return ObjRef(g_none);
+}
+
+static ObjRef playbackSeek(Object *self, Tuple *args, Dict *) {
+	double d;
+	if (args->_size && asDouble(args->get(0), &d))
+		((PlaybackObject *)self)->_offset = d;
+	clearError();
+	return ObjRef(g_none);
+}
+
+// EventData is asked of the playback, not the stream
+static ObjRef playbackEventData(Object *self, Tuple *args, Dict *) {
+	int32 index;
+	if (!checkArgs("EventData", args, 1, 1) || !asInt(args->get(0), &index))
+		return ObjRef();
+	return eventData(((PlaybackObject *)self)->data(), index);
+}
+
+static const MethodDef g_playbackMethods[] = {
+	{ "Run", playbackRun, kMethVarArgs, nullptr },
+	{ "Stop", playbackStop, kMethVarArgs, nullptr },
+	{ "Seek", playbackSeek, kMethVarArgs, nullptr },
+	{ "EventData", playbackEventData, kMethVarArgs, nullptr },
+	{ nullptr, nullptr, 0, nullptr }
+};
+
+// How long past its last event a stream keeps speaking: long enough that
+// its final shape (usually the mouth closing) is always shown
+static const double kStreamTail = 0.25;
+
+bool playbackMouthShape(Object *o, uint32 *mask) {
+	if (!isInstanceOf(o, &g_playbackType))
+		return false;
+	PlaybackObject *p = (PlaybackObject *)o;
+	const StreamData *data = p->data();
+	if (!p->_started || !data || data->events.empty())
+		return false;
+	double t = p->elapsed();
+	if (t > data->events.back().time + kStreamTail)
+		return false;
+	bool found = false;
+	for (uint i = 0; i < data->events.size() && data->events[i].time <= t; i++) {
+		if (data->events[i].type != kEventLipsync)
+			continue;
+		uint32 m = data->events[i].param;
+		*mask = (m & kMouthShapesDrawn) ? m : 1;
+		found = true;
+	}
+	return found;
+}
+
+// Raises each stream event as it comes due, once and in order: receivers
+// count them to find each event's data. They go to receivers registered
+// for the event's type, carrying the playback's identity
+static void pumpStreams(EventManagerObject *em) {
+	Common::Array<ObjRef> live;
+	for (uint i = 0; i < g_playbacks.size(); i++)
+		live.push_back(ObjRef(g_playbacks[i]));
+	for (uint i = 0; i < live.size(); i++) {
+		PlaybackObject *p = (PlaybackObject *)live[i].get();
+		const StreamData *data = p->data();
+		if (!p->_started || !data)
+			continue;
+		double t = p->elapsed();
+		while (p->_started && p->_fired < data->events.size() && data->events[p->_fired].time <= t) {
+			const StreamEvent &e = data->events[p->_fired++];
+			if (e.type != kEventLipsync)
+				dispatch(em, e.type, e.type, e.param, 0, p->_identity);
+		}
+	}
+}
+
 // The loop: input first, then every timer that has come due, in the order
 // installed (the game's code timer before its render timer)
 static ObjRef managerStartLoop(Object *self, Tuple *, Dict *) {
@@ -571,6 +853,7 @@ static ObjRef managerStartLoop(Object *self, Tuple *, Dict *) {
 
 	while (em->_running && !g_engine->shouldQuit()) {
 		pumpInput(em);
+		pumpStreams(em);
 		advanceSprites();
 		now = g_system->getMillis();
 		uint32 due = now + 50;
@@ -638,6 +921,7 @@ static const MethodDef g_managerMethods[] = {
 	{ "ResumeLocalTime", managerNoop, kMethVarArgs, nullptr },
 	{ "StartEventLoop", managerStartLoop, kMethVarArgs, nullptr },
 	{ "StopEventLoop", managerStopLoop, kMethVarArgs, nullptr },
+	{ "CreateEventStreamPlayback", managerCreatePlayback, kMethVarArgs, nullptr },
 	{ nullptr, nullptr, 0, nullptr }
 };
 
@@ -658,6 +942,13 @@ static void fillYagaevents(Module *m) {
 		readyEngineType(&g_sourceType, nullptr, nullptr, true);
 		g_managerType.newObj = managerNew;
 		readyEngineType(&g_managerType, g_managerMethods, nullptr, true);
+		g_streamType.newObj = streamNew;
+		g_streamAsSequence.length = streamLength;
+		g_streamType.asSequence = &g_streamAsSequence;
+		readyEngineType(&g_streamType, g_streamMethods, nullptr, true);
+		readyEngineType(&g_playbackType, g_playbackMethods, nullptr, true);
+		readyEngineType(&g_elementType, nullptr, nullptr, false);
+		readyEngineType(&g_attrType, nullptr, nullptr, false);
 	}
 	addConstants(m, "EEventClass", g_eventClasses);
 	addConstants(m, "EInputEvent", g_inputEvents);
@@ -671,6 +962,8 @@ static void fillYagaevents(Module *m) {
 	moduleAddObject(m, "Timer", &g_timerType);
 	moduleAddObject(m, "EventSource", &g_sourceType);
 	moduleAddObject(m, "EventManager", &g_managerType);
+	moduleAddObject(m, "IEventStream", &g_streamType);
+	moduleAddObject(m, "EventStreamPlayback", &g_playbackType);
 	ObjRef f(new BuiltinFunction(&g_eventSourceDef, nullptr));
 	moduleAddObject(m, "IEventSource", f.get());
 }

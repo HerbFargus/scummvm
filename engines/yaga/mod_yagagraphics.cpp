@@ -24,6 +24,7 @@
 #include "common/memstream.h"
 #include "common/system.h"
 #include "graphics/blit.h"
+#include "graphics/managed_surface.h"
 #include "graphics/cursor.h"
 #include "graphics/cursorman.h"
 #include "image/icocur.h"
@@ -106,6 +107,7 @@ static Type g_imageAnimType("yagagraphics.IImageAnim", &g_objectType);
 static Type g_animFrameType("yagagraphics.Frame", &g_objectType);
 static Type g_animLayerType("yagagraphics.Layer", &g_objectType);
 static Type g_imageType("yagagraphics.IImage", &g_objectType);
+static Type g_cameraType("yagagraphics.Camera", &g_objectType);
 
 static Resources *g_res = nullptr;
 
@@ -189,6 +191,8 @@ static ObjRef colorRepr(Object *o) {
 	return attrsRepr(o, "Color", g_colorNames, 4);
 }
 
+static int32 attrInt(Object *o, const char *name, int32 fallback);
+
 ObjRef newRect(int32 x, int32 y, int32 w, int32 h) {
 	ObjRef r(new EngineObject(&g_rectType));
 	setEngineAttr(r.get(), "x", newInt(x).get());
@@ -204,11 +208,8 @@ ObjRef newRect(int32 x, int32 y, int32 w, int32 h) {
 struct ImageObject : public EngineObject {
 	Common::SharedPtr<AnimData> _anim; // keeps a layer's pixels alive
 	const Graphics::Surface *_surface;
-	Graphics::Surface _own;
+	Graphics::ManagedSurface _own; // pixels of its own, once drawn into
 	explicit ImageObject(Type *t) : EngineObject(t), _surface(nullptr) {}
-	~ImageObject() override {
-		_own.free();
-	}
 	void setSize() {
 		setEngineAttr(this, "width", newInt(_surface ? _surface->w : 0).get());
 		setEngineAttr(this, "height", newInt(_surface ? _surface->h : 0).get());
@@ -240,15 +241,15 @@ static ObjRef imageNew(Type *t, Tuple *args, Dict *) {
 			img->_own.copyFrom(*converted);
 			converted->free();
 			delete converted;
-			img->_surface = &img->_own;
+			img->_surface = &img->_own.rawSurface();
 		} else {
 			warning("yaga: %s is not a PNG image", r->_path.c_str());
 		}
 	} else if (args->_size && isInstanceOf(args->get(0), &g_imageType)) {
 		ImageObject *src = (ImageObject *)args->get(0);
-		if (src->_surface == &src->_own) {
+		if (src->_surface == &src->_own.rawSurface()) {
 			img->_own.copyFrom(src->_own);
-			img->_surface = &img->_own;
+			img->_surface = &img->_own.rawSurface();
 		} else {
 			img->_anim = src->_anim;
 			img->_surface = src->_surface;
@@ -273,8 +274,8 @@ static ObjRef systemCreateImage(Object *, Tuple *args, Dict *) {
 	Ref<ImageObject> img(new ImageObject(&g_imageType));
 	if (w > 0 && h > 0 && w < 4096 && h < 4096) {
 		img->_own.create(w, h, Graphics::BlendBlit::getSupportedPixelFormat());
-		memset(img->_own.getPixels(), 0, img->_own.pitch * h);
-		img->_surface = &img->_own;
+		img->_own.clear();
+		img->_surface = &img->_own.rawSurface();
 	}
 	img->setSize();
 	return ObjRef(img.get());
@@ -286,6 +287,30 @@ struct ImageAnimObject : public EngineObject {
 	Ref<List> _frames; // made when first asked for
 	explicit ImageAnimObject(Type *t) : EngineObject(t) {}
 };
+
+ObjRef imageAnimReplacedImage(Object *o, uint frame, uint layer) {
+	if (!o || !isInstanceOf(o, &g_imageAnimType))
+		return ObjRef();
+	ImageAnimObject *a = (ImageAnimObject *)o;
+	if (!a->_frames || frame >= a->_frames->size() || frame >= a->_anim->frames.size())
+		return ObjRef();
+	Object *layers = a->_frames->get(frame)->getDict()->getItemString("layers");
+	if (!layers || !isInstanceOf(layers, &g_listType) || layer >= ((List *)layers)->size())
+		return ObjRef();
+	Object *l = ((List *)layers)->get(layer);
+	Object *img = l->getDict() ? l->getDict()->getItemString("image") : nullptr;
+	if (!img || !isInstanceOf(img, &g_imageType))
+		return ObjRef();
+	if (((ImageObject *)img)->_surface == &a->_anim->frames[frame].layers[layer].surface)
+		return ObjRef(); // still its own picture
+	return ObjRef(img);
+}
+
+Common::SharedPtr<AnimData> imageAnimShared(Object *o) {
+	if (!isInstanceOf(o, &g_imageAnimType))
+		return Common::SharedPtr<AnimData>();
+	return ((ImageAnimObject *)o)->_anim;
+}
 
 AnimData *imageAnimData(Object *o) {
 	if (!isInstanceOf(o, &g_imageAnimType))
@@ -383,8 +408,271 @@ static const GetSetDef g_imageAnimGetSets[] = {
 	{ nullptr, nullptr, nullptr }
 };
 
+// ---- Drawing into images, and through cameras -----------------------------------------
+
+static Common::Rect rectArg(Object *r, int w, int h) {
+	if (!r || r == g_none)
+		return Common::Rect(0, 0, w, h);
+	int32 x = attrInt(r, "x", 0), y = attrInt(r, "y", 0);
+	return Common::Rect(x, y, x + attrInt(r, "width", w), y + attrInt(r, "height", h));
+}
+
+// Draws src into dst: scaled when the rectangles differ, blended with
+// opacity, or (exact) replacing the pixels, alpha included
+static void drawSurface(Graphics::ManagedSurface &dst, const Graphics::Surface &src, Common::Rect srcRect, const Common::Rect &dstRect, double opacity, bool exact) {
+	srcRect.clip(Common::Rect(0, 0, src.w, src.h));
+	if (srcRect.isEmpty() || dstRect.isEmpty())
+		return;
+	if (exact) {
+		dst.blitFrom(src, srcRect, dstRect);
+		return;
+	}
+	uint alpha = (uint)(CLIP(opacity, 0.0, 1.0) * 255.0 + 0.5);
+	if (srcRect.width() == dstRect.width() && srcRect.height() == dstRect.height())
+		dst.blendBlitFrom(src, srcRect, Common::Point(dstRect.left, dstRect.top), Graphics::FLIP_NONE, MS_ARGB(alpha, 255, 255, 255));
+	else
+		dst.blendBlitFrom(src, srcRect, dstRect, Graphics::FLIP_NONE, MS_ARGB(alpha, 255, 255, 255));
+}
+
+ObjRef newLayerImage(const Common::SharedPtr<AnimData> &anim, const Graphics::Surface *surface) {
+	return newImage(anim, surface);
+}
+
+ObjRef newImageCopy(const Graphics::Surface &surface) {
+	Ref<ImageObject> img(new ImageObject(&g_imageType));
+	img->_own.create(surface.w, surface.h, Graphics::BlendBlit::getSupportedPixelFormat());
+	img->_own.blitFrom(surface);
+	img->_surface = &img->_own.rawSurface();
+	img->setSize();
+	return ObjRef(img.get());
+}
+
+// A layer's picture belongs to its animation: drawing into one gets a copy first
+static ImageObject *writableImage(Object *o) {
+	ImageObject *img = (ImageObject *)o;
+	if (img->_surface != &img->_own.rawSurface()) {
+		if (img->_surface)
+			img->_own.copyFrom(*img->_surface);
+		img->_anim.reset();
+		img->_surface = img->_own.getPixels() ? &img->_own.rawSurface() : nullptr;
+	}
+	return img;
+}
+
+// Fill(color, rect)
+static ObjRef imageFill(Object *self, Tuple *args, Dict *) {
+	if (!checkArgs("Fill", args, 1, 2))
+		return ObjRef();
+	ImageObject *img = writableImage(self);
+	if (!img->_surface)
+		return ObjRef(g_none);
+	Object *c = args->get(0);
+	uint32 color = img->_own.format.ARGBToColor(attrInt(c, "a", 255), attrInt(c, "r", 0), attrInt(c, "g", 0), attrInt(c, "b", 0));
+	Common::Rect r = rectArg(args->_size > 1 ? args->get(1) : nullptr, img->_own.w, img->_own.h);
+	r.clip(Common::Rect(0, 0, img->_own.w, img->_own.h));
+	if (!r.isEmpty())
+		img->_own.fillRect(r, color);
+	return ObjRef(g_none);
+}
+
+static const Graphics::Surface *sourceSurface(Object *o) {
+	const Graphics::Surface *s = imageSurface(o);
+	if (!s || !s->getPixels()) {
+		setErrorFormat(g_excTypeError, "expected an image, got %.100s", typeName(o));
+		return nullptr;
+	}
+	return s;
+}
+
+// Composite(source, opacity, rcDst, rcSrc): blends source over this image
+static ObjRef imageComposite(Object *self, Tuple *args, Dict *) {
+	if (!checkArgs("Composite", args, 1, 4))
+		return ObjRef();
+	const Graphics::Surface *src = sourceSurface(args->get(0));
+	if (!src)
+		return ObjRef();
+	double opacity = 1.0;
+	if (args->_size > 1 && !asDouble(args->get(1), &opacity))
+		return ObjRef();
+	Common::Rect srcRect = rectArg(args->_size > 3 ? args->get(3) : nullptr, src->w, src->h);
+	Common::Rect dstRect = rectArg(args->_size > 2 ? args->get(2) : nullptr, srcRect.width(), srcRect.height());
+	ImageObject *img = writableImage(self);
+	if (img->_surface)
+		drawSurface(img->_own, *src, srcRect, dstRect, opacity, false);
+	return ObjRef(g_none);
+}
+
+// Copy(source, rcDst, rcSrc): replaces this image's pixels with source's
+static ObjRef imageCopy(Object *self, Tuple *args, Dict *) {
+	if (!checkArgs("Copy", args, 1, 3))
+		return ObjRef();
+	const Graphics::Surface *src = sourceSurface(args->get(0));
+	if (!src)
+		return ObjRef();
+	Common::Rect srcRect = rectArg(args->_size > 2 ? args->get(2) : nullptr, src->w, src->h);
+	Common::Rect dstRect = rectArg(args->_size > 1 ? args->get(1) : nullptr, srcRect.width(), srcRect.height());
+	ImageObject *img = writableImage(self);
+	if (img->_surface)
+		drawSurface(img->_own, *src, srcRect, dstRect, 1.0, true);
+	return ObjRef(g_none);
+}
+
+// imgData: the pixels as bytes, A8R8G8B8 as it sits in memory (B, G, R, A),
+// which the save code reads and writes one byte at a time
+static Type g_pixelDataType("yagagraphics.ImageData", &g_objectType);
+
+struct PixelDataObject : public Object {
+	Ref<ImageObject> _image;
+	explicit PixelDataObject(Type *t) : Object(t) {}
+};
+
+static int32 pixelDataLength(Object *o) {
+	ImageObject *img = ((PixelDataObject *)o)->_image.get();
+	return img->_surface ? img->_surface->w * img->_surface->h * 4 : 0;
+}
+
+static bool pixelAt(Object *o, int32 i, uint32 **pixel, int *channel) {
+	ImageObject *img = ((PixelDataObject *)o)->_image.get();
+	int32 n = pixelDataLength(o);
+	if (i < 0)
+		i += n;
+	if (i < 0 || i >= n) {
+		setErrorString(g_excIndexError, "image data index out of range");
+		return false;
+	}
+	int p = i / 4;
+	// Written only once writableImage has made the pixels the image's own
+	*pixel = (uint32 *)const_cast<void *>(img->_surface->getBasePtr(p % img->_surface->w, p / img->_surface->w));
+	*channel = i % 4;
+	return true;
+}
+
+static byte getChannel(const Graphics::PixelFormat &f, uint32 c, int channel) {
+	byte a, r, g, b;
+	f.colorToARGB(c, a, r, g, b);
+	return channel == 0 ? b : channel == 1 ? g : channel == 2 ? r : a;
+}
+
+static ObjRef pixelDataItem(Object *o, int32 i) {
+	uint32 *pixel;
+	int channel;
+	if (!pixelAt(o, i, &pixel, &channel))
+		return ObjRef();
+	return newInt(getChannel(((PixelDataObject *)o)->_image->_surface->format, *pixel, channel));
+}
+
+static int pixelDataSetItem(Object *o, int32 i, Object *v) {
+	int32 value;
+	PixelDataObject *d = (PixelDataObject *)o;
+	writableImage(d->_image.get());
+	uint32 *pixel;
+	int channel;
+	if (!v || !asInt(v, &value) || !pixelAt(o, i, &pixel, &channel))
+		return -1;
+	const Graphics::PixelFormat &f = d->_image->_own.format;
+	byte c[4];
+	for (int k = 0; k < 4; k++)
+		c[k] = getChannel(f, *pixel, k);
+	c[channel] = (byte)value;
+	*pixel = f.ARGBToColor(c[3], c[2], c[1], c[0]);
+	return 0;
+}
+
+static ObjRef pixelDataStr(Object *o) {
+	int32 n = pixelDataLength(o);
+	Ref<Str> s(new Str(n));
+	ImageObject *img = ((PixelDataObject *)o)->_image.get();
+	for (int32 p = 0; p < n / 4; p++) {
+		uint32 c = *(const uint32 *)img->_surface->getBasePtr(p % img->_surface->w, p / img->_surface->w);
+		for (int k = 0; k < 4; k++)
+			s->_data[p * 4 + k] = getChannel(img->_surface->format, c, k);
+	}
+	return ObjRef(s.get());
+}
+
+static SequenceMethods g_pixelDataAsSequence;
+
+static ObjRef imageGetData(Object *o) {
+	Ref<PixelDataObject> d(new PixelDataObject(&g_pixelDataType));
+	d->_image = (ImageObject *)o;
+	return ObjRef(d.get());
+}
+
+static const MethodDef g_imageMethods[] = {
+	{ "Fill", imageFill, kMethVarArgs, nullptr },
+	{ "Composite", imageComposite, kMethVarArgs, nullptr },
+	{ "Copy", imageCopy, kMethVarArgs, nullptr },
+	{ nullptr, nullptr, 0, nullptr }
+};
+
+static const GetSetDef g_imageGetSets[] = {
+	{ "imgData", imageGetData, nullptr },
+	{ nullptr, nullptr, nullptr }
+};
+
+static void readyImageData() {
+	g_pixelDataAsSequence.length = pixelDataLength;
+	g_pixelDataAsSequence.item = pixelDataItem;
+	g_pixelDataAsSequence.assItem = pixelDataSetItem;
+	g_pixelDataType.asSequence = &g_pixelDataAsSequence;
+	g_pixelDataType.str = pixelDataStr;
+	g_pixelDataType.getAttr = genericGetAttr;
+	typeReady(&g_pixelDataType);
+}
+
+// The camera sprites render through. Its target is the screen, or one of
+// the game's own (a screen capture draws the room into an image)
+static ObjRef systemCreateCamera(Object *, Tuple *, Dict *) {
+	ObjRef c(new EngineObject(&g_cameraType));
+	setEngineAttr(c.get(), "target", g_none);
+	return c;
+}
+
+ObjRef offscreenTarget(Object *camera) {
+	if (!camera || camera == g_none)
+		return ObjRef();
+	ObjRef target = getAttrString(camera, "target");
+	if (!target) {
+		clearError();
+		return ObjRef();
+	}
+	if (target.get() == g_none || isInstanceOf(target.get(), &g_targetType))
+		return ObjRef();
+	return target;
+}
+
+bool renderThrough(Object *target, Object *image, double opacity, const Common::Rect &dst, const Common::Rect &src) {
+	Ref<Float> o = newFloat(opacity);
+	ObjRef d = newRect(dst.left, dst.top, dst.width(), dst.height());
+	ObjRef s = newRect(src.left, src.top, src.width(), src.height());
+	if (!callMethod(target, "RenderImage", 4, image, o.get(), d.get(), s.get())) {
+		warning("yaga: RenderImage raised: %s", formatError().c_str());
+		clearError();
+		return false;
+	}
+	return true;
+}
+
+// RenderImage(image, opacity, rcDst, rcSrc) on the screen
+static ObjRef targetRenderImage(Object *, Tuple *args, Dict *) {
+	if (!checkArgs("RenderImage", args, 1, 4))
+		return ObjRef();
+	const Graphics::Surface *src = sourceSurface(args->get(0));
+	if (!src)
+		return ObjRef();
+	double opacity = 1.0;
+	if (args->_size > 1 && !asDouble(args->get(1), &opacity))
+		return ObjRef();
+	Common::Rect srcRect = rectArg(args->_size > 3 ? args->get(3) : nullptr, src->w, src->h);
+	Common::Rect dstRect = rectArg(args->_size > 2 ? args->get(2) : nullptr, srcRect.width(), srcRect.height());
+	if (g_display && g_display->isOpen())
+		drawSurface(g_display->surface(), *src, srcRect, dstRect, opacity, false);
+	return ObjRef(g_none);
+}
+
 static const MethodDef g_systemMethods[] = {
 	{ "CreateImage", systemCreateImage, kMethVarArgs, nullptr },
+	{ "CreateCamera", systemCreateCamera, kMethVarArgs, nullptr },
 	{ nullptr, nullptr, 0, nullptr }
 };
 
@@ -463,13 +751,13 @@ static const GetSetDef g_targetGetSets[] = {
 // ---- The render target ---------------------------------------------------------------
 
 static int32 attrInt(Object *o, const char *name, int32 fallback) {
-	Object *v = o->getDict()->getItemString(name);
-	int32 i;
-	if (!v || !asInt(v, &i)) {
+	ObjRef v = getAttrString(o, name);
+	double d;
+	if (!v || !asDouble(v.get(), &d)) {
 		clearError();
 		return fallback;
 	}
-	return i;
+	return (int32)d;
 }
 
 static ObjRef targetRenderBegin(Object *, Tuple *args, Dict *) {
@@ -491,6 +779,7 @@ static ObjRef targetRenderEnd(Object *, Tuple *, Dict *) {
 static const MethodDef g_targetMethods[] = {
 	{ "RenderBegin", targetRenderBegin, kMethVarArgs, nullptr },
 	{ "RenderEnd", targetRenderEnd, kMethVarArgs, nullptr },
+	{ "RenderImage", targetRenderImage, kMethVarArgs, nullptr },
 	{ "LoadCursorFile", targetLoadCursor, kMethVarArgs, nullptr },
 	{ "SetCursorByID", targetSetCursor, kMethVarArgs, nullptr },
 	{ nullptr, nullptr, 0, nullptr }
@@ -565,7 +854,9 @@ static void fillYagagraphics(Module *m) {
 		readyEngineType(&g_animLayerType, nullptr, nullptr, true);
 		g_imageType.newObj = imageNew;
 		g_imageType.repr = imageRepr;
-		readyEngineType(&g_imageType, nullptr, nullptr, true);
+		readyEngineType(&g_imageType, g_imageMethods, g_imageGetSets, true);
+		readyImageData();
+		readyEngineType(&g_cameraType, nullptr, nullptr, true);
 	}
 	addConstants(m, "GraphicsHardware", g_hardware);
 	addConstants(m, "PixelFormat", g_pixelFormats);
@@ -583,6 +874,7 @@ static void fillYagagraphics(Module *m) {
 	moduleAddObject(m, "RenderTarget", &g_targetType);
 	moduleAddObject(m, "IImageAnim", &g_imageAnimType);
 	moduleAddObject(m, "IImage", &g_imageType);
+	moduleAddObject(m, "Camera", &g_cameraType);
 }
 
 void registerYagagraphics(Resources *resources) {

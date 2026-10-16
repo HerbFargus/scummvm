@@ -261,7 +261,8 @@ static ObjRef imageStringNoop(Object *, Tuple *, Dict *) {
 
 // The position is an anchor: left or top text starts at it, centred text is
 // centred on it, right or bottom text ends at it
-static ObjRef imageStringRender(Object *self, Tuple *, Dict *) {
+static ObjRef imageStringRender(Object *self, Tuple *args, Dict *) {
+	ObjRef target = offscreenTarget(args->_size ? args->get(0) : nullptr);
 	Object *fontObj = self->getDict()->getItemString("font");
 	if (!fontObj || !isInstanceOf(fontObj, &g_fontType) || !((FontObject *)fontObj)->hasGlyphs())
 		return ObjRef(g_none);
@@ -332,13 +333,16 @@ static ObjRef imageStringRender(Object *self, Tuple *, Dict *) {
 			Common::Rect src(g.x, 0, g.x + g.w, f->_height);
 			Common::Rect dst(x, y, x + g.w, y + f->_height);
 			dst.clip(clip);
-			if (canDraw && !dst.isEmpty()) {
+			if ((canDraw || target) && !dst.isEmpty()) {
 				src.left += dst.left - x;
 				src.top += dst.top - y;
 				src.setWidth(dst.width());
 				src.setHeight(dst.height());
-				g_display->surface().blendBlitFrom(*f->_strip, src, Common::Point(dst.left, dst.top),
-					Graphics::FLIP_NONE, MS_ARGB(alpha, 255, 255, 255));
+				if (target)
+					renderThrough(target.get(), f->_image.get(), opacity, dst, src);
+				else
+					g_display->surface().blendBlitFrom(*f->_strip, src, Common::Point(dst.left, dst.top),
+						Graphics::FLIP_NONE, MS_ARGB(alpha, 255, 255, 255));
 			}
 			x += g.w - kOverlap + kerning;
 		}
