@@ -63,4 +63,26 @@ void addConstants(Module *m, const char *className, const ConstDef *defs) {
 	moduleAddObject(m, className, cls.get());
 }
 
+void addEnum(Module *m, const char *className, const ConstDef *defs) {
+	Ref<Dict> dict = newDict();
+	Object *modName = m->_dict->getItemString("__name__");
+	dict->setItemString("__module__", modName ? modName : g_none);
+	Ref<Tuple> bases = tuplePack(1, &g_intType);
+	Ref<Tuple> args = tuplePack(3, newStr(className).get(), bases.get(), dict.get());
+	ObjRef cls = typeNew(&g_typeType, args.get(), nullptr);
+	if (!cls) {
+		warning("yaga: cannot make %s: %s", className, formatError().c_str());
+		clearError();
+		return;
+	}
+	for (const ConstDef *d = defs; d->name; d++) {
+		ObjRef value = callFunction(cls.get(), 1, newInt(d->value).get());
+		if (!value || setAttrString(cls.get(), d->name, value.get()) < 0) {
+			warning("yaga: cannot make %s.%s: %s", className, d->name, formatError().c_str());
+			clearError();
+		}
+	}
+	moduleAddObject(m, className, cls.get());
+}
+
 } // End of namespace Yaga

@@ -27,6 +27,7 @@
 #include "graphics/cursor.h"
 #include "graphics/cursorman.h"
 #include "image/icocur.h"
+#include "image/png.h"
 
 #include "yaga/detection.h"
 #include "yaga/display.h"
@@ -223,10 +224,27 @@ static ObjRef newImage(const Common::SharedPtr<AnimData> &anim, const Graphics::
 	return ObjRef(img.get());
 }
 
-// IImage(other) shares the other image's pixels
+const Graphics::Surface *imageSurface(Object *o) {
+	return isInstanceOf(o, &g_imageType) ? ((ImageObject *)o)->_surface : nullptr;
+}
+
+// IImage(other) shares the other image's pixels; IImage(resource) reads a PNG
 static ObjRef imageNew(Type *t, Tuple *args, Dict *) {
 	Ref<ImageObject> img(new ImageObject(t));
-	if (args->_size && isInstanceOf(args->get(0), &g_imageType)) {
+	if (args->_size && isInstanceOf(args->get(0), &g_resourceType)) {
+		ResourceObject *r = (ResourceObject *)args->get(0);
+		Common::MemoryReadStream stream((const byte *)r->_data->_data, r->_data->_len);
+		Image::PNGDecoder png;
+		if (png.loadStream(stream) && png.getSurface()) {
+			Graphics::Surface *converted = png.getSurface()->convertTo(Graphics::BlendBlit::getSupportedPixelFormat(), png.getPalette().data(), png.getPalette().size());
+			img->_own.copyFrom(*converted);
+			converted->free();
+			delete converted;
+			img->_surface = &img->_own;
+		} else {
+			warning("yaga: %s is not a PNG image", r->_path.c_str());
+		}
+	} else if (args->_size && isInstanceOf(args->get(0), &g_imageType)) {
 		ImageObject *src = (ImageObject *)args->get(0);
 		if (src->_surface == &src->_own) {
 			img->_own.copyFrom(src->_own);

@@ -10,6 +10,7 @@ MODULE_OBJS = \
 	installer.o \
 	metaengine.o \
 	mod_yagaevents.o \
+	mod_yagafont.o \
 	mod_yagagraphics.o \
 	mod_yagares.o \
 	mod_yagascene.o \

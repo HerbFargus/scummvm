@@ -69,6 +69,9 @@ struct ConstDef {
 	int32 value;
 };
 void addConstants(Python::Module *m, const char *className, const ConstDef *defs);
+// The same, with each value an instance of the class (an int subclass), for
+// scripts that check type(value) == Class
+void addEnum(Python::Module *m, const char *className, const ConstDef *defs);
 
 // yagascene's Point: a value, so sprites copy the ones they are given
 Python::ObjRef newPoint(int32 x, int32 y, int32 z);
@@ -81,6 +84,8 @@ Python::ObjRef newRect(int32 x, int32 y, int32 w, int32 h);
 AnimData *imageAnimData(Python::Object *o);
 double imageAnimFps(Python::Object *o);
 Common::String imageAnimLocator(Python::Object *o);
+// The pixels behind an IImage, or null
+const Graphics::Surface *imageSurface(Python::Object *o);
 
 // yagasprite: advances every playing sprite, once per loop
 void advanceSprites();
@@ -98,6 +103,7 @@ void registerYagagraphics(Resources *resources);
 void registerYagascene();
 void registerYagasprite();
 void registerYagasound();
+void registerYagafont();
 
 } // End of namespace Yaga
 

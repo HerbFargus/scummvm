@@ -43,14 +43,14 @@ games shipped with.
   skips a movie, as the scripts offer no way to), the first room draws,
   characters speak, and clicking a hotspot plays its animation and line.
 - Engine modules: yagares (the .he archives), yagaxml, yagaevents (the
-  event loop: timers, mouse and keyboard) and yagasound (WAV and MP3 on
-  the mixer; ScummVM needs MAD for MP3) are written. yagagraphics (render
-  target, cursors, MNG/RLE animations), yagascene (positions, scenes,
-  point colliders) and yagasprite (sprites, talkies and Bink movies) are
-  written in part. The rest of them, and yaga, yagafont and
-  yagacollisionlib, are tracing stand-ins that log what the scripts ask of
-  them. So there is no text or lipsync yet, and drawing into images (the
-  save screen) is missing.
+  event loop: timers, mouse and keyboard), yagasound (WAV and MP3 on the
+  mixer; ScummVM needs MAD for MP3) and yagafont (bitmap fonts, wrapped
+  and justified text) are written. yagagraphics (render target, cursors,
+  MNG/RLE animations), yagascene (positions, scenes, point colliders) and
+  yagasprite (sprites, talkies and Bink movies) are written in part. The
+  rest of them, and yaga and yagacollisionlib, are tracing stand-ins that
+  log what the scripts ask of them. So there is no lipsync yet, and
+  drawing into images (the save screen) is missing.
 
 Testing: `yaga_ticks=N` stops after N game ticks, `yaga_shots=a,b,...`
 saves the screen after those ticks into `yaga_shot_dir`, and
