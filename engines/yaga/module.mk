@@ -13,6 +13,7 @@ MODULE_OBJS = \
 	mod_yagagraphics.o \
 	mod_yagares.o \
 	mod_yagascene.o \
+	mod_yagasound.o \
 	mod_yagasprite.o \
 	mod_yagaxml.o \
 	pyhost.o \

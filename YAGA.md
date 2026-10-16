@@ -40,18 +40,19 @@ games shipped with.
   with a probe suite (the games' own standard library included).
 - Boot: both games start through their own McMillan bootstrap and run
   their event loop: the logos and opening movies play (a click or a key
-  skips a movie, as the scripts offer no way to), and the first room
-  draws with its characters. The game then waits on its first spoken
-  line, which needs yagasound.
-- Engine modules: yagares (the .he archives), yagaxml and yagaevents (the
-  event loop: timers, mouse and keyboard) are written. yagagraphics
-  (render target, cursors, MNG/RLE animations), yagascene (positions,
-  scenes, point colliders) and yagasprite (sprites and Bink movies) are
-  written in part. The rest of them, and yaga, yagasound, yagafont and
+  skips a movie, as the scripts offer no way to), the first room draws,
+  characters speak, and clicking a hotspot plays its animation and line.
+- Engine modules: yagares (the .he archives), yagaxml, yagaevents (the
+  event loop: timers, mouse and keyboard) and yagasound (WAV and MP3 on
+  the mixer; ScummVM needs MAD for MP3) are written. yagagraphics (render
+  target, cursors, MNG/RLE animations), yagascene (positions, scenes,
+  point colliders) and yagasprite (sprites, talkies and Bink movies) are
+  written in part. The rest of them, and yaga, yagafont and
   yagacollisionlib, are tracing stand-ins that log what the scripts ask of
-  them. So there is no sound or text yet, drawing into images (the save
-  screen) is missing, and talkies and lipsync are stand-ins.
+  them. So there is no text or lipsync yet, and drawing into images (the
+  save screen) is missing.
 
 Testing: `yaga_ticks=N` stops after N game ticks, `yaga_shots=a,b,...`
 saves the screen after those ticks into `yaga_shot_dir`, and
-`yaga_clicks=tick:x:y,...` clicks at those ticks.
+`yaga_clicks=tick:x:y,...` clicks at those ticks, and `yaga_probe=<python>`
+runs a line of Python after each of the `yaga_probe_ticks` ticks.

@@ -87,12 +87,17 @@ void advanceSprites();
 // Ends any movie that is playing
 void skipVideos();
 
+// yagasound, for anything with isPlaying and duration
+bool soundIsPlaying(Python::Object *o);
+double soundDuration(Python::Object *o);
+
 void registerYagares(Python::Interpreter *vm, Resources *resources);
 void registerYagaxml(Python::Interpreter *vm, Resources *resources);
 void registerYagaevents();
 void registerYagagraphics(Resources *resources);
 void registerYagascene();
 void registerYagasprite();
+void registerYagasound();
 
 } // End of namespace Yaga
 

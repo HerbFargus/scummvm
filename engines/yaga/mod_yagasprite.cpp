@@ -36,8 +36,7 @@
 #include "yaga/python/internal.h"
 
 // yagasprite: sprites (an animation, a position and playback state) and
-// IVideoElement, the Bink movies (.da2) that CBinkSprite wraps. A sprite's
-// talkies are still stand-ins.
+// IVideoElement, the Bink movies (.da2) that CBinkSprite wraps.
 
 namespace Yaga {
 
@@ -202,6 +201,164 @@ static const GetSetDef g_videoGetSets[] = {
 	{ nullptr, nullptr, nullptr }
 };
 
+// ---- Talkies ------------------------------------------------------------------------------
+
+// sprite.talkies: the lines a character speaks. character.PlayTalkie does
+//   talkies.Stop(scene); talkies.Clear(); talkies.sounds.__iadd__(sound); talkies.Run(scene)
+// and scripts wait on talkies.isPlaying and talkies.duration
+
+static Type g_talkieListType("yagasprite.TalkieList", &g_objectType);
+static Type g_soundListType("yagasprite.SoundList", &g_objectType);
+
+struct TalkieListObject : public EngineObject {
+	Ref<List> _sounds;
+	Ref<Dict> _indexed; // talkies[i] = sound
+	explicit TalkieListObject(Type *t) : EngineObject(t) {
+		_sounds = newList();
+		_indexed = newDict();
+		setEngineAttr(this, "continuous", newInt(0).get());
+		setEngineAttr(this, "queue", newInt(0).get());
+	}
+	Ref<List> all() const {
+		Ref<List> l = newList();
+		ObjRef values = dictValues(_indexed.get());
+		for (uint32 i = 0; values && i < ((List *)values.get())->size(); i++)
+			l->append(((List *)values.get())->get(i));
+		for (uint32 i = 0; i < _sounds->size(); i++)
+			l->append(_sounds->get(i));
+		return l;
+	}
+};
+
+struct SoundListObject : public Object {
+	Ref<List> _sounds;
+	explicit SoundListObject(Type *t) : Object(t) {}
+};
+
+static ObjRef newTalkieList() {
+	return ObjRef(new TalkieListObject(&g_talkieListType));
+}
+
+static ObjRef talkiesClear(Object *self, Tuple *, Dict *) {
+	TalkieListObject *t = (TalkieListObject *)self;
+	t->_sounds->clear();
+	t->_indexed = newDict();
+	return ObjRef(g_none);
+}
+
+static ObjRef talkiesCallAll(Object *self, Tuple *args, const char *method) {
+	Ref<List> sounds = ((TalkieListObject *)self)->all();
+	ObjRef scene = args->_size ? ObjRef(args->get(0)) : ObjRef(g_none);
+	for (uint32 i = 0; i < sounds->size(); i++)
+		if (!callMethod(sounds->get(i), method, 1, scene.get()))
+			return ObjRef();
+	return ObjRef(g_none);
+}
+
+static ObjRef talkiesRun(Object *self, Tuple *args, Dict *) {
+	return talkiesCallAll(self, args, "Run");
+}
+
+static ObjRef talkiesStop(Object *self, Tuple *args, Dict *) {
+	return talkiesCallAll(self, args, "Stop");
+}
+
+static ObjRef talkiesIsPlaying(Object *o) {
+	Ref<List> sounds = ((TalkieListObject *)o)->all();
+	for (uint32 i = 0; i < sounds->size(); i++)
+		if (soundIsPlaying(sounds->get(i)))
+			return newInt(1);
+	return newInt(0);
+}
+
+static ObjRef talkiesDuration(Object *o) {
+	Ref<List> sounds = ((TalkieListObject *)o)->all();
+	double longest = 0;
+	for (uint32 i = 0; i < sounds->size(); i++)
+		longest = MAX(longest, soundDuration(sounds->get(i)));
+	return newFloat(longest);
+}
+
+static ObjRef talkiesSounds(Object *o) {
+	Ref<SoundListObject> l(new SoundListObject(&g_soundListType));
+	l->_sounds = ((TalkieListObject *)o)->_sounds;
+	return ObjRef(l.get());
+}
+
+static ObjRef talkiesGetItem(Object *o, Object *key) {
+	Object *v = ((TalkieListObject *)o)->_indexed->getItem(key);
+	return ObjRef(v ? v : g_none);
+}
+
+static int talkiesSetItem(Object *o, Object *key, Object *value) {
+	Dict *d = ((TalkieListObject *)o)->_indexed.get();
+	if (value)
+		return d->setItem(key, value);
+	return d->delItem(key);
+}
+
+static int32 talkiesLength(Object *o) {
+	return ((TalkieListObject *)o)->all()->size();
+}
+
+static const MethodDef g_talkieMethods[] = {
+	{ "Clear", talkiesClear, kMethVarArgs, nullptr },
+	{ "Run", talkiesRun, kMethVarArgs, nullptr },
+	{ "Stop", talkiesStop, kMethVarArgs, nullptr },
+	{ nullptr, nullptr, 0, nullptr }
+};
+
+static const GetSetDef g_talkieGetSets[] = {
+	{ "isPlaying", talkiesIsPlaying, nullptr },
+	{ "duration", talkiesDuration, nullptr },
+	{ "sounds", talkiesSounds, nullptr },
+	{ nullptr, nullptr, nullptr }
+};
+
+static MappingMethods g_talkieAsMapping;
+
+static ObjRef soundListIadd(Object *self, Tuple *args, Dict *) {
+	if (!checkArgs("__iadd__", args, 1, 1))
+		return ObjRef();
+	((SoundListObject *)self)->_sounds->append(args->get(0));
+	return ObjRef(self);
+}
+
+static ObjRef soundListClear(Object *self, Tuple *, Dict *) {
+	((SoundListObject *)self)->_sounds->clear();
+	return ObjRef(g_none);
+}
+
+static ObjRef soundListIter(Object *o) {
+	return getIter(((SoundListObject *)o)->_sounds.get());
+}
+
+static int32 soundListLength(Object *o) {
+	return ((SoundListObject *)o)->_sounds->size();
+}
+
+static const MethodDef g_soundListMethods[] = {
+	{ "__iadd__", soundListIadd, kMethVarArgs, nullptr },
+	{ "Clear", soundListClear, kMethVarArgs, nullptr },
+	{ nullptr, nullptr, 0, nullptr }
+};
+
+static SequenceMethods g_soundListAsSequence;
+
+static void readyTalkieTypes() {
+	g_talkieAsMapping.length = talkiesLength;
+	g_talkieAsMapping.subscript = talkiesGetItem;
+	g_talkieAsMapping.assSubscript = talkiesSetItem;
+	g_talkieListType.asMapping = &g_talkieAsMapping;
+	readyEngineType(&g_talkieListType, g_talkieMethods, g_talkieGetSets, true);
+	g_soundListAsSequence.length = soundListLength;
+	g_soundListType.asSequence = &g_soundListAsSequence;
+	g_soundListType.iter = soundListIter;
+	g_soundListType.methods = g_soundListMethods;
+	g_soundListType.getAttr = genericGetAttr;
+	typeReady(&g_soundListType);
+}
+
 // ---- Image sprites ----------------------------------------------------------------------
 
 enum {
@@ -263,6 +420,7 @@ SpriteObject::SpriteObject(Type *t) : EngineObject(t), _playing(false), _started
 	setEngineAttr(this, "opacity", newFloat(1.0).get());
 	setEngineAttr(this, "renderMask", newInt(kPhonemeRest).get());
 	setEngineAttr(this, "blinkEnabled", newInt(1).get());
+	setEngineAttr(this, "talkies", newTalkieList().get());
 	g_sprites.push_back(this);
 }
 
@@ -662,6 +820,7 @@ static const MethodDef g_spriteMethods[] = {
 static void fillYagasprite(Module *m) {
 	if (!(g_videoType._flags & kTypeReady)) {
 		g_videoType.newObj = videoNew;
+		readyTalkieTypes();
 		readyEngineType(&g_videoType, g_videoMethods, g_videoGetSets, true);
 		Type *spriteTypes[] = { &g_spriteType, &g_plainSpriteType, &g_talkieSpriteType };
 		for (uint i = 0; i < ARRAYSIZE(spriteTypes); i++) {

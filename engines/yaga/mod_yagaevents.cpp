@@ -488,10 +488,13 @@ static void pumpInput(EventManagerObject *em) {
 
 // Test hooks, so a run can be checked without anyone at the controls:
 // yaga_ticks=N stops after N game ticks, yaga_shots=a,b,... saves the screen
-// after those ticks into yaga_shot_dir, and yaga_clicks=tick:x:y,... clicks
+// after those ticks into yaga_shot_dir, yaga_clicks=tick:x:y,... clicks, and
+// yaga_probe=<python> runs a line of Python after the yaga_probe_ticks ticks
 struct TestHooks {
 	uint32 stopAfter;
 	Common::Array<uint32> shots;
+	Common::Array<uint32> probes;
+	Common::String probeCode;
 	Common::Array<uint32> clicks; // tick, x, y in threes
 	Common::Path shotDir;
 
@@ -504,6 +507,10 @@ struct TestHooks {
 		Common::StringTokenizer clickList(ConfMan.get("yaga_clicks"), ",:");
 		while (!clickList.empty())
 			clicks.push_back(atoi(clickList.nextToken().c_str()));
+		Common::StringTokenizer probeList(ConfMan.get("yaga_probe_ticks"), ",");
+		while (!probeList.empty())
+			probes.push_back(atoi(probeList.nextToken().c_str()));
+		probeCode = ConfMan.get("yaga_probe");
 		if (ConfMan.hasKey("yaga_shot_dir"))
 			shotDir = ConfMan.getPath("yaga_shot_dir");
 	}
@@ -521,6 +528,13 @@ struct TestHooks {
 	}
 
 	void afterTick(uint32 tick) {
+		for (uint i = 0; i < probes.size(); i++) {
+			if (probes[i] != tick || probeCode.empty())
+				continue;
+			debug(1, "yaga: probe at tick %u", tick);
+			if (!Interpreter::instance()->runString(probeCode.c_str(), "<probe>"))
+				warning("yaga: probe failed: %s", Interpreter::instance()->lastError().c_str());
+		}
 		for (uint i = 0; i < shots.size(); i++) {
 			if (shots[i] != tick || shotDir.empty())
 				continue;
