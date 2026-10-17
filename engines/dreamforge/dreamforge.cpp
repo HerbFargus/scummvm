@@ -917,11 +917,16 @@ void DreamForgeEngine::setCursor(int id) {
 	animateCursor();
 }
 
+int DreamForgeEngine::cursorFrame() const {
+	const int8 *def = kCursorDefs[_cursorId];
+	return MIN<int>(def[0] + _cursorFrame % def[1], _cursors->frames - 1);
+}
+
 void DreamForgeEngine::animateCursor() {
 	if (!_cursors || _cursorId < 0)
 		return;
 	const int8 *def = kCursorDefs[_cursorId];
-	int frame = MIN<int>(def[0] + _cursorFrame % def[1], _cursors->frames - 1);
+	int frame = cursorFrame();
 	_cursorFrame++;
 	Graphics::Surface f = _cursors->surface.getSubArea(_cursors->frameRect(frame));
 	CursorMan.replaceCursor(f, def[3], def[2], 0);
@@ -948,7 +953,7 @@ void DreamForgeEngine::boneMenu() {
 		g_system->copyRectToScreen(_screen.getPixels(), _screen.pitch, 0, 0, kScreenWidth, kScreenHeight);
 		g_system->updateScreen();
 	};
-	setCursor(0);
+	setCursor(5);  // 0x32430: the paw
 	draw(-1);
 	// Test hook: dreamforge_bone_shot=<png> saves the menu with "go on" lit and closes it
 	if (ConfMan.hasKey("dreamforge_bone_shot")) {

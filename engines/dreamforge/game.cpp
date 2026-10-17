@@ -26,6 +26,7 @@
 #include "common/events.h"
 #include "common/system.h"
 #include "common/textconsole.h"
+#include "graphics/cursorman.h"
 #include "graphics/paletteman.h"
 #include "image/png.h"
 
@@ -92,7 +93,8 @@ int DreamForgeEngine::titleMenu() {
 	loadMenuPalette(kTitlePalette, pal);
 	g_system->getPaletteManager()->setPalette(pal, 0, 256);
 	_sound->playMusic(kTitleMusic, true);
-	setCursor(0);
+	setCursor(5);  // 0x32490: the paw
+	CursorMan.showMouse(true);
 	int pressed = 0;
 	auto draw = [&]() {
 		_screen.fillRect(Common::Rect(kScreenWidth, kScreenHeight), 0);
@@ -108,8 +110,14 @@ int DreamForgeEngine::titleMenu() {
 	// Test hook: dreamforge_title_shot=<png> saves the menu and quits
 	if (ConfMan.hasKey("dreamforge_title_shot")) {
 		Common::DumpFile out;
-		if (out.open(Common::Path(ConfMan.get("dreamforge_title_shot"), '/'), true))
+		if (out.open(Common::Path(ConfMan.get("dreamforge_title_shot"), '/'), true)) {
+			// With the cursor drawn in, to check it shows up in the menu palette
+			if (_cursors && _cursorId >= 0) {
+				Graphics::Surface f = _cursors->surface.getSubArea(_cursors->frameRect(cursorFrame()));
+				_screen.copyRectToSurfaceWithKey(f, 300, 300, Common::Rect(f.w, f.h), 0);
+			}
 			Image::writePNG(out, _screen, pal);
+		}
 		quitGame();
 		return 0;
 	}

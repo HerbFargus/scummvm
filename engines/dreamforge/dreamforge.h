@@ -192,6 +192,7 @@ public:
 	int puppyCursor() const;
 	void setCursor(int id);
 	void animateCursor();
+	int cursorFrame() const;
 	int _cursorId, _cursorFrame;
 	int _currentRegion;
 	uint32 _quitAt;
