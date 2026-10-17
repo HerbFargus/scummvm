@@ -102,7 +102,7 @@ Common::Array<Common::String> ImpFile::list() const {
 }
 
 ImpPlayer::ImpPlayer(BigTunaEngine *vm) : _vm(vm), _file(nullptr), _channels(0), _pos(0),
-	_prevDuration(0), _clicks(true), _quit(false) {
+	_prevDuration(0), _clicks(false), _quit(false) {
 }
 
 ImpPlayer::~ImpPlayer() {
@@ -406,10 +406,13 @@ void ImpPlayer::playMovie(const Common::String &name, int x, int y) {
 		if (video.needsUpdate()) {
 			const Graphics::Surface *frame = video.decodeNextFrame();
 			if (frame && frame->format.bytesPerPixel == 1) {
-				Common::Rect r(kStageX + x, kStageY + y, kStageX + x + frame->w, kStageY + y + frame->h);
+				// (x, y) is the centre of the video, y up from the bottom of the stage
+				int left = kStageX + x - frame->w / 2;
+				int top = kStageY + kStageH - y - frame->h / 2;
+				Common::Rect r(left, top, left + frame->w, top + frame->h);
 				r.clip(Common::Rect(kStageWidth, kStageHeight));
 				stage->getSurface().copyRectToSurface(*frame, r.left, r.top,
-					Common::Rect(r.left - (kStageX + x), r.top - (kStageY + y), r.right - (kStageX + x), r.bottom - (kStageY + y)));
+					Common::Rect(r.left - left, r.top - top, r.right - left, r.bottom - top));
 				_vm->presentStage();
 			}
 		}
@@ -427,8 +430,12 @@ void ImpPlayer::run(const Common::String &start) {
 		return;
 	updateCursor();
 	while (!_vm->shouldQuit() && !_quit) {
-		if (_pos >= _records.size())
-			rewind();
+		// The entry point plays films until one runs out of records, then exits
+		if (_pos >= _records.size()) {
+			debugC(1, kDebugScript, "Film %s ended: the player quits", getFilmName().c_str());
+			_vm->quitGame();
+			break;
+		}
 		uint index = _pos++;
 		apply(index, false);
 		if (!_records[index].duration)
@@ -438,10 +445,6 @@ void ImpPlayer::run(const Common::String &start) {
 		if (!_target.empty()) {
 			Common::String target = _target;
 			_target.clear();
-			if (target.equalsIgnoreCase("quit") && !_file->has("quit.A") && !ImpFile().open("quit")) {
-				_vm->quitGame();
-				break;
-			}
 			goTo(target);
 		}
 	}
