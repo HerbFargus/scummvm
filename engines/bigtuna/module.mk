@@ -3,12 +3,15 @@ MODULE := engines/bigtuna
 MODULE_OBJS = \
 	bigtuna.o \
 	bitmap.o \
+	builtins.o \
 	console.o \
 	metaengine.o \
 	movie.o \
 	score.o \
+	script.o \
 	sound.o \
-	stage.o
+	stage.o \
+	value.o
 
 # This module can be built as a plugin
 ifeq ($(ENABLE_BIGTUNA), DYNAMIC_PLUGIN)

@@ -32,6 +32,8 @@ namespace BigTuna {
 
 Sound::Sound(Audio::Mixer *mixer) : _mixer(mixer), _time(0) {
 	for (auto &ch : _channels) {
+		ch.movie = nullptr;
+		ch.res = 0;
 		ch.volume = ch.fadeFrom = ch.fadeTo = 255;
 		ch.fadeStart = ch.fadeLength = 0;
 	}
@@ -45,7 +47,11 @@ void Sound::play(int channel, Movie *movie, uint res) {
 	if (!valid(channel))
 		return;
 	Channel &ch = _channels[channel - 1];
+	if (res && ch.movie == movie && ch.res == res && _mixer->isSoundHandleActive(ch.handle))
+		return;
 	_mixer->stopHandle(ch.handle);
+	ch.movie = movie;
+	ch.res = res;
 	if (res == 0)
 		return;
 	if (movie->getType(res) != kResSound) {
@@ -78,6 +84,16 @@ void Sound::stopAll() {
 		_mixer->stopHandle(ch.handle);
 }
 
+void Sound::reset() {
+	for (auto &ch : _channels) {
+		_mixer->stopHandle(ch.handle);
+		ch.movie = nullptr;
+		ch.res = 0;
+		ch.volume = ch.fadeFrom = ch.fadeTo = 255;
+		ch.fadeLength = 0;
+	}
+}
+
 bool Sound::isBusy(int channel) const {
 	if (!valid(channel))
 		return false;
@@ -96,6 +112,10 @@ void Sound::setVolume(int channel, int volume, uint fade) {
 	if (!ch.fadeLength)
 		ch.volume = volume;
 	applyVolume(ch);
+}
+
+int Sound::getVolume(int channel) const {
+	return valid(channel) ? _channels[channel - 1].volume : 0;
 }
 
 void Sound::update(uint32 time) {

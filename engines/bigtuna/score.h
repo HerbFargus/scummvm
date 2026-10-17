@@ -23,6 +23,7 @@
 #define BIGTUNA_SCORE_H
 
 #include "common/array.h"
+#include "common/rect.h"
 #include "common/str.h"
 #include "common/stream.h"
 
@@ -60,21 +61,26 @@ struct FilmCommand {
 	Common::String s1, s2;
 };
 
-struct Frame {
+/**
+ * One step of the score: the ops up to 0x11 (one frame) or 0x0D n (n frames).
+ * Frame numbers count every frame of a hold, as labels do.
+ */
+struct Step {
 	uint32 offset;
+	uint frame;
+	uint length;
 	Common::Array<FilmCommand> commands;
 };
 
-/**
- * A score ("film"): a delta stream of film operations. Each frame ends with
- * 0x11 (one frame) or 0x0D n (n frames).
- */
 class Score {
 public:
 	bool load(Common::SeekableReadStream &stream);
 
-	uint getFrameCount() const { return _frames.size(); }
-	const Frame &getFrame(uint frame) const { return _frames[frame - 1]; }
+	uint getStepCount() const { return _steps.size(); }
+	const Step &getStep(uint index) const { return _steps[index]; }
+	uint getFrameCount() const;
+	// The step that holds a frame number
+	int findStep(uint frame) const;
 	uint findFrameByOffset(uint32 offset) const;
 
 private:
@@ -82,18 +88,24 @@ private:
 	static int32 readSignedVarint(Common::SeekableReadStream &stream);
 	static Common::String readPString(Common::SeekableReadStream &stream);
 
-	Common::Array<Frame> _frames;
+	Common::Array<Step> _steps;
 };
 
 class ScorePlayer;
 
 struct Sprite {
-	Sprite() : member(0), x(0), y(0), script(0), loop(nullptr) {}
+	Sprite() : exists(false), visible(false), puppet(false), member(0), x(0), y(0), script(0),
+		mouseInside(false), loop(nullptr), constraint(-32767, -32767, 32767, 32767) {}
 
+	bool exists;
+	bool visible;
+	bool puppet;
 	uint member; // resource number
 	int x, y;
 	uint script; // resource number
+	bool mouseInside;
 	ScorePlayer *loop;
+	Common::Rect constraint;
 };
 
 class ScorePlayer {
@@ -101,37 +113,54 @@ public:
 	ScorePlayer(BigTunaEngine *vm, Movie *movie, Score *score, bool isLoop);
 	~ScorePlayer();
 
-	void reset();
-	// Moves to the next frame; false at the end of the score
-	bool advance();
-	void gotoFrame(uint frame);
-	bool gotoLabel(const Common::String &label);
+	// Applies the next step; returns its length in frames, 0 at the end of the score
+	uint step();
+	// The next step will be the one holding this frame; sprite state is rebuilt up to it
+	void seek(uint frame);
+	bool seekLabel(const Common::String &label);
+	void rewind();
 
-	uint getFrame() const { return _frame; }
+	// The player's frame counter: the last frame of the current step
+	uint getFrame() const;
 	uint getFrameCount() const { return _score->getFrameCount(); }
 	uint getTempo() const { return _tempo; }
 	uint getFrameScript() const { return _frameScript; }
 	Movie *getMovie() const { return _movie; }
-	const Common::Array<Sprite> &getSprites() const { return _sprites; }
 	int getOriginX() const { return _originX; }
 	int getOriginY() const { return _originY; }
+	bool hasLoops() const;
+	// Generation counter, bumped by every seek: lets the event loop see a go
+	uint getSeekCount() const { return _seekCount; }
+
+	uint getSpriteCount() const { return _sprites.size(); }
+	Sprite *findSprite(uint channel);
+	Sprite &getSprite(uint channel);
+	const Common::Array<Sprite> &getSprites() const { return _sprites; }
+	void setMember(Sprite &sprite, uint member);
+	void setVisible(Sprite &sprite, bool visible);
+	void setLoc(Sprite &sprite, int x, int y, bool constrain);
+	Common::Rect getSpriteRect(const Sprite &sprite) const;
+	bool hitTest(const Sprite &sprite, int x, int y) const;
+
+	int findLabelFrame(const Common::String &label) const;
+	int markerFrame(int offset) const;
+
+	void stepLoops();
 
 private:
-	void applyFrame(uint frame, bool seeking);
 	void apply(const FilmCommand &cmd, bool seeking);
-	Sprite &getSprite(uint channel);
-	void setMember(Sprite &sprite, uint member);
-	void clearSprite(Sprite &sprite);
+	void destroySprite(Sprite &sprite);
 
 	BigTunaEngine *_vm;
 	Movie *_movie;
 	Score *_score;
 	bool _isLoop;
-	uint _frame;
+	int _current;
+	uint _next;
 	uint _tempo;
 	uint _frameScript;
 	int _originX, _originY;
-	int _waitSoundChannel;
+	uint _seekCount;
 	Common::Array<Sprite> _sprites;
 };
 

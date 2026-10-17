@@ -41,17 +41,23 @@ public:
 	Sound(Audio::Mixer *mixer);
 	~Sound();
 
+	// Keeps playing if the channel already plays this sound (FUN_0040c030)
 	void play(int channel, Movie *movie, uint res);
 	void stop(int channel);
 	void stopAll();
+	// On a movie change: both channels stop and go back to full volume
+	void reset();
 	bool isBusy(int channel) const;
 	// Volume 0-255; fade in ticks (1/60 s)
 	void setVolume(int channel, int volume, uint fade);
+	int getVolume(int channel) const;
 	void update(uint32 time);
 
 private:
 	struct Channel {
 		Audio::SoundHandle handle;
+		Movie *movie;
+		uint res;
 		int volume;
 		int fadeFrom, fadeTo;
 		uint32 fadeStart, fadeLength;

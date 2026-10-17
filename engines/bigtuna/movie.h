@@ -89,6 +89,7 @@ public:
 
 	Bitmap *getBitmap(uint res);
 	Score *getScore(uint res);
+	const Common::Array<byte> *getScriptData(uint res);
 
 	bool hasPalette() const { return _hasPalette; }
 	const byte *getPalette() const { return _palette; }
@@ -114,6 +115,7 @@ private:
 	Common::Array<Entry> _entries;
 	Common::HashMap<uint, Bitmap *> _bitmaps;
 	Common::HashMap<uint, Score *> _scores;
+	Common::HashMap<uint, Common::Array<byte> *> _scripts;
 	Common::Array<NameEntry> _symbols;
 	Common::Array<NameEntry> _castNames;
 	Common::Array<Label> _labels;

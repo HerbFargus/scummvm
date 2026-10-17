@@ -23,16 +23,22 @@
 #define BIGTUNA_BIGTUNA_H
 
 #include "common/array.h"
+#include "common/random.h"
+#include "common/rect.h"
 #include "common/str.h"
 #include "engines/advancedDetector.h"
 #include "engines/engine.h"
+
+#include "bigtuna/value.h"
 
 namespace BigTuna {
 
 class Movie;
 class ScorePlayer;
+class Script;
 class Sound;
 class Stage;
+struct Sprite;
 
 class BigTunaEngine : public Engine {
 public:
@@ -43,38 +49,79 @@ public:
 	bool hasFeature(EngineFeature f) const override;
 
 	bool isV1() const;
-	bool loadMovie(const Common::String &name);
-	void setPalette(Movie *movie, uint res);
-	// Empty movie: the current one. Empty label: its first frame.
-	void requestJump(const Common::String &movie, const Common::String &label);
-
 	Movie *getMovie() const { return _movie; }
 	ScorePlayer *getPlayer() const { return _player; }
+
+	void setPalette(Movie *movie, uint res);
+	// Loads the movie once the running script has stopped; frame is void, a number or a label
+	void requestMovie(const Common::String &name, const Value &frame);
+	void waitForSound(int channel);
+	void updateStage();
 	void redraw();
 	bool saveShot(const Common::String &path);
 
+	void setCursor(int id);
+	void setCursorMember(uint res);
+	// Topmost visible sprite under a point (FUN_00407800)
+	const Sprite *spriteAt(int x, int y, bool needScript, uint *channel = nullptr) const;
+	bool spritesIntersect(int a, int b);
+
+	Value getPref(const Common::String &name);
+	void setPref(const Common::String &name, const Common::String &text);
+
 	Sound *_sound;
+	Script *_script;
+	Common::RandomSource _rnd;
+
+	Common::Point _mousePos;
+	bool _mouseDown;
+	bool _doubleClick;
+	byte _keyChar;
+	uint _clickOn;
+	uint32 _timerStart;
 
 private:
-	void handleJump();
+	bool loadMovie(const Common::String &name, const Value &frame);
+	void mainLoop();
+	void runStep(uint frames);
+	void pollEvents();
+	void dispatchMouse();
 	void sweepMovies();
-	void checkShot();
+	void readTestHooks();
+	void checkTestHooks();
+	void checkFrameShot();
 
 	const ADGameDescription *_gameDescription;
 	Movie *_movie;
 	ScorePlayer *_player;
 	Stage *_stage;
 	byte _palette[256 * 3];
+	int _cursorId;
 
-	bool _jumpPending;
-	Common::String _jumpMovie, _jumpLabel;
+	bool _movieRequested;
+	Common::String _requestName;
+	Value _requestFrame;
 
-	// Test hooks: bigtuna_frames, bigtuna_shots, bigtuna_shot_dir, bigtuna_fast
+	bool _clicked, _moved;
+	uint32 _lastClickTime;
+	uint _hoverChannel;
+
+	// Test hooks
+	uint32 _startTime;
+	bool _fast;
 	uint _stopAfter;
 	uint _framesPlayed;
 	Common::Array<uint> _shots;
 	Common::String _shotDir;
-	bool _fast;
+	struct TimedAction {
+		uint32 time;
+		char type; // 'c' click, 'k' key, 's' shot
+		int x, y;
+	};
+	Common::Array<TimedAction> _actions;
+	uint32 _fuzzNext;
+	bool _fuzz;
+	uint32 _quitAt;
 };
 
 } // End of namespace BigTuna

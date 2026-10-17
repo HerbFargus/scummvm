@@ -39,6 +39,8 @@ Movie::~Movie() {
 		delete b._value;
 	for (auto &s : _scores)
 		delete s._value;
+	for (auto &s : _scripts)
+		delete s._value;
 }
 
 bool Movie::open(const Common::String &name) {
@@ -129,6 +131,20 @@ Score *Movie::getScore(uint res) {
 	}
 	_scores[res] = score;
 	return score;
+}
+
+const Common::Array<byte> *Movie::getScriptData(uint res) {
+	if (_scripts.contains(res))
+		return _scripts[res];
+	Common::Array<byte> *data = nullptr;
+	if (getType(res) == kResScript) {
+		data = new Common::Array<byte>(getSize(res));
+		_file.seek(_entries[res].offset);
+		if (!data->empty())
+			_file.read(&(*data)[0], data->size());
+	}
+	_scripts[res] = data;
+	return data;
 }
 
 bool Movie::loadPalette(uint res, byte *pal) {

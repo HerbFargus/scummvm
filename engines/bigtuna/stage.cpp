@@ -45,7 +45,7 @@ void Stage::drawPlayer(const ScorePlayer &player, int offsetX, int offsetY) {
 	const Common::Array<Sprite> &sprites = player.getSprites();
 	for (uint i = 1; i < sprites.size(); i++) {
 		const Sprite &sprite = sprites[i];
-		if (!sprite.member)
+		if (!sprite.exists || !sprite.visible || !sprite.member)
 			continue;
 		int x = sprite.x + offsetX;
 		int y = sprite.y + offsetY;

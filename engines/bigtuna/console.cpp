@@ -44,7 +44,7 @@ bool Console::cmdMovie(int argc, const char **argv) {
 		debugPrintf("Usage: %s <movie> [label]\n", argv[0]);
 		return true;
 	}
-	_vm->requestJump(argv[1], argc > 2 ? argv[2] : "");
+	_vm->requestMovie(argv[1], argc > 2 ? Value::string(argv[2]) : Value());
 	return false;
 }
 
@@ -75,21 +75,20 @@ bool Console::cmdFrame(int argc, const char **argv) {
 		return true;
 	}
 	if (Common::isDigit(argv[1][0]))
-		player->gotoFrame(atoi(argv[1]));
+		player->seek(atoi(argv[1]));
 	else
-		player->gotoLabel(argv[1]);
-	_vm->redraw();
-	return true;
+		player->seekLabel(argv[1]);
+	return false;
 }
 
 bool Console::cmdSprites(int argc, const char **argv) {
 	const Common::Array<Sprite> &sprites = _vm->getPlayer()->getSprites();
 	for (uint i = 1; i < sprites.size(); i++) {
 		const Sprite &s = sprites[i];
-		if (!s.member)
+		if (!s.exists)
 			continue;
-		debugPrintf("%3d member %4d at (%d,%d) script %d%s\n", i, s.member, s.x, s.y, s.script,
-			s.loop ? " [film loop]" : "");
+		debugPrintf("%3d member %4d at (%d,%d) script %d%s%s%s\n", i, s.member, s.x, s.y, s.script,
+			s.visible ? "" : " hidden", s.puppet ? " puppet" : "", s.loop ? " [film loop]" : "");
 	}
 	return true;
 }

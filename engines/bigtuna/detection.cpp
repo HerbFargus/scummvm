@@ -27,6 +27,7 @@ const DebugChannelDef BigTunaMetaEngineDetection::debugFlagList[] = {
 	{ BigTuna::kDebugLoading, "Loading", "Movie and resource loading" },
 	{ BigTuna::kDebugScore, "Score", "Score playback" },
 	{ BigTuna::kDebugSound, "Sound", "Sound channels" },
+	{ BigTuna::kDebugScript, "Script", "Script events and handlers" },
 	DEBUG_CHANNEL_END
 };
 

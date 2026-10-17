@@ -30,6 +30,7 @@ enum BigTunaDebugChannels {
 	kDebugLoading = 1,
 	kDebugScore,
 	kDebugSound,
+	kDebugScript,
 };
 
 // The first player (Just Me and My Mom): 10-byte bitmap headers, and
