@@ -58,7 +58,9 @@ static void readBytes(Common::SeekableReadStream &in, Common::Array<byte> &out, 
 		in.read(out.data(), size);
 }
 
-Scene::Scene() : _act(0), _area(0), _room(0), _version(0), _width(0), _height(0), _music(-1), _start(0) {
+Scene::Scene() : _act(0), _area(0), _room(0), _version(0), _width(0), _height(0), _music(-1), _refScale(0), _footstepSfx(0), _start(0) {
+	_shade[0] = _shade[1] = 0;
+	memset(_spots, 0, sizeof(_spots));
 	memset(_palette, 0, sizeof(_palette));
 }
 
@@ -68,6 +70,8 @@ Scene::~Scene() {
 
 void Scene::clear() {
 	_background.free();
+	for (auto &o : _objects)
+		o.frame.free();
 	for (uint i = 0; i < _layers.size(); i++) {
 		_layers[i]->surface.free();
 		delete _layers[i];
@@ -76,7 +80,7 @@ void Scene::clear() {
 	_hotspots.clear();
 	_objects.clear();
 	_walkMap.clear();
-	_pairs.clear();
+	_edges.clear();
 }
 
 Common::String Scene::fileName(int act, int area, int room) {
@@ -103,16 +107,23 @@ bool Scene::load(int act, int area, int room) {
 	char name[8] = {};
 	in.read(name, 7);
 	_name = name;
-	in.skip(2);
+	_shade[0] = in.readByte();
+	_shade[1] = in.readByte();
 	_height = in.readUint32LE();
 	_width = in.readUint32LE();
 	_music = in.readSint32LE();
 	in.skip(0x98);  // four ambient sound slots of 0x26 bytes
-	in.skip(4);
+	_footstepSfx = in.readSint32LE();
 	uint32 nObjects = in.readUint32LE();
 	uint32 nLayers = in.readUint32LE();
 	uint32 nHotspots = in.readUint32LE();
-	in.skip(2 + 0x50);
+	_refScale = in.readSint16LE();
+	for (uint i = 0; i < 5; i++) {
+		_spots[i].y = in.readSint32LE();
+		_spots[i].x = in.readSint32LE();
+		_spots[i].dir = in.readSint32LE();
+		_spots[i].type = in.readSint32LE();
+	}
 	for (uint i = 0; i < 256 * 3; i++)
 		_palette[i] = (in.readByte() & 0x3F) * 255 / 63;
 
@@ -155,7 +166,14 @@ bool Scene::load(int act, int area, int room) {
 	}
 
 	readBytes(in, _walkMap, in.readUint32LE());
-	readBytes(in, _pairs, in.readUint32LE() * 8);
+	uint32 nEdges = in.readUint32LE();
+	_edges.resize(nEdges);
+	for (uint i = 0; i < nEdges; i++) {
+		_edges[i].y1 = in.readSint16LE();
+		_edges[i].x1 = in.readSint16LE();
+		_edges[i].y2 = in.readSint16LE();
+		_edges[i].x2 = in.readSint16LE();
+	}
 	_start = in.readSint32LE();
 
 	int32 left = in.size() - in.pos();

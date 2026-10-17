@@ -1,6 +1,7 @@
 MODULE := engines/dreamforge
 
 MODULE_OBJS = \
+	actor.o \
 	console.o \
 	cutscene.o \
 	dfa.o \
@@ -10,7 +11,8 @@ MODULE_OBJS = \
 	resource.o \
 	scene.o \
 	script.o \
-	sound.o
+	sound.o \
+	walkmap.o
 
 # This module can be built as a plugin
 ifeq ($(ENABLE_DREAMFORGE), DYNAMIC_PLUGIN)

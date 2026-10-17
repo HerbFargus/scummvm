@@ -34,6 +34,7 @@
 #include "graphics/paletteman.h"
 #include "image/png.h"
 
+#include "dreamforge/actor.h"
 #include "dreamforge/console.h"
 #include "dreamforge/cutscene.h"
 #include "dreamforge/detection.h"
@@ -56,12 +57,23 @@ DreamForgeEngine::DreamForgeEngine(OSystem *syst, const ADGameDescription *gameD
 	_heldItem = 0;
 	_currentActor = 1;
 	_counter3D = 0;
+	_actors[0] = new Actor(this, 1);
+	_actors[1] = new Actor(this, 2);
+	_nextStep = 0;
+	_inScript = false;
+	_shotEvery = _nextShot = _shotCount = 0;
+	_currentRegion = -1;
+	_quitAt = 0;
 	for (uint i = 0; i < kArchiveCount; i++)
 		_archives[i] = nullptr;
 }
 
 DreamForgeEngine::~DreamForgeEngine() {
 	delete _sound;
+	delete _actors[0];
+	delete _actors[1];
+	for (auto &f : _actorFrames)
+		delete f._value;
 	for (uint i = 0; i < kArchiveCount; i++)
 		delete _archives[i];
 	delete _scene;
@@ -143,6 +155,16 @@ bool DreamForgeEngine::loadScene(int act, int area, int room) {
 	}
 	delete _scene;
 	_scene = scene;
+	_walkMap.load(_scene->_walkMap);
+	_currentRegion = -1;
+	for (auto &o : _scene->_objects) {
+		DFADecoder dfa;
+		if (dfa.load(SearchMan.createReadStreamForMember(Common::Path("CINE/" + o.anim, '/')))) {
+			const Graphics::Surface *f = dfa.decodeNextFrame();
+			if (f)
+				o.frame.copyFrom(*f);
+		}
+	}
 	_layerVisible.clear();
 	_layerVisible.resize(_scene->_layers.size());
 	for (uint i = 0; i < _layerVisible.size(); i++)
@@ -167,22 +189,13 @@ void DreamForgeEngine::redraw(bool present) {
 		Common::Rect src(_scrollX, 0, MIN<int>(_scrollX + kScreenWidth, _scene->_width),
 			MIN<int>(kScreenHeight, _scene->_height));
 		_screen.copyRectToSurface(_scene->_background, 0, 0, src);
-
-		// Debug view only: the game draws each layer when its state flags say so
-		if (_showLayers) {
-			for (uint i = 0; i < _scene->_layers.size(); i++) {
-				if (!_layerVisible[i])
-					continue;
-				const Layer *l = _scene->_layers[i];
-				Common::Rect dst(l->x - _scrollX, l->y, l->x - _scrollX + l->surface.w, l->y + l->surface.h);
-				Common::Rect clipped = dst.findIntersectingRect(Common::Rect(kScreenWidth, kScreenHeight));
-				if (clipped.isEmpty())
-					continue;
-				Common::Rect part(clipped.left - dst.left, clipped.top - dst.top,
-					clipped.right - dst.left, clipped.bottom - dst.top);
-				_screen.copyRectToSurfaceWithKey(l->surface, clipped.left, clipped.top, part, 0);
-			}
-		}
+		drawScene();
+	}
+	if (present && _shotEvery && g_system->getMillis() >= _nextShot) {
+		_nextShot = g_system->getMillis() + _shotEvery;
+		Common::DumpFile out;
+		if (out.open(Common::Path(Common::String::format("%s/t%04u.png", _shotDir.c_str(), _shotCount++), '/'), true))
+			Image::writePNG(out, _screen, _scene ? _scene->_palette : nullptr);
 	}
 	if (present) {
 		g_system->copyRectToScreen(_screen.getPixels(), _screen.pitch, 0, 0, kScreenWidth, kScreenHeight);
@@ -308,10 +321,34 @@ void DreamForgeEngine::setFlag(uint flag, bool on) {
 const Record *DreamForgeEngine::hotspotAt(const Common::Point &p) const {
 	if (!_scene)
 		return nullptr;
+	// Mask 4 is things to click on, 2 things to use; 1 marks walk-in regions (exits, shading)
 	for (auto &h : _scene->_hotspots)
-		if (h.rect.contains(p))
+		if ((h.mask & 6) && h.rect.contains(p))
 			return &h;
 	return nullptr;
+}
+
+const Record *DreamForgeEngine::regionAt(int y, int x) const {
+	if (!_scene)
+		return nullptr;
+	for (auto &h : _scene->_hotspots)
+		if ((h.mask & 1) && h.rect.contains(Common::Point(x, y)))
+			return &h;
+	return nullptr;
+}
+
+// 0x18d00 / 0x1f8c0: walking into a region runs its script once
+void DreamForgeEngine::checkRegions() {
+	if (_inScript || !_scene)
+		return;
+	const Actor *a = _actors[0];
+	const Record *r = a->_hidden ? nullptr : regionAt(a->_y, a->_x);
+	int id = r ? r->id : -1;
+	if (id == _currentRegion)
+		return;
+	_currentRegion = id;
+	if (r)
+		useHotspot(*r, false);
 }
 
 const Record *DreamForgeEngine::findHotspot(int id) const {
@@ -322,14 +359,20 @@ const Record *DreamForgeEngine::findHotspot(int id) const {
 	return nullptr;
 }
 
-void DreamForgeEngine::useHotspot(const Record &hotspot) {
+void DreamForgeEngine::useHotspot(const Record &hotspot, bool walk) {
 	int visits = 0;
 	if (hotspot.id >= 0 && hotspot.id < kStateCount)
 		visits = ++_hotspotState[hotspot.id];
 	debugC(1, kDebugScript, "hotspot %d \"%s\", visit %d", hotspot.id, hotspot.name.c_str(), visits);
+	// 0x258c0: who walks to the hotspot's walk-to point (the game reads puppy 1's point even for puppy 2)
+	int who = hotspot.who == 4 ? _currentActor : hotspot.who;
+	_inScript = true;
+	if (walk && who >= 1 && who <= 3 && hotspot.walkX[0] >= 0 && hotspot.walkY[0] >= 0)
+		actorWalk(who, hotspot.walkY[0], hotspot.walkX[0], hotspot.walkPose[0] < 8 ? hotspot.walkPose[0] : -1);
 	ScriptRunner runner(this);
 	runner.run(hotspot.script(), visits, Common::Point((hotspot.rect.left + hotspot.rect.right) / 2,
 		(hotspot.rect.top + hotspot.rect.bottom) / 2));
+	_inScript = false;
 	_dirty = true;
 }
 
@@ -388,6 +431,311 @@ void DreamForgeEngine::waitForVoice() {
 	}
 }
 
+int DreamForgeEngine::getRefScale() const {
+	return _scene && _scene->_refScale > 0 ? _scene->_refScale : 100;
+}
+
+const AnimFrames *DreamForgeEngine::getActorFrames(uint pig2Index) {
+	if (_actorFrames.contains(pig2Index))
+		return _actorFrames[pig2Index];
+	AnimFrames *f = new AnimFrames();
+	if (!f->load(_archives[2], pig2Index)) {
+		delete f;
+		f = nullptr;
+	}
+	_actorFrames[pig2Index] = f;
+	return f;
+}
+
+bool DreamForgeEngine::findWaypointPath(int y0, int x0, int y1, int x1, Common::Array<Common::Point> &via) const {
+	via.clear();
+	if (!_scene)
+		return false;
+	// Edge ends with the same coordinates are the same node
+	Common::Array<Common::Point> nodes;
+	Common::Array<Common::Array<uint> > links;
+	auto nodeFor = [&](int y, int x) -> uint {
+		for (uint i = 0; i < nodes.size(); i++)
+			if (nodes[i].x == x && nodes[i].y == y)
+				return i;
+		nodes.push_back(Common::Point(x, y));
+		links.push_back(Common::Array<uint>());
+		return nodes.size() - 1;
+	};
+	for (auto &e : _scene->_edges) {
+		uint a = nodeFor(e.y1, e.x1), b = nodeFor(e.y2, e.x2);
+		links[a].push_back(b);
+		links[b].push_back(a);
+	}
+	// Shortest route from a node the start can see to one that sees the target
+	uint n = nodes.size();
+	Common::Array<int> dist(n), prev(n);
+	Common::Array<bool> done(n);
+	for (uint i = 0; i < n; i++) {
+		dist[i] = _walkMap.lineClear(this, y0, x0, nodes[i].y, nodes[i].x) ?
+			ABS(nodes[i].x - x0) + ABS(nodes[i].y - y0) : INT_MAX;
+		prev[i] = -1;
+		done[i] = false;
+	}
+	int best = -1, bestTotal = INT_MAX;
+	while (true) {
+		int u = -1;
+		for (uint i = 0; i < n; i++)
+			if (!done[i] && dist[i] != INT_MAX && (u < 0 || dist[i] < dist[u]))
+				u = i;
+		if (u < 0)
+			break;
+		done[u] = true;
+		if (_walkMap.lineClear(this, nodes[u].y, nodes[u].x, y1, x1)) {
+			int total = dist[u] + ABS(nodes[u].x - x1) + ABS(nodes[u].y - y1);
+			if (total < bestTotal) {
+				bestTotal = total;
+				best = u;
+			}
+		}
+		for (uint v : links[u]) {
+			int d = dist[u] + ABS(nodes[u].x - nodes[v].x) + ABS(nodes[u].y - nodes[v].y);
+			if (d < dist[v]) {
+				dist[v] = d;
+				prev[v] = u;
+			}
+		}
+	}
+	if (best < 0)
+		return false;
+	for (int i = best; i >= 0; i = prev[i])
+		via.insert_at(0, nodes[i]);
+	return true;
+}
+
+void DreamForgeEngine::placeActorsDefault() {
+	if (!_scene)
+		return;
+	const Scene::Spot &s = _scene->_spots[0];
+	if (s.type >= 2 && s.type <= 4 && _walkMap.isWalkable(this, s.y, s.x)) {
+		_actors[1]->place(s.y, s.x, s.dir);
+		int x = s.x;
+		for (int dx = 60; dx < 400 && x == s.x; dx += 20) {
+			if (_walkMap.isWalkable(this, s.y, s.x - dx))
+				x = s.x - dx;
+			else if (_walkMap.isWalkable(this, s.y, s.x + dx))
+				x = s.x + dx;
+		}
+		_actors[0]->place(s.y, x, s.dir);
+		_actors[0]->_hidden = _actors[1]->_hidden = false;
+	} else {
+		_actors[0]->_hidden = _actors[1]->_hidden = true;
+	}
+}
+
+bool DreamForgeEngine::conditionsHold(const byte *conds, uint count) const {
+	for (uint i = 0; i < count; i++) {
+		int16 c = (int16)READ_LE_UINT16(conds + i * 2);
+		if (c == 0)
+			break;
+		if (c > 0 ? !isFlagSet(c) : isFlagSet(-c))
+			return false;
+	}
+	return true;
+}
+
+// Puppy depth shading (C.PRG 0x25350): darker the further back they stand
+void DreamForgeEngine::shadeActors() {
+	if (!_scene)
+		return;
+	for (int n = 1; n <= 2; n++) {
+		const Actor *a = getActor(n);
+		int first = n == 1 ? 32 : 16;
+		int bright = 100;
+		int scale = _walkMap.scaleAt(this, a->_y, a->_x);
+		if (_scene->_shade[0] && _scene->_shade[1] && scale > 0) {
+			int pct = scale * 100 / getRefScale();
+			bright = CLIP(100 - ((100 - pct) / _scene->_shade[0]) * _scene->_shade[1], 0, 100);
+		}
+		byte pal[16 * 3];
+		for (int i = 0; i < 16 * 3; i++)
+			pal[i] = (_scene->_palette[first * 3 + i] * bright + 50) / 100;
+		g_system->getPaletteManager()->setPalette(pal, first, 16);
+	}
+}
+
+void DreamForgeEngine::drawScene() {
+	// Painter's order by depth: layers and objects by their depth (+0x10), puppies by their feet
+	struct Item {
+		int depth;
+		int kind;  // 0 layer, 1 object, 2 puppy
+		int index;
+	};
+	Common::Array<Item> items;
+	for (uint i = 0; i < _scene->_layers.size(); i++) {
+		const Layer *l = _scene->_layers[i];
+		bool on = _showLayers ? _layerVisible[i] : conditionsHold(l->data.data() + 0x272, 9);
+		if (on) {
+			Item it = { (int32)READ_LE_UINT32(l->data.data() + 0x10), 0, (int)i };
+			items.push_back(it);
+		}
+	}
+	for (uint i = 0; i < _scene->_objects.size(); i++) {
+		const SceneObject &o = _scene->_objects[i];
+		if (conditionsHold(o.data.data() + 0x272, 9) && !(o.data[0x31] & 0x80)) {
+			Item it = { (int32)READ_LE_UINT32(o.data.data() + 0x10), 1, (int)i };
+			items.push_back(it);
+		}
+	}
+	for (int n = 0; n < 2; n++) {
+		if (!_actors[n]->_hidden) {
+			Item it = { _actors[n]->_y, 2, n };
+			items.push_back(it);
+		}
+	}
+	Common::sort(items.begin(), items.end(), [](const Item &a, const Item &b) {
+		return a.depth < b.depth || (a.depth == b.depth && a.kind < b.kind);
+	});
+	Common::Rect screen(kScreenWidth, kScreenHeight);
+	for (auto &it : items) {
+		if (it.kind == 2) {
+			const Actor *a = _actors[it.index];
+			a->draw(_screen, _scrollX, _walkMap.scaleAt(this, a->_y, a->_x), getRefScale());
+			continue;
+		}
+		const Graphics::Surface *surf;
+		Common::Point pos;
+		bool keyed;
+		if (it.kind == 0) {
+			const Layer *l = _scene->_layers[it.index];
+			surf = &l->surface;
+			pos = Common::Point(l->x, l->y);
+			keyed = true;
+		} else {
+			const SceneObject &o = _scene->_objects[it.index];
+			if (!o.frame.getPixels())
+				continue;
+			surf = &o.frame;
+			pos = Common::Point(o.rect.left, o.rect.top);
+			keyed = false;
+		}
+		Common::Rect dst(pos.x - _scrollX, pos.y, pos.x - _scrollX + surf->w, pos.y + surf->h);
+		Common::Rect clipped = dst.findIntersectingRect(screen);
+		if (clipped.isEmpty())
+			continue;
+		Common::Rect part(clipped.left - dst.left, clipped.top - dst.top, clipped.right - dst.left, clipped.bottom - dst.top);
+		if (keyed)
+			_screen.copyRectToSurfaceWithKey(*surf, clipped.left, clipped.top, part, 0);
+		else
+			_screen.copyRectToSurface(*surf, clipped.left, clipped.top, part);
+	}
+	shadeActors();
+}
+
+void DreamForgeEngine::runStep() {
+	Common::Event event;
+	while (g_system->getEventManager()->pollEvent(event)) {
+		if (event.type == Common::EVENT_MOUSEMOVE)
+			_mousePos = event.mouse;
+	}
+	uint32 now = g_system->getMillis();
+	if (now < _nextStep) {
+		g_system->delayMillis(MIN<uint32>(_nextStep - now, 10));
+		return;
+	}
+	_nextStep = MAX(_nextStep + kStepMs, now);
+	for (int n = 0; n < 2; n++)
+		_actors[n]->step();
+	redraw();
+}
+
+void DreamForgeEngine::actorTurn(Actor &a, int dir) {
+	// 0x19ef0: the shorter way round, one turning animation per 45 degrees
+	if (dir < 0 || dir > 7)
+		return;
+	while (a._dir != dir && !shouldQuit()) {
+		int cw = (dir - a._dir + 8) & 7;
+		int stepDir = cw <= 4 ? 1 : -1;
+		// TODO: check which of slots 2 and 4 turns which way
+		actorPlay(a, stepDir > 0 ? kSlotTurnA : kSlotTurnB);
+		a.setDirection((a._dir + stepDir + 8) & 7);
+	}
+	a.idle();
+}
+
+void DreamForgeEngine::actorPlay(Actor &a, int slot) {
+	// 0x16c40: one frame per game step
+	int frames = actorAnimFrames(slot);
+	a._busy = true;
+	for (int f = 0; f < frames && !shouldQuit(); f++) {
+		a._slot = slot;
+		a._frame = f;
+		redraw();
+		uint32 due = g_system->getMillis() + kStepMs;
+		while (g_system->getMillis() < due && !shouldQuit()) {
+			Common::Event event;
+			while (g_system->getEventManager()->pollEvent(event)) {
+			}
+			g_system->delayMillis(5);
+		}
+	}
+	a._busy = false;
+	if (slot == kSlotSitDown)
+		a._posture = kSitting;
+	else if (slot == kSlotStandUp || slot == kSlotGetUp)
+		a._posture = kStanding;
+	else if (slot == kSlotLieDown || slot == kSlotLieDownAlt)
+		a._posture = kLying;
+	a.idle();
+	redraw();
+}
+
+void DreamForgeEngine::actorWalk(int actor, int y, int x, int dir) {
+	for (int n = 1; n <= 2; n++) {
+		if (actor != n && actor != 3)
+			continue;
+		Actor *a = getActor(n);
+		int ty = y == 0xFFFF ? a->_y : y, tx = x == 0xFFFF ? a->_x : x;
+		a->walkTo(ty, tx);
+	}
+	while (!shouldQuit() && (((actor == 1 || actor == 3) && _actors[0]->isWalking()) || ((actor == 2 || actor == 3) && _actors[1]->isWalking())))
+		runStep();
+	for (int n = 1; n <= 2; n++)
+		if ((actor == n || actor == 3) && dir >= 0 && dir < 8)
+			actorTurn(*getActor(n), dir);
+}
+
+void DreamForgeEngine::actorSay(int actor, int voiceId, bool quick) {
+	Actor *a = getActor(actor);
+	if (!a || a->_hidden) {
+		_sound->playVoice(voiceId);
+		waitForVoice();
+		return;
+	}
+	a->stopWalking();
+	Common::Array<byte> visemes;
+	LipSync::load(this, voiceId, visemes);
+	int slot = talkSlot(a->_posture == kLying, a->_posture == kSitting, quick);
+	_sound->playVoice(voiceId);
+	a->_busy = true;
+	uint32 start = g_system->getMillis();
+	for (uint step = 0; !shouldQuit(); step++) {
+		byte v = step < visemes.size() ? visemes[step] : 0;
+		if (v == 0 && step >= visemes.size() && !_sound->isVoicePlaying())
+			break;
+		if (step > 0 && !_sound->isVoicePlaying())
+			break;
+		a->_slot = slot;
+		a->_frame = v ? (v - 1) % 6 : 0;
+		redraw();
+		uint32 due = start + (step + 1) * kLipSyncStepMs;
+		while (g_system->getMillis() < due && !shouldQuit()) {
+			Common::Event event;
+			while (g_system->getEventManager()->pollEvent(event)) {
+			}
+			g_system->delayMillis(5);
+		}
+	}
+	a->_busy = false;
+	a->idle();
+	redraw();
+}
+
 void DreamForgeEngine::handleEvents() {
 	Common::Event event;
 	while (g_system->getEventManager()->pollEvent(event)) {
@@ -396,9 +744,12 @@ void DreamForgeEngine::handleEvents() {
 			_mousePos = event.mouse;
 			break;
 		case Common::EVENT_LBUTTONUP: {
-			const Record *h = hotspotAt(Common::Point(event.mouse.x + _scrollX, event.mouse.y));
+			Common::Point p(event.mouse.x + _scrollX, event.mouse.y);
+			const Record *h = hotspotAt(p);
 			if (h)
 				useHotspot(*h);
+			else if (_walkMap.isWalkable(this, p.y, p.x))
+				_actors[0]->walkTo(p.y, p.x);
 			break;
 		}
 		case Common::EVENT_KEYDOWN:
@@ -426,13 +777,21 @@ void DreamForgeEngine::handleEvents() {
 }
 
 void DreamForgeEngine::mainLoop() {
-	while (!shouldQuit()) {
+	while (!shouldQuit() && (!_quitAt || g_system->getMillis() < _quitAt)) {
 		handleEvents();
+		uint32 now = g_system->getMillis();
+		if (now >= _nextStep) {
+			_nextStep = MAX(_nextStep + kStepMs, now);
+			for (int n = 0; n < 2; n++)
+				_actors[n]->step();
+			checkRegions();
+			_dirty = true;
+		}
 		if (_dirty)
 			redraw();
 		else
 			g_system->updateScreen();
-		g_system->delayMillis(16);
+		g_system->delayMillis(10);
 	}
 }
 
@@ -469,10 +828,17 @@ Common::Error DreamForgeEngine::run() {
 	int act, area, room;
 	if (!parseSceneName(start, act, area, room) || !loadScene(act, area, room))
 		return Common::kNoGameDataFoundError;
+	placeActorsDefault();
 	setupCursor();
 	if (ConfMan.hasKey("dreamforge_scroll"))
 		setScroll(ConfMan.getInt("dreamforge_scroll"));
 	_showLayers = ConfMan.getBool("dreamforge_layers");
+
+	// Test hook: dreamforge_shot_every=<ms> saves the screen into dreamforge_shot_dir as it changes
+	if (ConfMan.hasKey("dreamforge_shot_every")) {
+		_shotEvery = ConfMan.getInt("dreamforge_shot_every");
+		_shotDir = ConfMan.get("dreamforge_shot_dir");
+	}
 
 	// Test hook: dreamforge_use=<hotspot id,...> clicks hotspots by id, in order
 	Common::StringTokenizer uses(ConfMan.get("dreamforge_use"), ",");
@@ -480,6 +846,23 @@ Common::Error DreamForgeEngine::run() {
 		const Record *h = findHotspot(atoi(uses.nextToken().c_str()));
 		if (h)
 			useHotspot(*h);
+	}
+
+	if (ConfMan.getBool("dreamforge_quit"))
+		return Common::kNoError;
+
+	// Test hook: dreamforge_walk=<y,x> sends puppy 1 there; dreamforge_run_ms=<ms> quits the main loop after that long
+	if (ConfMan.hasKey("dreamforge_walk")) {
+		int wy = 0, wx = 0;
+		if (sscanf(ConfMan.get("dreamforge_walk").c_str(), "%d,%d", &wy, &wx) == 2)
+			_actors[0]->walkTo(wy, wx);
+	}
+	if (ConfMan.hasKey("dreamforge_run_ms")) {
+		_quitAt = g_system->getMillis() + ConfMan.getInt("dreamforge_run_ms");
+		mainLoop();
+		if (!ConfMan.get("dreamforge_shot").empty())
+			saveShot(ConfMan.get("dreamforge_shot"));
+		return Common::kNoError;
 	}
 
 	Common::String shot = ConfMan.get("dreamforge_shot");

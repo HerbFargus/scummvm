@@ -67,6 +67,7 @@ struct Hotspot : Record {
 struct SceneObject : Record {
 	uint32 unk;
 	Common::String anim;
+	Graphics::Surface frame;  // the frame on show (TODO: animate)
 };
 
 /** A state overlay or occlusion piece; drawn over the background when its flags say so */
@@ -94,8 +95,18 @@ public:
 	Common::Array<Hotspot> _hotspots;
 	Common::Array<SceneObject> _objects;
 	Common::Array<Layer *> _layers;
-	Common::Array<byte> _walkMap;  // per column [id, n, n x 6 ints]; see C.PRG 0x18990
-	Common::Array<byte> _pairs;
+	Common::Array<byte> _walkMap;  // per row [row, n, n x 6 ints] (C.PRG 0x19c20)
+	byte _shade[2];                // puppy darkening with depth: percent step, amount per step
+	int16 _refScale;               // the walk map scale at which the puppies are drawn 1:1
+	int32 _footstepSfx;
+	struct Spot {
+		int32 y, x, dir, type;
+	};
+	Spot _spots[5];                // where puppy 2 may wander to; type 2..4 are real spots
+	struct Edge {
+		int16 y1, x1, y2, x2;
+	};
+	Common::Array<Edge> _edges;    // the waypoint graph for walking round obstacles
 	int32 _start;
 
 private:

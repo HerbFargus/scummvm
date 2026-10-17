@@ -23,6 +23,7 @@
 #define DREAMFORGE_DREAMFORGE_H
 
 #include "common/array.h"
+#include "common/hashmap.h"
 #include "common/random.h"
 #include "common/rect.h"
 #include "common/str.h"
@@ -30,8 +31,12 @@
 #include "engines/engine.h"
 #include "graphics/surface.h"
 
+#include "dreamforge/walkmap.h"
+
 namespace DreamForge {
 
+class Actor;
+struct AnimFrames;
 struct Record;
 class ResourceArchive;
 class Scene;
@@ -43,7 +48,8 @@ enum {
 	kScreenHeight = 480,
 	kArchiveCount = 7,  // PIG0.USR .. PIG6.USR
 	kFlagCount = 512,   // the flag bits at C.PRG 0x64834
-	kStateCount = 1024  // saved state per object, hotspot and layer id (0x6a250, 0x6b250, 0x6c250)
+	kStateCount = 1024, // saved state per object, hotspot and layer id (0x6a250, 0x6b250, 0x6c250)
+	kStepMs = 100       // one game step (0x10840: two timer ticks)
 };
 
 class DreamForgeEngine : public Engine {
@@ -91,10 +97,32 @@ public:
 	int _counter3D;     // 0x6d264, bumped by script op 0x3d
 	uint getRandom15() { return _rnd.getRandomNumber(0x7FFF); }
 
+	// Puppies
+	Actor *getActor(int n) const { return n == 1 || n == 2 ? _actors[n - 1] : nullptr; }
+	const WalkMap &getWalkMap() const { return _walkMap; }
+	int getRefScale() const;
+	const AnimFrames *getActorFrames(uint pig2Index);
+	/** A route over the scene's waypoint graph, not counting the ends (0x1aae0) */
+	bool findWaypointPath(int y0, int x0, int y1, int x1, Common::Array<Common::Point> &via) const;
+	/** Puts both puppies somewhere sensible after a debug jump */
+	void placeActorsDefault();
+	/** Runs one game step on time: events, the puppies, the screen */
+	void runStep();
+	/** Blocking puppy actions for scripts and room logic */
+	void actorWalk(int actor, int y, int x, int dir);
+	void actorTurn(Actor &a, int dir);
+	void actorPlay(Actor &a, int slot);
+	void actorSay(int actor, int voiceId, bool quick);
+
 	/** Hotspot under a scene point, or nullptr (C.PRG 0x1f590) */
 	const Record *hotspotAt(const Common::Point &p) const;
 	/** Clicks a hotspot: counts the visit and runs its script (no walking yet) */
-	void useHotspot(const Record &hotspot);
+	void useHotspot(const Record &hotspot, bool walk = true);
+	/** The walk-in region (mask 1) under a puppy's feet, or nullptr */
+	const Record *regionAt(int y, int x) const;
+	void checkRegions();
+	int _currentRegion;
+	uint32 _quitAt;
 	/** The first hotspot with this id in the current scene, or nullptr */
 	const Record *findHotspot(int id) const;
 	/**
@@ -123,6 +151,16 @@ private:
 	int _scrollX;
 	Common::Point _mousePos;
 	bool _dirty;
+	Actor *_actors[2];
+	WalkMap _walkMap;
+	Common::HashMap<uint, AnimFrames *> _actorFrames;
+	uint32 _nextStep;
+	uint32 _shotEvery, _nextShot, _shotCount;  // test hook: periodic screenshots
+	Common::String _shotDir;
+	bool _inScript;
+	void drawScene();
+	void shadeActors();
+	bool conditionsHold(const byte *conds, uint count) const;
 	byte _flags[kFlagCount / 8];
 	Common::RandomSource _rnd;
 };

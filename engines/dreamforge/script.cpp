@@ -23,6 +23,7 @@
 #include "common/endian.h"
 #include "common/textconsole.h"
 
+#include "dreamforge/actor.h"
 #include "dreamforge/detection.h"
 #include "dreamforge/dreamforge.h"
 #include "dreamforge/script.h"
@@ -38,12 +39,15 @@ enum ScriptOp {
 	kOpIfFlag = 0x04,
 	kOpBusyOn = 0x05,
 	kOpBusyOff = 0x06,
+	kOpStopActor = 0x07,
 	kOpSetActor = 0x08,
 	kOpPlaceActor = 0x09,
 	kOpSetAnim = 0x0A,
 	kOpWalkTo = 0x0B,
+	kOpPose = 0x0E,
 	kOpCinematic = 0x0F,
 	kOpCutscene = 0x10,
+	kOpBark = 0x11,
 	kOpSay = 0x12,
 	kOpVoice = 0x13,
 	kOpMusic = 0x14,
@@ -58,10 +62,13 @@ enum ScriptOp {
 	kOpNop33 = 0x33,
 	kOpNop35 = 0x35,
 	kOpIfVisits = 0x36,
+	kOpHide = 0x37,
+	kOpShow = 0x38,
 	kOpIfHeld = 0x39,
 	kOpFaceHotspot = 0x3A,
 	kOpGoto = 0x3B,
-	kOpCount3D = 0x3D
+	kOpCount3D = 0x3D,
+	kOpFaceEachOther = 0x3F
 };
 
 ScriptRunner::ScriptRunner(DreamForgeEngine *vm) : _vm(vm) {
@@ -125,6 +132,55 @@ void ScriptRunner::run(const byte *script, int visits, const Common::Point &cent
 		case kOpSetActor:
 			_vm->_currentActor = a[0];
 			break;
+		case kOpStopActor:
+			for (int n = 1; n <= 2; n++)
+				if (a[0] == n || a[0] == 3)
+					_vm->getActor(n)->stopWalking();
+			break;
+		case kOpPlaceActor:
+			if (Actor *act = _vm->getActor(a[0]))
+				act->place(a[1], a[2], a[3]);
+			break;
+		case kOpSetAnim:
+			// 0x169d0: set the facing straight away
+			for (int n = 1; n <= 2; n++)
+				if (a[0] == n || a[0] == 3)
+					_vm->getActor(n)->setDirection(a[1]);
+			break;
+		case kOpWalkTo:
+			_vm->actorWalk(a[0], a[1], a[2], a[3] < 8 ? a[3] : -1);
+			break;
+		case kOpPose:
+			if (Actor *act = _vm->getActor(a[0])) {
+				// TODO: the posture changes 0x345a0 makes before some slots
+				if (a[2] < 8)
+					_vm->actorTurn(*act, a[2]);
+				_vm->actorPlay(*act, a[1]);
+			}
+			break;
+		case kOpBark:
+			if (Actor *act = _vm->getActor(a[0]))
+				_vm->actorPlay(*act, act->_posture == kLying ? kSlotLieBark : kSlotBark);
+			break;
+		case kOpHide:
+		case kOpShow:
+			for (int n = 1; n <= 2; n++)
+				if (a[0] == n || a[0] == 3)
+					_vm->getActor(n)->_hidden = (op == kOpHide);
+			break;
+		case kOpFaceHotspot:
+			for (int n = 1; n <= 2; n++)
+				if (a[0] == n || a[0] == 3) {
+					Actor *act = _vm->getActor(n);
+					_vm->actorTurn(*act, act->directionTo(centre.y, centre.x));
+				}
+			break;
+		case kOpFaceEachOther: {
+			Actor *p1 = _vm->getActor(1), *p2 = _vm->getActor(2);
+			_vm->actorTurn(*p1, p1->directionTo(p2->_y, p2->_x));
+			_vm->actorTurn(*p2, p2->directionTo(p1->_y, p1->_x));
+			break;
+		}
 		case kOpCinematic:
 			// cine, top, left, flip, delay, depth, don't wait, ?
 			_vm->playSceneAnim(a[0], (int16)a[1], (int16)a[2], a[3] != 0, a[4], (int16)a[5], a[6] != 0);
@@ -133,9 +189,7 @@ void ScriptRunner::run(const byte *script, int visits, const Common::Point &cent
 			_vm->playCutscene(a[0]);
 			break;
 		case kOpSay:
-			// TODO: the puppy's talking animation and lip sync
-			sound->playVoice(a[1]);
-			_vm->waitForVoice();
+			_vm->actorSay(a[0], a[1], a[2] != 0);
 			break;
 		case kOpVoice:
 			sound->playVoice(a[0]);
@@ -155,7 +209,9 @@ void ScriptRunner::run(const byte *script, int visits, const Common::Point &cent
 			sound->stopMusic();
 			break;
 		case kOpChangeScene:
-			// TODO: place the puppies at (a0, a1) facing a2 and (a3, a4) facing a5
+			// 0x1f800: the puppies' new (y, x, facing), then the scene
+			_vm->getActor(1)->place(a[0], a[1], a[2]);
+			_vm->getActor(2)->place(a[3], a[4], a[5]);
 			_vm->loadScene(a[6], a[7], a[8]);
 			break;
 		case kOpIfRandom: {
@@ -197,7 +253,6 @@ void ScriptRunner::run(const byte *script, int visits, const Common::Point &cent
 			pc++;
 		}
 	}
-	(void)centre;
 }
 
 } // End of namespace DreamForge
