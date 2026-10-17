@@ -137,6 +137,7 @@ int DreamForgeEngine::titleMenu() {
 				}
 			}
 		}
+		g_system->updateScreen();
 		g_system->delayMillis(10);
 	}
 	return 0;

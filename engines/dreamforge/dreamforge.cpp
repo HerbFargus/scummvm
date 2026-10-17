@@ -147,7 +147,7 @@ void DreamForgeEngine::setupCursor() {
 	}
 	delete res;
 	setCursor(0);
-	CursorMan.showMouse(true);
+	CursorMan.showMouse(false);  // the title menu or the first scene shows it
 }
 
 bool DreamForgeEngine::parseSceneName(const Common::String &name, int &act, int &area, int &room) {
@@ -293,7 +293,9 @@ int DreamForgeEngine::playCutscene(int number) {
 	if (ConfMan.getBool("dreamforge_skip_cutscenes"))
 		return 0;
 	Cutscene cutscene(this);
+	bool shown = CursorMan.showMouse(false);
 	int ok = cutscene.play(number);
+	CursorMan.showMouse(shown);
 	if (_scene)
 		g_system->getPaletteManager()->setPalette(_scene->_palette, 0, 256);
 	_dirty = true;
@@ -979,6 +981,7 @@ void DreamForgeEngine::boneMenu() {
 				}
 			}
 		}
+		g_system->updateScreen();
 		g_system->delayMillis(10);
 	}
 	if (choice < 0)
