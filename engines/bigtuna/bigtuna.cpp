@@ -492,6 +492,11 @@ void BigTunaEngine::checkTestHooks() {
 				targets.push_back(Common::Point((r.left + r.right) / 2, (r.top + r.bottom) / 2));
 			}
 		}
+		if (_rnd.getRandomNumber(6) == 0) {
+			_keyChar = 27;
+			debug("fuzz: escape in %s frame %d", _movie->getName().c_str(), _player->getFrame());
+			return;
+		}
 		Common::Point p(_rnd.getRandomNumber(639), _rnd.getRandomNumber(479));
 		if (!targets.empty() && _rnd.getRandomNumber(9) < 8)
 			p = targets[_rnd.getRandomNumber(targets.size() - 1)];
