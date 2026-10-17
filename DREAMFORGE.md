@@ -31,9 +31,11 @@ facing, turning, one-shots, walking with the original step tables and
 scaling, routing over the waypoint graph, depth-sorted drawing with layers
 and objects, depth shading, and talking with lip sync. Clicks walk puppy 1
 or send a hotspot's puppy over before its script; walking into a region
-(exits) runs its script. Not yet: object animation, puppy 2's wandering,
-start/stop/footstep details, the cursor, menus and inventory, saving, and
-the act handlers written in C.
+(exits) runs its script. Scene objects animate on the game timer, in-room
+animations are temporary objects in depth order, and the cursor follows what
+is under the mouse. Not yet: puppy 2's wandering, start/stop/footstep
+details, held items, menus, saving, the game's start, and the act handlers
+written in C.
 
 The reverse-engineering notes (formats, code map) live outside the fork, in
 `escape-from-devil-manor/NOTES.md`.
