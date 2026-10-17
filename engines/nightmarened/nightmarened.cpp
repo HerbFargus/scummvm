@@ -39,6 +39,7 @@
 #include "nightmarened/demo.h"
 #include "nightmarened/detection.h"
 #include "nightmarened/display.h"
+#include "nightmarened/game.h"
 #include "nightmarened/naf.h"
 #include "nightmarened/nightmarened.h"
 #include "nightmarened/rdx.h"
@@ -48,7 +49,7 @@ namespace NightmareNed {
 const int kNafNumbers[12] = { 0, 1000, 86000, 90000, 92000, 93000, 94000, 95000, 96000, 97000, 98000, 99000 };
 
 NightmareNedEngine::NightmareNedEngine(OSystem *syst, const ADGameDescription *gameDesc) : Engine(syst),
-	_gameDescription(gameDesc), _data32(nullptr), _res(nullptr), _display(nullptr), _naf(nullptr), _nafIndex(-1), _bgIndex(0),
+	_gameDescription(gameDesc), _data32(nullptr), _game(nullptr), _display(nullptr), _naf(nullptr), _nafIndex(-1), _bgIndex(0),
 	_scrollX(0), _scrollY(0), _spriteIndex(0), _frameIndex(0), _showSprite(false) {
 	memset(_palette, 0, sizeof(_palette));
 }
@@ -57,8 +58,7 @@ NightmareNedEngine::~NightmareNedEngine() {
 	for (SpriteFrame *f : _frames)
 		delete f;
 	delete _naf;
-	delete _display;
-	delete _res;
+	delete _game;
 	delete _data32;
 	_view.free();
 	_screen.free();
@@ -484,12 +484,12 @@ uint32 NightmareNedEngine::readInput() {
 // Until the scene code exists: the attic built from its own data, on the game's tick.
 // F9 toggles the collision overlay (ned.ini ShowCollisionRects).
 void NightmareNedEngine::runDemo() {
-	_res = new Resources();
-	_display = new Display(_res);
+	_game = new Game(this);
+	_display = &_game->display();
 	_keysDown.resize(Common::KEYCODE_LAST);
 	_display->_showCollision = ConfMan.hasKey("nightmarened_collision") && ConfMan.getBool("nightmarened_collision");
 
-	PlacementDemo demo(this, _res, _display);
+	PlacementDemo demo(this, _game);
 	if (!demo.loadAttic())
 		return;
 	Common::Point scroll(-2900, -2454);

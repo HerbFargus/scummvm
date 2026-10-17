@@ -22,6 +22,7 @@
 #ifndef NIGHTMARENED_RESOURCES_H
 #define NIGHTMARENED_RESOURCES_H
 
+#include "audio/mixer.h"
 #include "common/array.h"
 #include "common/stream.h"
 
@@ -63,6 +64,13 @@ enum {
 	kMsPerStep = 41
 };
 
+/** A DirectSound voice node (0x44d320): one playing buffer owned by a slot or a scene */
+struct Voice {
+	Audio::SoundHandle handle;
+	bool active;
+	Voice() : active(false) {}
+};
+
 /** The game's 100-byte sprite slot record (DAT_004afcb0[area] + id * 100) */
 struct Slot {
 	int x, y;
@@ -81,6 +89,7 @@ struct Slot {
 	int16 step;
 	uint32 deadline;
 	Common::Array<byte> sound; // auix blob: WAVEFORMATEX + PCM
+	Voice voice;               // +0x50
 
 	Slot();
 	void clear();

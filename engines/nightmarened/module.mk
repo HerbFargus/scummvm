@@ -4,11 +4,14 @@ MODULE_OBJS = \
 	data.o \
 	demo.o \
 	display.o \
+	game.o \
 	metaengine.o \
 	naf.o \
+	ned.o \
 	nightmarened.o \
 	rdx.o \
-	resources.o
+	resources.o \
+	world.o
 
 # This module can be built as a plugin
 ifeq ($(ENABLE_NIGHTMARENED), DYNAMIC_PLUGIN)

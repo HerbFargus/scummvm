@@ -32,6 +32,7 @@
 namespace NightmareNed {
 
 class Display;
+class Game;
 class NightmareNedEngine;
 
 /**
@@ -41,7 +42,7 @@ class NightmareNedEngine;
  */
 class PlacementDemo {
 public:
-	PlacementDemo(NightmareNedEngine *vm, Resources *res, Display *display);
+	PlacementDemo(NightmareNedEngine *vm, Game *game);
 	~PlacementDemo();
 
 	/** The attic as S4 loads it: NED98000 list 0x497680 (scene 0), then 98999001.SST */
@@ -56,6 +57,7 @@ private:
 	void place(uint32 now, bool advance);
 
 	NightmareNedEngine *_vm;
+	Game *_game;
 	Resources *_res;
 	Display *_display;
 	NafArchive *_naf;

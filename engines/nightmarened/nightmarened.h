@@ -38,8 +38,8 @@ class InstallShieldV3;
 namespace NightmareNed {
 
 class Display;
+class Game;
 class NafArchive;
-class Resources;
 struct Background;
 struct SpriteFrame;
 
@@ -87,8 +87,8 @@ private:
 	const ADGameDescription *_gameDescription;
 	Common::InstallShieldV3 *_data32;
 	ExeImage _exe;
-	Resources *_res;
-	Display *_display;
+	Game *_game;
+	Display *_display; // owned by _game
 	Common::Array<bool> _keysDown;
 	Graphics::Surface _screen;
 	byte _palette[256 * 3];

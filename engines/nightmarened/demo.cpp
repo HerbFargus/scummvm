@@ -26,6 +26,7 @@
 #include "nightmarened/demo.h"
 #include "nightmarened/detection.h"
 #include "nightmarened/display.h"
+#include "nightmarened/game.h"
 #include "nightmarened/nightmarened.h"
 #include "nightmarened/rdx.h"
 
@@ -38,8 +39,8 @@ enum {
 	kScrollStep = 16
 };
 
-PlacementDemo::PlacementDemo(NightmareNedEngine *vm, Resources *res, Display *display) : _vm(vm), _res(res),
-	_display(display), _naf(nullptr), _lastTick(0) {
+PlacementDemo::PlacementDemo(NightmareNedEngine *vm, Game *game) : _vm(vm), _game(game), _res(&game->res()),
+	_display(&game->display()), _naf(nullptr), _lastTick(0) {
 }
 
 PlacementDemo::~PlacementDemo() {
