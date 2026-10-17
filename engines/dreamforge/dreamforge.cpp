@@ -27,6 +27,7 @@
 #include "common/file.h"
 #include "common/fs.h"
 #include "common/system.h"
+#include "common/tokenizer.h"
 #include "common/textconsole.h"
 #include "engines/util.h"
 #include "graphics/cursorman.h"
@@ -34,20 +35,23 @@
 #include "image/png.h"
 
 #include "dreamforge/console.h"
+#include "dreamforge/cutscene.h"
 #include "dreamforge/detection.h"
 #include "dreamforge/dreamforge.h"
 #include "dreamforge/resource.h"
 #include "dreamforge/scene.h"
+#include "dreamforge/sound.h"
 
 namespace DreamForge {
 
 DreamForgeEngine::DreamForgeEngine(OSystem *syst, const ADGameDescription *gameDesc) : Engine(syst),
-	_gameDescription(gameDesc), _scene(nullptr), _cursors(nullptr), _scrollX(0), _showLayers(false), _dirty(true) {
+	_gameDescription(gameDesc), _sound(nullptr), _scene(nullptr), _cursors(nullptr), _scrollX(0), _showLayers(false), _dirty(true) {
 	for (uint i = 0; i < kArchiveCount; i++)
 		_archives[i] = nullptr;
 }
 
 DreamForgeEngine::~DreamForgeEngine() {
+	delete _sound;
 	for (uint i = 0; i < kArchiveCount; i++)
 		delete _archives[i];
 	delete _scene;
@@ -134,6 +138,8 @@ bool DreamForgeEngine::loadScene(int act, int area, int room) {
 	for (uint i = 0; i < _layerVisible.size(); i++)
 		_layerVisible[i] = true;
 	g_system->getPaletteManager()->setPalette(_scene->_palette, 0, 256);
+	if (_sound)
+		_sound->playMusic(_scene->_music, true);  // C.PRG 0x1db00: -666 keeps the current track
 	setScroll(0);
 	_dirty = true;
 	return true;
@@ -200,6 +206,29 @@ void DreamForgeEngine::dumpAllScenes(const Common::String &dir) {
 	debug("dumped %u scenes to %s", scenes.size(), dir.c_str());
 }
 
+bool DreamForgeEngine::playCutscene(int number) {
+	Cutscene cutscene(this);
+	bool ok = cutscene.play(number);
+	if (_scene)
+		g_system->getPaletteManager()->setPalette(_scene->_palette, 0, 256);
+	_dirty = true;
+	return ok;
+}
+
+// Test hook: dreamforge_cine=<n,n,...> plays cutscenes and quits; dreamforge_fast=true doesn't wait
+// between frames; dreamforge_cine_frames=<f,f,...> with dreamforge_shot_dir=<dir> saves frames
+void DreamForgeEngine::runCutsceneHook() {
+	Cutscene cutscene(this);
+	cutscene._fast = ConfMan.getBool("dreamforge_fast");
+	cutscene._shotDir = ConfMan.get("dreamforge_shot_dir");
+	Common::StringTokenizer frames(ConfMan.get("dreamforge_cine_frames"), ",");
+	while (!frames.empty())
+		cutscene._shotFrames.push_back(atoi(frames.nextToken().c_str()));
+	Common::StringTokenizer cines(ConfMan.get("dreamforge_cine"), ",");
+	while (!cines.empty() && !shouldQuit())
+		cutscene.play(atoi(cines.nextToken().c_str()));
+}
+
 void DreamForgeEngine::handleEvents() {
 	Common::Event event;
 	while (g_system->getEventManager()->pollEvent(event)) {
@@ -249,6 +278,13 @@ Common::Error DreamForgeEngine::run() {
 
 	if (!mountData())
 		return Common::kNoGameDataFoundError;
+	_sound = new Sound(this, _mixer);
+	_sound->init();
+
+	if (ConfMan.hasKey("dreamforge_cine")) {
+		runCutsceneHook();
+		return Common::kNoError;
+	}
 
 	Common::String dumpDir = ConfMan.get("dreamforge_allscenes");
 	if (!dumpDir.empty()) {

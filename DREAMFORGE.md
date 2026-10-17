@@ -15,8 +15,14 @@ as notes, not code to copy.
 
 M1 (skeleton): detection, data mounting, resource loaders, scene backgrounds
 with palette and scrolling, the paw cursor, and a debug console that jumps
-between scenes. No game logic yet. The reverse-engineering notes (formats,
-code map) live outside the fork, in `escape-from-devil-manor/NOTES.md`.
+between scenes.
+
+M2 (cutscenes and sound): the DFA decoder, cutscenes with their ACT sound
+cues, effects, voices and scene music. Not yet: the talking-head lip sync
+drawn during voice lines (C.PRG 0x14260). No game logic yet.
+
+The reverse-engineering notes (formats, code map) live outside the fork, in
+`escape-from-devil-manor/NOTES.md`.
 
 ## Data
 
@@ -39,15 +45,30 @@ CD (or a copy of it) is enough.
   hotspots, LZSS background, 0x29C animated objects (each names a
   `CINE\NNNN.DFA`), 0x288 layers (y, x, height, width + LZSS image: state
   overlays), a flag-gated per-column walk map, pairs, start.
-- DFIA (`CINE\*.DFA`, PIG2): Chronomaster DFA, the format FFmpeg's
-  `libavcodec/dfa.c` decodes.
+- DFIA (`CINE\*.DFA`, PIG2): Chronomaster DFA. `dfa.cpp` follows FFmpeg's
+  `libavcodec/dfa.c` (LGPL 2.1+) and matches its output frame for frame,
+  except that FFmpeg's DDS1 skip check is inverted (it rejects every skip,
+  so FFmpeg can't play the title, CINE 0322).
+- ACT (one per DFA): a voice preload list and an effect preload list, each
+  ended by 0xFFFF, then (opcode, argument) pairs per frame ended by 0xFFFF.
+  0xFFCC..0xFFC9 play an effect on channel 0..3, 0xFFC8..0xFFC5 the same
+  looping, 0xFFCD music (0xFFFD stops it), 0xFFCF music looping, 0xFFCE a
+  voice line, 0xFFC4 ends the cutscene.
+- Sound numbers come in banks of 1000. INIT.PIG (31 words) gives each bank's
+  first archive index: effects (11000-14000, 20000-23000, 30000, 31000,
+  40000, 41000) are in PIG1, voices (10000, 11000, 20000-22000, 30000,
+  42000-46000) in PIG3. Music track n is PIG4 entry n. The 801 lip-sync
+  entries in PIG6 match the voices before the 20000 bank.
 
 ## Testing
 
 `tools-dreamforge/` in the parent folder: `make.sh` builds, `play.sh [scene]`
 plays, and `boot.sh` runs with test hooks (`dreamforge_scene=1X01X06`,
 `dreamforge_scroll=N`, `dreamforge_layers=true`, `dreamforge_shot=<png>`,
-`dreamforge_allscenes=<dir>`).
+`dreamforge_allscenes=<dir>`, `dreamforge_cine=<n,...>` with
+`dreamforge_fast=true`, `dreamforge_cine_frames=<f,...>` and
+`dreamforge_shot_dir=<dir>`).
 
 Console: `scene 1X01X06`, `scenes`, `hotspots`, `layers`, `layer <n|all|none>`,
-`scroll <x>`, `archives`, `shot <png>`. Keys: arrows scroll, L toggles layers.
+`scroll <x>`, `archives`, `shot <png>`, `cine <n>`, `sfx <n> [channel]`,
+`voice <n>`, `music <n|stop>`. Keys: arrows scroll, L toggles layers.

@@ -29,6 +29,8 @@ namespace DreamForge {
 enum DreamForgeDebugChannels {
 	kDebugLoading = 1,
 	kDebugScene,
+	kDebugVideo,
+	kDebugSound,
 };
 
 extern const PlainGameDescriptor dreamForgeGames[];

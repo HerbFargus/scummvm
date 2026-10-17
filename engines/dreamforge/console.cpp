@@ -23,10 +23,11 @@
 #include "dreamforge/dreamforge.h"
 #include "dreamforge/resource.h"
 #include "dreamforge/scene.h"
+#include "dreamforge/sound.h"
 
 namespace DreamForge {
 
-Console::Console(DreamForgeEngine *vm) : GUI::Debugger(), _vm(vm) {
+Console::Console(DreamForgeEngine *vm) : GUI::Debugger(), _vm(vm), _cine(-1) {
 	registerCmd("scene", WRAP_METHOD(Console, cmdScene));
 	registerCmd("scenes", WRAP_METHOD(Console, cmdScenes));
 	registerCmd("hotspots", WRAP_METHOD(Console, cmdHotspots));
@@ -35,6 +36,10 @@ Console::Console(DreamForgeEngine *vm) : GUI::Debugger(), _vm(vm) {
 	registerCmd("scroll", WRAP_METHOD(Console, cmdScroll));
 	registerCmd("archives", WRAP_METHOD(Console, cmdArchives));
 	registerCmd("shot", WRAP_METHOD(Console, cmdShot));
+	registerCmd("cine", WRAP_METHOD(Console, cmdCine));
+	registerCmd("sfx", WRAP_METHOD(Console, cmdSfx));
+	registerCmd("voice", WRAP_METHOD(Console, cmdVoice));
+	registerCmd("music", WRAP_METHOD(Console, cmdMusic));
 }
 
 bool Console::cmdScene(int argc, const char **argv) {
@@ -128,6 +133,56 @@ bool Console::cmdShot(int argc, const char **argv) {
 	}
 	debugPrintf(_vm->saveShot(argv[1]) ? "saved\n" : "failed\n");
 	return true;
+}
+
+bool Console::cmdCine(int argc, const char **argv) {
+	if (argc < 2) {
+		debugPrintf("Usage: %s <number>  (plays CINE\\NNNN.DFA)\n", argv[0]);
+		return true;
+	}
+	_cine = atoi(argv[1]);
+	return cmdExit(0, nullptr);
+}
+
+bool Console::cmdSfx(int argc, const char **argv) {
+	if (argc < 2) {
+		debugPrintf("Usage: %s <number> [channel]  (e.g. 23000)\n", argv[0]);
+		return true;
+	}
+	int id = atoi(argv[1]);
+	debugPrintf("effect %d is PIG1 #%d\n", id, _vm->getSound()->sfxIndex(id));
+	_vm->getSound()->playSfx(id, argc > 2 ? atoi(argv[2]) : 0, false);
+	return true;
+}
+
+bool Console::cmdVoice(int argc, const char **argv) {
+	if (argc < 2) {
+		debugPrintf("Usage: %s <number>  (e.g. 11025)\n", argv[0]);
+		return true;
+	}
+	int id = atoi(argv[1]);
+	debugPrintf("voice %d is PIG3 #%d\n", id, _vm->getSound()->voiceIndex(id));
+	_vm->getSound()->playVoice(id);
+	return true;
+}
+
+bool Console::cmdMusic(int argc, const char **argv) {
+	if (argc < 2) {
+		debugPrintf("Usage: %s <track 0-19 | stop>  (now %d)\n", argv[0], _vm->getSound()->getMusic());
+		return true;
+	}
+	if (!strcmp(argv[1], "stop"))
+		_vm->getSound()->stopMusic();
+	else
+		_vm->getSound()->playMusic(atoi(argv[1]), true);
+	return true;
+}
+
+void Console::postEnter() {
+	if (_cine >= 0) {
+		_vm->playCutscene(_cine);
+		_cine = -1;
+	}
 }
 
 } // End of namespace DreamForge

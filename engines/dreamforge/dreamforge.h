@@ -33,6 +33,7 @@ namespace DreamForge {
 
 class ResourceArchive;
 class Scene;
+class Sound;
 struct Sprite;
 
 enum {
@@ -57,6 +58,9 @@ public:
 	Common::Array<Common::String> listScenes() const;
 
 	Scene *getScene() const { return _scene; }
+	Sound *getSound() const { return _sound; }
+	/** Plays CINE\<number>.DFA with its sound cues, then restores the scene */
+	bool playCutscene(int number);
 	ResourceArchive *getArchive(uint n) const { return n < kArchiveCount ? _archives[n] : nullptr; }
 
 	void setScroll(int x);
@@ -73,9 +77,11 @@ private:
 	void mainLoop();
 	void handleEvents();
 	void dumpAllScenes(const Common::String &dir);
+	void runCutsceneHook();
 
 	const ADGameDescription *_gameDescription;
 	ResourceArchive *_archives[kArchiveCount];
+	Sound *_sound;
 	Scene *_scene;
 	Sprite *_cursors;
 	Graphics::Surface _screen;

@@ -42,8 +42,15 @@ private:
 	bool cmdScroll(int argc, const char **argv);
 	bool cmdArchives(int argc, const char **argv);
 	bool cmdShot(int argc, const char **argv);
+	bool cmdCine(int argc, const char **argv);
+	bool cmdSfx(int argc, const char **argv);
+	bool cmdVoice(int argc, const char **argv);
+	bool cmdMusic(int argc, const char **argv);
+
+	void postEnter() override;
 
 	DreamForgeEngine *_vm;
+	int _cine;  // cutscene to play once the console closes
 };
 
 } // End of namespace DreamForge
