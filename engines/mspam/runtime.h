@@ -49,8 +49,7 @@ enum SegmentFlags {
 	kSegRelative = 0x01,       ///< the end point is relative to the start, else absolute
 	kSegContinueFrames = 0x04, ///< the animation carries on from the previous segment
 	kSegLoopFrames = 0x08,     ///< the animation loops, else it holds its last frame
-	kSegContinueSound = 0x10,  ///< the previous segment's sound carries on
-	kSegHotWhileMoving = 0x80  ///< clickable while it moves (FUN_1048_4aa2)
+	kSegContinueSound = 0x10   ///< the previous segment's sound carries on
 };
 
 /** An element of a running layout */
@@ -182,6 +181,7 @@ private:
 
 	Common::HashMap<Common::String, LayoutState *, Common::IgnoreCase_Hash, Common::IgnoreCase_EqualTo> _cache;
 	LayoutState *_layout;
+	const ActionList *_running;
 	uint _nextSerial;
 	Common::String _pendingLayout;
 	bool _reenter;

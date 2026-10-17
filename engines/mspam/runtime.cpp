@@ -70,7 +70,7 @@ int LayoutState::find(const Common::String &name) const {
 }
 
 Runtime::Runtime(MediaManager *media, const CompoundFile &tdf, const Title *title, Audio::Mixer *mixer) :
-	_media(media), _tdf(tdf), _title(title), _layout(nullptr), _nextSerial(1), _reenter(false), _quit(false),
+	_media(media), _tdf(tdf), _title(title), _layout(nullptr), _running(nullptr), _nextSerial(1), _reenter(false), _quit(false),
 	_now(0), _lastUpdate(0), _blockedUntil(0), _leaving(false), _fadeFrom(kFadeFull), _fadeTo(kFadeFull),
 	_fadeLevel(kFadeFull), _fadeStart(0), _fadeDuration(0), _skitsOpen(false), _lastDownTime(0),
 	_random("mspam") {
@@ -232,7 +232,7 @@ void Runtime::switchLayout() {
 // Action lists and events
 
 void Runtime::queueList(int owner, const ActionList &list, bool front) {
-	if (list.actions.empty())
+	if (list.actions.empty() || &list == _running)
 		return;
 	QueuedList item;
 	item.serial = _layout->serial;
@@ -277,13 +277,19 @@ void Runtime::processQueue() {
 	warning("Action lists keep queueing more lists");
 }
 
+// A list with flags2 bit 0 doesn't trigger itself again while it runs (Jupiter's
+// hands stop and restart themselves from their own Sprite Start lists)
 void Runtime::runList(QueuedList &item) {
+	const ActionList *outer = _running;
+	if (item.list->flags2 & 1)
+		_running = item.list;
 	while (item.pos < item.list->actions.size() && !_quit) {
 		const Action &a = item.list->actions[item.pos++];
 		executeAction(item.owner, a);
 		if (_now < _blockedUntil && !_leaving)
-			return;
+			break;
 	}
+	_running = outer;
 }
 
 void Runtime::executeAction(int owner, const Action &a) {
@@ -837,7 +843,7 @@ int Runtime::findElementState(const Common::String &name) const {
 }
 
 // A visible sprite is hit inside one of its current segment's hotspots or on an
-// opaque pixel; while it moves, only if the segment says so (FUN_1048_4aa2)
+// opaque pixel (moving ones too: Venus's bobbing bus takes clicks)
 int Runtime::hitTest(const ElementState &e, int x, int y, uint32 &hotspotId) const {
 	hotspotId = 0;
 	if (!e.visible)
@@ -846,8 +852,6 @@ int Runtime::hitTest(const ElementState &e, int x, int y, uint32 &hotspotId) con
 		return x >= e.x && y >= e.y && x < e.x + (int)e.def->width && y < e.y + (int)e.def->height;
 	const PathSegment *seg = e.segment();
 	if (!seg)
-		return 0;
-	if (e.running && (seg->x || seg->y) && !(seg->flags & kSegHotWhileMoving))
 		return 0;
 	const Pib *pib = getFrame(e);
 	Common::Point origin = getOrigin(e, pib);

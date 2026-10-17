@@ -364,7 +364,7 @@ void MSPAMEngine::viewer() {
 // test script, injecting input through the event queue:
 //   wait <ms>          wait
 //   idle               wait until no action lists or transitions are pending
-//   layout <name>      wait until the layout is showing and idle
+//   layout <name> [ms] wait until the layout is showing and idle (60 s at most)
 //   click <x> <y>      click at screen coordinates
 //   clickon <name> [hotspot ID in hex]
 //                      click a visible element (on a hotspot, or its picture)
@@ -375,7 +375,7 @@ void MSPAMEngine::viewer() {
 //   quit               quit
 class TestInputScript {
 public:
-	explicit TestInputScript(const Common::Path &path) : _line(0), _waitUntil(0) {
+	explicit TestInputScript(const Common::Path &path) : _line(0), _waitUntil(0), _waitStart(0) {
 		Common::File f;
 		if (!f.open(Common::FSNode(path))) {
 			warning("Test input: can't open '%s'", path.toString().c_str());
@@ -405,9 +405,19 @@ public:
 				if (!runtime->isIdle())
 					return true;
 			} else if (cmd == "layout") {
-				if (!runtime->getLayoutName().equalsIgnoreCase(arg) || !runtime->isIdle())
+				// layout <name> [timeout ms, default 60000]
+				Common::StringArray words = Common::StringTokenizer(arg).split();
+				uint32 timeout = words.size() > 1 ? atoi(words[1].c_str()) : 60000;
+				if (!_waitStart)
+					_waitStart = now;
+				bool there = !words.empty() && runtime->getLayoutName().equalsIgnoreCase(words[0]) && runtime->isIdle();
+				if (!there && now - _waitStart < timeout)
 					return true;
-				debug(1, "Test input: layout %s", arg.c_str());
+				_waitStart = 0;
+				if (there)
+					debug(1, "Test input: layout %s", arg.c_str());
+				else
+					warning("Test input: still in %s, not %s", runtime->getLayoutName().c_str(), arg.c_str());
 			} else if (cmd == "click" || cmd == "clickon") {
 				Common::Point pt;
 				if (cmd == "click") {
@@ -470,6 +480,7 @@ private:
 	Common::StringArray _lines;
 	uint _line;
 	uint32 _waitUntil;
+	uint32 _waitStart;
 };
 
 void MSPAMEngine::runGame(const Common::String &start) {
