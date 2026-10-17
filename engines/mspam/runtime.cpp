@@ -20,6 +20,7 @@
  */
 
 #include "common/algorithm.h"
+#include "common/config-manager.h"
 #include "common/debug.h"
 #include "common/debug-channels.h"
 #include "common/endian.h"
@@ -28,6 +29,7 @@
 #include "mspam/compound.h"
 #include "mspam/detection.h"
 #include "mspam/media.h"
+#include "mspam/mspam.h"
 #include "mspam/runtime.h"
 #include "mspam/sound.h"
 
@@ -61,6 +63,12 @@ uint32 ElementState::segmentDuration() const {
 	return (uint32)((uint64)s->duration * 100 / MAX<uint32>(speed, 1));
 }
 
+LayoutState::~LayoutState() {
+	for (ElementState &e : elements)
+		delete e.video;
+	delete layout;
+}
+
 int LayoutState::find(const Common::String &name) const {
 	for (uint i = 0; i < elements.size(); i++) {
 		if (elements[i].def->name.equalsIgnoreCase(name))
@@ -72,8 +80,9 @@ int LayoutState::find(const Common::String &name) const {
 Runtime::Runtime(MediaManager *media, const CompoundFile &tdf, const Title *title, Audio::Mixer *mixer) :
 	_media(media), _tdf(tdf), _title(title), _layout(nullptr), _running(nullptr), _nextSerial(1), _reenter(false), _quit(false),
 	_now(0), _lastUpdate(0), _blockedUntil(0), _leaving(false), _fadeFrom(kFadeFull), _fadeTo(kFadeFull),
-	_fadeLevel(kFadeFull), _fadeStart(0), _fadeDuration(0), _skitsOpen(false), _lastDownTime(0),
-	_random("mspam") {
+	_fadeLevel(kFadeFull), _fadeStart(0), _fadeDuration(0), _skitElement(-1), _skitPos(-1), _skitExprs(0),
+	_lastDownTime(0), _random("mspam") {
+	_skipVideos = ConfMan.hasKey("mspam_skip_videos") && ConfMan.getBool("mspam_skip_videos");
 	_sound = new SoundManager(mixer, media);
 	_eval = new Evaluator(_vars, *this);
 	memset(_palette, 0, sizeof(_palette));
@@ -93,7 +102,8 @@ Common::String Runtime::getLayoutName() const {
 }
 
 bool Runtime::isIdle() const {
-	return _queue.empty() && _now >= _blockedUntil && _pendingLayout.empty() && _fadeLevel == _fadeTo;
+	return _queue.empty() && _now >= _blockedUntil && _pendingLayout.empty() && _fadeLevel == _fadeTo &&
+		!isVideoPlaying() && _skitPos < 0;
 }
 
 void Runtime::start(const Common::String &layout) {
@@ -134,6 +144,12 @@ LayoutState *Runtime::loadLayoutState(const Common::String &name) {
 		e.iterations = def.iterations;
 		e.iterationsLeft = 0;
 		e.soundId = 0;
+		e.video = nullptr;
+		e.videoState = ElementState::kVideoStopped;
+		e.videoFlags = def.videoFlags;
+		e.w = def.width;
+		e.h = def.height;
+		e.playFrom = 0;
 	}
 	for (uint r = 0; r < layout->_siteOrder.size(); r++)
 		ls->elements[layout->_siteOrder[r]].rank = r;
@@ -184,8 +200,14 @@ void Runtime::switchLayout() {
 			runList(item);
 			_leaving = false;
 		}
-		for (ElementState &e : _layout->elements)
-			_sound->stopChannel(e.sound);
+		for (uint i = 0; i < _layout->elements.size(); i++) {
+			_sound->stopChannel(_layout->elements[i].sound);
+			closeVideo(i);
+			_layout->elements[i].videoState = ElementState::kVideoStopped;
+		}
+		_skitElement = -1;
+		_skitEntries.clear();
+		_skitPos = -1;
 		_queue.clear();
 		_blockedUntil = 0;
 		Common::String old = _layout->layout->_name;
@@ -344,30 +366,7 @@ static Common::String paramString(const Action &a, uint i) {
 void Runtime::elementAction(int el, const Action &a) {
 	ElementState &e = _layout->elements[el];
 	if (e.def->isVideo()) {
-		switch (a.id) {
-		case 7:
-			setVisible(el, true);
-			break;
-		case 8:
-			setVisible(el, false);
-			break;
-		case 16:
-		case 20:
-			// Until M4 plays them, videos finish as soon as they start
-			debugC(1, kDebugActions, "Video %s (%s) skipped", e.def->name.c_str(), _media->getVideoPath(e.def->videoId).toString().c_str());
-			unimplemented(a, "video");
-			fireEvent(el, kEventVideoPlay);
-			fireEvent(el, kEventVideoStop);
-			break;
-		case 17:
-		case 18:
-		case 19:
-		case 21:
-			break;
-		default:
-			unimplemented(a, "video");
-			break;
-		}
+		videoAction(el, a);
 		return;
 	}
 
@@ -564,47 +563,30 @@ void Runtime::titleAction(const Action &a) {
 		break;
 	case 0x20:
 		// Start transition layout: frees the skits and the flight
-		_skits.clear();
-		_skitsOpen = false;
+		skitEnd();
+		_skitElement = -1;
+		_skitEntries.clear();
 		break;
 	case 0x21:
 		requestLayout(_vars.get(paramString(a, 0)));
 		break;
 	case 0x22:
-		_skits.clear();
-		_skits.push_back(Skit());
-		_skitsOpen = true;
+		skitInit();
 		break;
-	case 0x23: {
-		// AVI Skit Start: until M4 the skit ends at once, running its expressions
-		uint n = paramValue(a, 0);
-		unimplemented(a, "video");
-		if (n >= _skits.size()) {
-			warning("No AVI skit %d", n);
-			break;
-		}
-		Skit skit = _skits[n];
-		for (const Common::String &expr : skit.exprs) {
-			if (!expr.empty() && expr != " ")
-				_eval->execute(expr);
-		}
-		if (!skit.stopExpr.empty() && skit.stopExpr != " ")
-			_eval->execute(skit.stopExpr);
+	case 0x23:
+		skitStart(paramValue(a, 0));
 		break;
-	}
 	case 0x24:
-		if (!_skits.empty())
-			_skits.back().exprs.push_back(paramString(a, 6));
+		skitAdd(a, false);
 		break;
 	case 0x25:
-		if (!_skits.empty()) {
-			_skits.back().stopExpr = paramString(a, 0);
-			_skits.push_back(Skit());
-		}
+		skitAdd(a, true);
 		break;
 	case 0x26:
-		_skits.clear();
-		_skitsOpen = false;
+		// AVI Close
+		skitEnd();
+		_skitElement = -1;
+		_skitEntries.clear();
 		break;
 	default:
 		unimplemented(a, "title");
@@ -651,6 +633,15 @@ void Runtime::setVisible(int el, bool visible) {
 	if (e.visible == visible)
 		return;
 	e.visible = visible;
+	// A video's window opens its AVI when it shows and closes it when it hides
+	if (e.def->isVideo()) {
+		if (visible) {
+			openVideo(el);
+		} else {
+			closeVideo(el);
+			e.videoState = ElementState::kVideoStopped;
+		}
+	}
 	fireEvent(el, visible ? kEventShow : kEventHide);
 }
 
@@ -849,7 +840,7 @@ int Runtime::hitTest(const ElementState &e, int x, int y, uint32 &hotspotId) con
 	if (!e.visible)
 		return 0;
 	if (e.def->isVideo())
-		return x >= e.x && y >= e.y && x < e.x + (int)e.def->width && y < e.y + (int)e.def->height;
+		return getVideoRect(e).contains(x, y);
 	const PathSegment *seg = e.segment();
 	if (!seg)
 		return 0;
@@ -865,8 +856,6 @@ int Runtime::hitTest(const ElementState &e, int x, int y, uint32 &hotspotId) con
 	return pib && pib->isOpaque(lx, ly);
 }
 
-// Mouse messages go to the frontmost element under the mouse that has a
-// matching trigger; elements without one let the message through
 void Runtime::mouseEvent(uint16 msg, int x, int y) {
 	if (!_layout || _now < _blockedUntil || !_pendingLayout.empty())
 		return;
@@ -879,8 +868,34 @@ void Runtime::mouseEvent(uint16 msg, int x, int y) {
 			_lastDownPos = Common::Point(x, y);
 		}
 	}
+	int el = dispatchMouse(msg, x, y);
+	// MSBSOLAR's event sink (FUN_1008_82a0): a click stops the playing skit; a click
+	// on a video then goes again to what's under it, the skit window being gone
+	if (msg == kEventLButtonUp && el >= 0 && _skitPos >= 0) {
+		debugC(1, kDebugInput, "The click stops the skit");
+		skitEnd();
+		if (_layout->elements[el].def->isVideo()) {
+			dispatchMouse(kEventLButtonDown, x, y);
+			dispatchMouse(kEventLButtonUp, x, y);
+		}
+	}
+}
+
+// Mouse messages go to the frontmost element under the mouse that has a
+// matching trigger; elements without one let the message through. Videos
+// play in child windows above the arena, which take every message.
+int Runtime::dispatchMouse(uint16 msg, int x, int y) {
 	sortElements();
+	Common::Array<uint> order;
 	for (uint idx : _layout->order) {
+		if (_layout->elements[idx].def->isVideo())
+			order.push_back(idx);
+	}
+	for (uint idx : _layout->order) {
+		if (!_layout->elements[idx].def->isVideo())
+			order.push_back(idx);
+	}
+	for (uint idx : order) {
 		const ElementState &e = _layout->elements[idx];
 		uint32 hotspot;
 		if (!hitTest(e, x, y, hotspot))
@@ -901,11 +916,12 @@ void Runtime::mouseEvent(uint16 msg, int x, int y) {
 			matched = true;
 			queueList(idx, t.list);
 		}
-		if (matched)
-			return;
+		if (matched || e.def->isVideo())
+			return idx;
 	}
 	if (msg != kEventMouseMove)
 		debugC(2, kDebugInput, "%s at %d,%d: nothing", getEventName(msg, 0), x, y);
+	return -1;
 }
 
 void Runtime::escape() {
@@ -922,7 +938,8 @@ bool Runtime::findElement(const Common::String &name, uint32 hotspotId, Common::
 		return false;
 	const ElementState &e = _layout->elements[el];
 	if (e.def->isVideo()) {
-		pt = Common::Point(e.x + e.def->width / 2, e.y + e.def->height / 2);
+		Common::Rect r = getVideoRect(e);
+		pt = Common::Point((r.left + r.right) / 2, (r.top + r.bottom) / 2);
 		return true;
 	}
 	const PathSegment *seg = e.segment();
@@ -1018,7 +1035,7 @@ int32 Runtime::getProperty(const Common::String &element, int prop) {
 	case kPropWidth:
 	case kPropHeight: {
 		if (e.def->isVideo())
-			return prop == kPropWidth ? e.def->width : e.def->height;
+			return prop == kPropWidth ? e.w : e.h;
 		const Pib *pib = getFrame(e);
 		return pib ? (prop == kPropWidth ? pib->surface.w : pib->surface.h) : 0;
 	}
@@ -1045,14 +1062,22 @@ void Runtime::setProperty(const Common::String &element, int prop, int32 value) 
 	case kPropPathSeg:
 		setPathSegment(el, value);
 		break;
-	case kPropStart:
 	case kPropPlay:
 		if (e.def->isVideo()) {
+			// FUN_1008_5482: with the default VideoInWindow=0 the video plays full screen
 			if (value) {
-				debugC(1, kDebugActions, "Video %s (%s) skipped", e.def->name.c_str(), _media->getVideoPath(e.def->videoId).toString().c_str());
-				fireEvent(el, kEventVideoPlay);
-				fireEvent(el, kEventVideoStop);
+				e.videoFlags = kVideoFullScreen;
+				playVideo(el, -1, -1, false);
+			} else {
+				stopVideo(el);
 			}
+			break;
+		}
+		// fall through
+	case kPropStart:
+		if (e.def->isVideo()) {
+			// A video has no sprite interface to start
+			break;
 		} else if (value) {
 			startSprite(el);
 		} else {
@@ -1082,14 +1107,280 @@ void Runtime::setProperty(const Common::String &element, int prop, int32 value) 
 			seg->duration = value;
 		break;
 	case kPropWidth:
-		e.def->width = value;
+		if (e.def->isVideo())
+			e.w = value;
 		break;
 	case kPropHeight:
-		e.def->height = value;
+		if (e.def->isVideo())
+			e.h = value;
 		break;
 	default:
 		break;
 	}
+}
+
+// Videos (VID): an MCI AVIVideo child window at the element's site and size. The
+// AVI opens when the video shows and closes when it hides; a shown video that
+// isn't playing keeps its current picture.
+
+bool Runtime::openVideo(int el) {
+	ElementState &e = _layout->elements[el];
+	if (e.video || _skipVideos)
+		return e.video != nullptr;
+	Common::Path path = _media->getVideoPath(e.def->videoId);
+	if (path.empty()) {
+		warning("%s: video %x is missing", e.def->name.c_str(), e.def->videoId);
+		return false;
+	}
+	e.video = new VideoPlayer();
+	if (!e.video->open(path, _palette)) {
+		delete e.video;
+		e.video = nullptr;
+		return false;
+	}
+	e.video->seek(e.playFrom, e.videoFlags & kVideoFrames);
+	return true;
+}
+
+void Runtime::closeVideo(int el) {
+	ElementState &e = _layout->elements[el];
+	delete e.video;
+	e.video = nullptr;
+}
+
+// VID::DOACTION: Play needs a shown video; Stop, Pause and Resume only act in
+// the right state, and each fires its event when it does
+void Runtime::videoAction(int el, const Action &a) {
+	ElementState &e = _layout->elements[el];
+	switch (a.id) {
+	case 7:
+		setVisible(el, true);
+		break;
+	case 8:
+		setVisible(el, false);
+		break;
+	case 16:
+		playVideo(el, -1, -1, false);
+		break;
+	case 17:
+		stopVideo(el);
+		break;
+	case 18:
+		if (e.videoState == ElementState::kVideoPlaying) {
+			if (e.video)
+				e.video->pause();
+			e.videoState = ElementState::kVideoPaused;
+			fireEvent(el, kEventVideoPause);
+		}
+		break;
+	case 19:
+		if (e.videoState == ElementState::kVideoPaused) {
+			if (e.video)
+				e.video->resume();
+			e.videoState = ElementState::kVideoPlaying;
+			fireEvent(el, kEventVideoResume);
+		}
+		break;
+	case 20:
+		playVideo(el, paramValue(a, 0), paramValue(a, 1), true);
+		break;
+	case 21:
+		// Seek sets where Play and Resume start (FUN_1058_21be)
+		e.playFrom = paramValue(a, 0);
+		if (e.video)
+			e.video->seek(e.playFrom, e.videoFlags & kVideoFrames);
+		fireEvent(el, kEventVideoSeek);
+		break;
+	default:
+		unimplemented(a, "video");
+		break;
+	}
+}
+
+// Play goes from the last Seek to the end, Play Clip between its two positions;
+// neither waits for the video
+void Runtime::playVideo(int el, int32 from, int32 to, bool clip) {
+	ElementState &e = _layout->elements[el];
+	if (!e.visible) {
+		debugC(1, kDebugActions, "%s isn't showing, so it doesn't play", e.def->name.c_str());
+		return;
+	}
+	if (e.videoState == ElementState::kVideoPlaying)
+		return;
+	if (!clip)
+		from = e.playFrom;
+	debugC(1, kDebugActions, "Video %s (%s) plays from %d to %d", e.def->name.c_str(),
+		_media->getVideoPath(e.def->videoId).toString().c_str(), from, to);
+	if (openVideo(el))
+		e.video->play(from, to, e.videoFlags & kVideoFrames);
+	// Without its AVI (or with mspam_skip_videos) the video ends at the next update
+	e.videoState = ElementState::kVideoPlaying;
+	fireEvent(el, clip ? kEventVideoPlayClip : kEventVideoPlay);
+}
+
+void Runtime::stopVideo(int el) {
+	ElementState &e = _layout->elements[el];
+	if (e.videoState == ElementState::kVideoStopped)
+		return;
+	if (e.video)
+		e.video->stop();
+	videoEnded(el);
+}
+
+// The MCI notification: the Video Stop event, and a skit goes on to its next entry
+void Runtime::videoEnded(int el) {
+	ElementState &e = _layout->elements[el];
+	e.videoState = ElementState::kVideoStopped;
+	fireEvent(el, kEventVideoStop);
+	if (el == _skitElement && _skitPos >= 0)
+		skitNext();
+}
+
+void Runtime::updateVideos() {
+	for (uint i = 0; i < _layout->elements.size(); i++) {
+		ElementState &e = _layout->elements[i];
+		if (!e.def->isVideo())
+			continue;
+		if (e.visible && !e.video && !_skipVideos)
+			openVideo(i);
+		if (e.videoState != ElementState::kVideoPlaying)
+			continue;
+		if (!e.video || e.video->update())
+			videoEnded(i);
+	}
+}
+
+bool Runtime::isVideoPlaying() const {
+	if (!_layout)
+		return false;
+	for (const ElementState &e : _layout->elements) {
+		if (e.videoState == ElementState::kVideoPlaying)
+			return true;
+	}
+	return false;
+}
+
+Common::Rect Runtime::getVideoRect(const ElementState &e) const {
+	if (e.videoFlags & kVideoFullScreen)
+		return Common::Rect(kScreenWidth, kScreenHeight);
+	return Common::Rect(e.x, e.y, e.x + e.w, e.y + e.h);
+}
+
+// The AVI is stretched to the window, or with kVideoNaturalSize keeps its size
+// and is cut to the window at its top-left corner
+void Runtime::renderVideo(const ElementState &e, Graphics::Surface &dst) const {
+	const Graphics::Surface *frame = e.video ? e.video->getFrame() : nullptr;
+	if (!frame || !frame->w || !frame->h)
+		return;
+	Common::Rect r = getVideoRect(e);
+	if (r.isEmpty())
+		return;
+	bool natural = (e.videoFlags & kVideoNaturalSize) && !(e.videoFlags & kVideoFullScreen);
+	for (int y = MAX<int>(r.top, 0); y < MIN<int>(r.bottom, dst.h); y++) {
+		int sy = natural ? y - r.top : (y - r.top) * frame->h / r.height();
+		if (sy >= frame->h)
+			break;
+		const byte *src = (const byte *)frame->getBasePtr(0, sy);
+		byte *out = (byte *)dst.getBasePtr(0, y);
+		for (int x = MAX<int>(r.left, 0); x < MIN<int>(r.right, dst.w); x++) {
+			int sx = natural ? x - r.left : (x - r.left) * frame->w / r.width();
+			if (sx >= frame->w)
+				break;
+			out[x] = src[sx];
+		}
+	}
+}
+
+// AVI skits (MSBSOLAR.DLL FUN_1008_8f74-965a): AVI Init takes the layout's "AVI"
+// video, which then counts in frames and keeps its size. Add Bit and Add Stop
+// build a table where each skit ends at a stop; their expressions are kept in
+// AVIExpr<n> variables. A skit shows the video and plays its bits one after
+// another, each a frame range in its own window; at the stop entry the window
+// goes back to its site.
+
+void Runtime::skitInit() {
+	skitEnd();
+	_skitEntries.clear();
+	_skitExprs = 0;
+	_skitElement = _layout->find("AVI");
+	if (_skitElement < 0) {
+		warning("%s: AVI Init without an AVI element", getLayoutName().c_str());
+		return;
+	}
+	_layout->elements[_skitElement].videoFlags |= kVideoNaturalSize | kVideoFrames;
+}
+
+void Runtime::skitAdd(const Action &a, bool stop) {
+	if (_skitElement < 0)
+		return;
+	SkitEntry entry;
+	entry.stop = stop;
+	entry.x = stop ? 0 : paramValue(a, 0);
+	entry.y = stop ? 0 : paramValue(a, 1);
+	entry.w = stop ? 0 : paramValue(a, 2);
+	entry.h = stop ? 0 : paramValue(a, 3);
+	entry.from = stop ? 0 : paramValue(a, 4);
+	entry.to = stop ? 0 : paramValue(a, 5);
+	entry.expr = -1;
+	Common::String expr = paramString(a, stop ? 0 : 6);
+	expr.trim();
+	if (!expr.empty()) {
+		entry.expr = _skitExprs++;
+		_vars.set(Common::String::format("AVIExpr%d", entry.expr), expr);
+	}
+	_skitEntries.push_back(entry);
+}
+
+void Runtime::skitStart(uint n) {
+	if (_skitElement < 0)
+		return;
+	skitEnd();
+	uint pos = 0;
+	for (uint skit = 0; skit < n && pos < _skitEntries.size(); pos++) {
+		if (_skitEntries[pos].stop)
+			skit++;
+	}
+	if (pos >= _skitEntries.size()) {
+		warning("%s: no AVI skit %u", getLayoutName().c_str(), n);
+		return;
+	}
+	debugC(1, kDebugActions, "Skit %u starts", n);
+	setVisible(_skitElement, true);
+	_skitPos = pos;
+	skitNext();
+}
+
+void Runtime::skitNext() {
+	if (_skitPos < 0 || _skitPos >= (int)_skitEntries.size()) {
+		_skitPos = -1;
+		return;
+	}
+	const SkitEntry entry = _skitEntries[_skitPos];
+	if (entry.expr >= 0)
+		_eval->execute(_vars.get(Common::String::format("AVIExpr%d", entry.expr)));
+	if (entry.stop || _skitPos < 0) {
+		skitEnd();
+		return;
+	}
+	_skitPos++;
+	ElementState &e = _layout->elements[_skitElement];
+	e.x = entry.x;
+	e.y = entry.y;
+	e.w = entry.w;
+	e.h = entry.h;
+	playVideo(_skitElement, entry.from, entry.to, true);
+}
+
+void Runtime::skitEnd() {
+	if (_skitPos < 0)
+		return;
+	_skitPos = -1;
+	if (_skitElement < 0)
+		return;
+	ElementState &e = _layout->elements[_skitElement];
+	e.x = e.def->x;
+	e.y = e.def->y;
+	stopVideo(_skitElement);
 }
 
 // Palette transitions (TREPAL): the description is { type, steps, duration in ms }
@@ -1151,6 +1442,8 @@ void Runtime::update(uint32 now) {
 		}
 		processQueue();
 	}
+	if (_layout)
+		updateVideos();
 	if (!_pendingLayout.empty() && _queue.empty())
 		switchLayout();
 	_sound->update();
@@ -1182,6 +1475,12 @@ void Runtime::render(Graphics::Surface &dst) {
 					out[dx] = src[x];
 			}
 		}
+	}
+	// Videos play in child windows over the arena
+	for (int i = _layout->order.size() - 1; i >= 0; i--) {
+		const ElementState &e = _layout->elements[_layout->order[i]];
+		if (e.visible && e.def->isVideo())
+			renderVideo(e, dst);
 	}
 }
 

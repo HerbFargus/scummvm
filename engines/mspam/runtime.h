@@ -34,6 +34,7 @@
 
 #include "mspam/layout.h"
 #include "mspam/script.h"
+#include "mspam/video.h"
 
 namespace MSPAM {
 
@@ -70,6 +71,18 @@ struct ElementState {
 	uint32 soundId;
 	Audio::SoundHandle sound;
 
+	// Video playback
+	enum VideoState {
+		kVideoStopped,
+		kVideoPlaying,
+		kVideoPaused
+	};
+	VideoPlayer *video;     ///< the open AVI while the video shows
+	VideoState videoState;
+	uint16 videoFlags;      ///< VideoFlags (the skits set kVideoNaturalSize and kVideoFrames)
+	int32 w, h;             ///< the video window size
+	int32 playFrom;         ///< where Play starts: the last Seek
+
 	const PathSegment *segment() const;
 	uint32 segmentDuration() const;
 };
@@ -84,7 +97,7 @@ struct LayoutState {
 	bool reset;                ///< Reset Layout while it's showing: dropped when left
 
 	LayoutState() : layout(nullptr), serial(0), lowPriority(false), reset(false) {}
-	~LayoutState() { delete layout; }
+	~LayoutState();
 	int find(const Common::String &name) const;
 };
 
@@ -129,9 +142,12 @@ private:
 		const ActionList *list;
 		uint pos;
 	};
-	struct Skit {
-		Common::Array<Common::String> exprs;
-		Common::String stopExpr;
+	/** AVI Add Bit and AVI Add Stop entries of the title's skit table */
+	struct SkitEntry {
+		bool stop;
+		int32 x, y, w, h;
+		int32 from, to;     ///< frames
+		int expr;           ///< the AVIExpr<n> variable to run first, -1 for none
 	};
 
 	// Layouts
@@ -151,6 +167,8 @@ private:
 	void titleAction(const Action &a);
 	void soundAction(const Action &a);
 	void unimplemented(const Action &a, const char *what);
+	/** The element that took the mouse message, -1 for none */
+	int dispatchMouse(uint16 msg, int x, int y);
 
 	// Sprites
 	void setVisible(int el, bool visible);
@@ -166,6 +184,25 @@ private:
 	const Pib *getFrame(const ElementState &e) const;
 	int hitTest(const ElementState &e, int x, int y, uint32 &hotspotId) const;
 	void sortElements();
+
+	// Videos
+	bool openVideo(int el);
+	void closeVideo(int el);
+	void videoAction(int el, const Action &a);
+	void playVideo(int el, int32 from, int32 to, bool clip);
+	void stopVideo(int el);
+	void videoEnded(int el);
+	void updateVideos();
+	void renderVideo(const ElementState &e, Graphics::Surface &dst) const;
+	Common::Rect getVideoRect(const ElementState &e) const;
+	bool isVideoPlaying() const;
+
+	// AVI skits (MSBSOLAR.DLL)
+	void skitInit();
+	void skitAdd(const Action &a, bool stop);
+	void skitStart(uint n);
+	void skitNext();
+	void skitEnd();
 	int findElementState(const Common::String &name) const;
 
 	// Palette
@@ -199,8 +236,11 @@ private:
 	int _fadeFrom, _fadeTo, _fadeLevel;
 	uint32 _fadeStart, _fadeDuration;
 
-	Common::Array<Skit> _skits;
-	bool _skitsOpen;
+	bool _skipVideos;
+	int _skitElement;          ///< the layout's "AVI" element after AVI Init, -1 without skits
+	Common::Array<SkitEntry> _skitEntries;
+	int _skitPos;              ///< the next entry of the playing skit, -1 when none plays
+	uint _skitExprs;
 
 	uint32 _lastDownTime;
 	Common::Point _lastDownPos;

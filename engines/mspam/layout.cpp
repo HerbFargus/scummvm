@@ -479,10 +479,10 @@ const char *getEventName(uint16 event, uint16 kind) {
 		case kEventPathSegEnd: return "Path Seg End";
 		case kEventVideoPlay: return "Video Play";
 		case kEventVideoStop: return "Video Stop";
-		case 18: return "Video Pause";
-		case 19: return "Video Resume";
-		case 20: return "Video Play Clip";
-		case 21: return "Video Seek";
+		case kEventVideoPause: return "Video Pause";
+		case kEventVideoResume: return "Video Resume";
+		case kEventVideoPlayClip: return "Video Play Clip";
+		case kEventVideoSeek: return "Video Seek";
 		default: break;
 		}
 	}
