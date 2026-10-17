@@ -30,10 +30,18 @@ resource N + 7.
 
 ## Status
 
-Stage 2: detection, the movie loader, all four bitmap formats, sound, the
-score player with film loops, and the stage compositor. Every frame of all
-190 movies plays without errors, and sampled frames are pixel-identical to an
-independent Python renderer. The script VM, input and navigation come next.
+Playable, not yet playtested start to finish. Detection, the movie loader,
+all bitmap formats, sound with fades, the score with film loops, the
+compiled-Lingo interpreter with its builtins, the player's event model
+(enterFrame/exitFrame, mouse enter/within/leave/down/up, keyDown, startMovie,
+go), cursors, and getPref/setPref as save files, so the games' own save and
+load screens work. Every frame of all 190 movies plays without errors;
+random-click runs through all four games produce no interpreter warnings.
+
+Not supported: video (unused by these games), PrintOMatic printing,
+ScummVM's own save/load menu.
 
 Test hooks (config keys): `bigtuna_movie`, `bigtuna_frames`, `bigtuna_fast`,
-`bigtuna_shots`, `bigtuna_shot_dir`, `bigtuna_allmovies`.
+`bigtuna_shots`, `bigtuna_shot_dir`, `bigtuna_allmovies`, `bigtuna_actions`
+(`ms:c:x:y`, `ms:k:code`, `ms:s`), `bigtuna_fuzz`, `bigtuna_seed`,
+`bigtuna_quit`, `bigtuna_trace`.
