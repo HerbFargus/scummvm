@@ -69,7 +69,7 @@ bool NightmareNedEngine::hasFeature(EngineFeature f) const {
 }
 
 // The CD has DATA\DATA\*.NAF and DATA\VIDEO\*.SMK. NITENED.EXE, NED01000.NAF,
-// NED99000.NAF, the .SST motion paths and the area music only exist inside DATA\DATA32.Z.
+// NED99000.NAF, the .SST placement tables and the area music only exist inside DATA\DATA32.Z.
 bool NightmareNedEngine::mountData() {
 	const Common::FSNode gameDir(ConfMan.getPath("path"));
 	// The detection globs already add DATA itself, without its subfolders

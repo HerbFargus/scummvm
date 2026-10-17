@@ -31,7 +31,7 @@ the fork, in `nightmare-ned/NOTES.md`.
 ## Data
 
 The CD keeps NAF archives in `DATA\DATA\` and Smacker videos in `DATA\VIDEO\`.
-`NITENED.EXE`, `NED01000.NAF`, `NED99000.NAF`, the `.SST` motion paths and the
+`NITENED.EXE`, `NED01000.NAF`, `NED99000.NAF`, the `.SST` placement tables and the
 area music (`SOUND\<area>002208.wav`) exist only inside the InstallShield 3
 archive `DATA\DATA32.Z`. The engine reads that with `Common::InstallShieldV3`,
 so pointing ScummVM at the CD (or a copy of it) is enough.
@@ -57,13 +57,13 @@ so pointing ScummVM at the CD (or a copy of it) is enough.
   05 end of image. Sprites use the scene's palette.
 - Sound: WAVEFORMATEX (18 bytes) then PCM.
 
-All 7,742 backgrounds, sprite frames and sounds decode identically to the
+All 7,769 backgrounds, sprite frames and sounds decode identically to the
 Python tools in `nightmare-ned/tools`.
 
 ## Testing
 
-`tools-nightmarened/` in the parent folder: `make.sh` builds, `play.sh [naf]`
-plays, and `boot.sh` runs with test hooks (`nightmarened_skipintro=true`,
+`tools-nightmarened/` in the parent folder: `make.sh` builds, `play.sh` plays
+(`play.sh <naf>` opens the resource viewer on that NAF), and `boot.sh` runs with test hooks (`nightmarened_skipintro=true`,
 `nightmarened_viewer=true`, `nightmarened_naf=95000`, `nightmarened_bg=<scene>:<id>`,
 `nightmarened_ticks=<n>`, `nightmarened_scroll=<x>,<y>`, `nightmarened_collision=true`,
 `nightmarened_sprite=<n>`, `nightmarened_shot=<png>`,
