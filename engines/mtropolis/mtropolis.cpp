@@ -23,6 +23,7 @@
 #include "common/debug.h"
 #include "common/events.h"
 #include "common/file.h"
+#include "common/fs.h"
 #include "common/macresman.h"
 #include "common/ptr.h"
 #include "common/compression/stuffit.h"
@@ -39,12 +40,16 @@
 #include "graphics/surface.h"
 #include "graphics/pixelformat.h"
 #include "graphics/wincursor.h"
+#include "graphics/paletteman.h"
+
+#include "image/png.h"
 
 #include "mtropolis/mtropolis.h"
 
 #include "mtropolis/actions.h"
 #include "mtropolis/boot.h"
 #include "mtropolis/debug.h"
+#include "mtropolis/elements.h"
 #include "mtropolis/runtime.h"
 
 #include "mtropolis/plugins.h"
@@ -52,6 +57,323 @@
 #include "mtropolis/plugin/obsidian.h"
 
 namespace MTropolis {
+
+// Development aid: when "mtropolis_test_input" names a file, its lines are
+// run as a test script, injecting input through the event queue so a game
+// can be tested without a real mouse or keyboard:
+//   scene <name>     wait until the named scene is active
+//   wait <ms>        wait
+//   click <x> <y>    click at game coordinates
+//   type <text>      type text
+//   key <name>       press enter, escape, backspace, tab or an arrow key
+//   shot <path>      save a PNG of the screen
+//   probe <x> <y>    log the visual elements at a point
+//   clickon <name>   click the center of a visual element
+//   press <x> <y>    hold the mouse button down at game coordinates
+//   release <x> <y>  let go of the mouse button
+//   move <x> <y>     move the mouse
+//   quit             quit the engine
+class TestInputScript {
+public:
+	explicit TestInputScript(const Common::Path &path);
+
+	void update(OSystem *system, Runtime *runtime, Engine *engine);
+
+private:
+	void pushKey(Common::EventManager *events, Common::KeyCode keycode, uint16 ascii);
+	void saveScreenshot(OSystem *system, const Common::String &path);
+	void probe(Structural *structural, const Common::Point &pt);
+	void dumpTree(Structural *structural, int depth);
+	static void findNamed(Structural *structural, const Common::String &name, Structural *&outElement, Modifier *&outModifier);
+	static bool findNamedModifier(IModifierContainer *container, const Common::String &name, Modifier *&outModifier);
+	void dumpModifierTree(Modifier *modifier, int depth);
+	static VisualElement *findVisual(Structural *structural, const Common::String &name);
+	void pushClick(Common::EventManager *events, const Common::Point &pt);
+
+	Common::Array<Common::String> _lines;
+	uint _lineIndex;
+	uint32 _waitUntil;
+};
+
+TestInputScript::TestInputScript(const Common::Path &path) : _lineIndex(0), _waitUntil(0) {
+	Common::File f;
+	if (!f.open(Common::FSNode(path))) {
+		warning("Test input: Couldn't open '%s'", path.toString().c_str());
+		return;
+	}
+
+	while (!f.eos()) {
+		Common::String line = f.readLine();
+		line.trim();
+		if (!line.empty() && !line.hasPrefix("#"))
+			_lines.push_back(line);
+	}
+}
+
+void TestInputScript::pushKey(Common::EventManager *events, Common::KeyCode keycode, uint16 ascii) {
+	Common::Event evt;
+	evt.type = Common::EVENT_KEYDOWN;
+	evt.kbd = Common::KeyState(keycode, ascii);
+	events->pushEvent(evt);
+	evt.type = Common::EVENT_KEYUP;
+	events->pushEvent(evt);
+}
+
+void TestInputScript::saveScreenshot(OSystem *system, const Common::String &path) {
+	Graphics::Surface *screen = system->lockScreen();
+	if (!screen)
+		return;
+
+	byte palette[256 * 3];
+	if (screen->format.isCLUT8())
+		system->getPaletteManager()->grabPalette(palette, 0, 256);
+
+	// The screen's alpha bits aren't shown, so leave them out
+	Graphics::Surface *opaque = screen->convertTo(Graphics::PixelFormat::createFormatRGB24(), screen->format.isCLUT8() ? palette : nullptr);
+	system->unlockScreen();
+
+	Common::DumpFile out;
+	if (out.open(Common::FSNode(Common::Path(path, Common::Path::kNativeSeparator))))
+		Image::writePNG(out, *opaque);
+	else
+		warning("Test input: Couldn't write '%s'", path.c_str());
+
+	opaque->free();
+	delete opaque;
+}
+
+void TestInputScript::probe(Structural *structural, const Common::Point &pt) {
+	if (structural->isElement() && static_cast<Element *>(structural)->isVisual()) {
+		VisualElement *visual = static_cast<VisualElement *>(structural);
+		Common::Point pos = visual->getGlobalPosition();
+		const Common::Rect &rect = visual->getRelativeRect();
+		Common::Rect globalRect(pos.x, pos.y, pos.x + rect.width(), pos.y + rect.height());
+		if (globalRect.contains(pt)) {
+			const ColorRGB8 &backColor = visual->getRenderProperties().getBackColor();
+			debug(1, "Test input: Probe '%s' (%i,%i)-(%i,%i) visible %i ink %i back %02x%02x%02x layer %i", visual->getName().c_str(),
+				  globalRect.left, globalRect.top, globalRect.right, globalRect.bottom, visual->isVisible() ? 1 : 0, static_cast<int>(visual->getRenderProperties().getInkMode()),
+				  backColor.r, backColor.g, backColor.b, static_cast<int>(visual->getLayer()));
+		}
+	}
+
+	for (const Common::SharedPtr<Structural> &child : structural->getChildren())
+		probe(child.get(), pt);
+}
+
+bool TestInputScript::findNamedModifier(IModifierContainer *container, const Common::String &name, Modifier *&outModifier) {
+	for (const Common::SharedPtr<Modifier> &modifier : container->getModifiers()) {
+		if (modifier->getName().equalsIgnoreCase(name)) {
+			outModifier = modifier.get();
+			return true;
+		}
+		IModifierContainer *child = modifier->getChildContainer();
+		if (child && findNamedModifier(child, name, outModifier))
+			return true;
+	}
+	return false;
+}
+
+void TestInputScript::findNamed(Structural *structural, const Common::String &name, Structural *&outElement, Modifier *&outModifier) {
+	if (structural->getName().equalsIgnoreCase(name) && !structural->isProject()) {
+		outElement = structural;
+		return;
+	}
+	if (findNamedModifier(structural, name, outModifier))
+		return;
+	for (const Common::SharedPtr<Structural> &child : structural->getChildren()) {
+		findNamed(child.get(), name, outElement, outModifier);
+		if (outElement || outModifier)
+			return;
+	}
+}
+
+// Log an element's modifiers and children, with their GUIDs
+void TestInputScript::dumpTree(Structural *structural, int depth) {
+	Common::String indent;
+	for (int i = 0; i < depth; i++)
+		indent += "  ";
+#ifdef MTROPOLIS_DEBUG_ENABLE
+	debug(1, "Test input: Tree %s'%s' %x (%s)", indent.c_str(), structural->getName().c_str(), structural->getStaticGUID(), structural->debugGetTypeName());
+#else
+	debug(1, "Test input: Tree %s'%s' %x (element)", indent.c_str(), structural->getName().c_str(), structural->getStaticGUID());
+#endif
+	for (const Common::SharedPtr<Modifier> &modifier : structural->getModifiers())
+		dumpModifierTree(modifier.get(), depth + 1);
+	for (const Common::SharedPtr<Structural> &child : structural->getChildren())
+		dumpTree(child.get(), depth + 1);
+}
+
+void TestInputScript::dumpModifierTree(Modifier *modifier, int depth) {
+	Common::String indent;
+	for (int i = 0; i < depth; i++)
+		indent += "  ";
+#ifdef MTROPOLIS_DEBUG_ENABLE
+	debug(1, "Test input: Tree %s'%s' %x (%s)", indent.c_str(), modifier->getName().c_str(), modifier->getStaticGUID(), modifier->debugGetTypeName());
+#else
+	debug(1, "Test input: Tree %s'%s' %x (modifier)", indent.c_str(), modifier->getName().c_str(), modifier->getStaticGUID());
+#endif
+	IModifierContainer *container = modifier->getChildContainer();
+	if (container) {
+		for (const Common::SharedPtr<Modifier> &child : container->getModifiers())
+			dumpModifierTree(child.get(), depth + 1);
+	}
+}
+
+VisualElement *TestInputScript::findVisual(Structural *structural, const Common::String &name) {
+	if (structural->isElement() && static_cast<Element *>(structural)->isVisual() && structural->getName().equalsIgnoreCase(name))
+		return static_cast<VisualElement *>(structural);
+
+	for (const Common::SharedPtr<Structural> &child : structural->getChildren()) {
+		VisualElement *found = findVisual(child.get(), name);
+		if (found)
+			return found;
+	}
+
+	return nullptr;
+}
+
+void TestInputScript::pushClick(Common::EventManager *events, const Common::Point &pt) {
+	Common::Event evt;
+	evt.mouse = pt;
+	evt.type = Common::EVENT_MOUSEMOVE;
+	events->pushEvent(evt);
+	evt.type = Common::EVENT_LBUTTONDOWN;
+	events->pushEvent(evt);
+	evt.type = Common::EVENT_LBUTTONUP;
+	events->pushEvent(evt);
+}
+
+void TestInputScript::update(OSystem *system, Runtime *runtime, Engine *engine) {
+	uint32 now = system->getMillis();
+
+	while (_lineIndex < _lines.size() && now >= _waitUntil) {
+		const Common::String &line = _lines[_lineIndex];
+		Common::String cmd = line;
+		Common::String arg;
+		size_t space = line.findFirstOf(' ');
+		if (space != Common::String::npos) {
+			cmd = line.substr(0, space);
+			arg = line.substr(space + 1);
+		}
+
+		Common::EventManager *events = system->getEventManager();
+
+		if (cmd == "scene") {
+			Structural *scene = runtime->getActiveMainScene().get();
+			if (!scene || !scene->getName().equalsIgnoreCase(arg))
+				return;
+			debug(1, "Test input: Scene '%s' is active", arg.c_str());
+		} else if (cmd == "wait") {
+			_waitUntil = now + atoi(arg.c_str());
+		} else if (cmd == "click") {
+			int x = 0, y = 0;
+			sscanf(arg.c_str(), "%d %d", &x, &y);
+			pushClick(events, Common::Point(x, y));
+			_waitUntil = now + 100;
+		} else if (cmd == "move") {
+			int x = 0, y = 0;
+			sscanf(arg.c_str(), "%d %d", &x, &y);
+			Common::Event evt;
+			evt.mouse = Common::Point(x, y);
+			evt.type = Common::EVENT_MOUSEMOVE;
+			events->pushEvent(evt);
+		} else if (cmd == "press" || cmd == "release") {
+			int x = 0, y = 0;
+			sscanf(arg.c_str(), "%d %d", &x, &y);
+			Common::Event evt;
+			evt.mouse = Common::Point(x, y);
+			evt.type = Common::EVENT_MOUSEMOVE;
+			events->pushEvent(evt);
+			evt.type = (cmd == "press") ? Common::EVENT_LBUTTONDOWN : Common::EVENT_LBUTTONUP;
+			events->pushEvent(evt);
+			_waitUntil = now + 100;
+		} else if (cmd == "clickon") {
+			VisualElement *element = nullptr;
+			if (runtime->getActiveMainScene())
+				element = findVisual(runtime->getActiveMainScene().get(), arg);
+			if (!element && runtime->getActiveSharedScene())
+				element = findVisual(runtime->getActiveSharedScene().get(), arg);
+
+			if (element) {
+				Common::Point pos = element->getGlobalPosition();
+				const Common::Rect &rect = element->getRelativeRect();
+				Common::Point center(pos.x + rect.width() / 2, pos.y + rect.height() / 2);
+				debug(1, "Test input: Clicking '%s' at (%i,%i)", arg.c_str(), center.x, center.y);
+				pushClick(events, center);
+			} else {
+				warning("Test input: No element '%s'", arg.c_str());
+			}
+			_waitUntil = now + 100;
+		} else if (cmd == "tree") {
+			// Any element, or a modifier (such as a compound variable), with the name
+			Structural *element = nullptr;
+			Modifier *modifier = nullptr;
+			Structural *roots[3] = {runtime->getActiveMainScene().get(), runtime->getActiveSharedScene().get(), runtime->getProject()};
+			for (Structural *root : roots) {
+				if (root && !element && !modifier)
+					findNamed(root, arg, element, modifier);
+			}
+
+			if (element)
+				dumpTree(element, 0);
+			else if (modifier)
+				dumpModifierTree(modifier, 0);
+			else
+				warning("Test input: No element '%s'", arg.c_str());
+		} else if (cmd == "type") {
+			for (uint i = 0; i < arg.size(); i++) {
+				char c = arg[i];
+				Common::KeyCode keycode = static_cast<Common::KeyCode>((c >= 'A' && c <= 'Z') ? (c - 'A' + 'a') : c);
+				pushKey(events, keycode, c);
+			}
+		} else if (cmd == "key") {
+			if (arg == "enter")
+				pushKey(events, Common::KEYCODE_RETURN, 13);
+			else if (arg == "escape")
+				pushKey(events, Common::KEYCODE_ESCAPE, 27);
+			else if (arg == "backspace")
+				pushKey(events, Common::KEYCODE_BACKSPACE, 8);
+			else if (arg == "tab")
+				pushKey(events, Common::KEYCODE_TAB, 9);
+			else if (arg == "up")
+				pushKey(events, Common::KEYCODE_UP, 0);
+			else if (arg == "down")
+				pushKey(events, Common::KEYCODE_DOWN, 0);
+			else if (arg == "left")
+				pushKey(events, Common::KEYCODE_LEFT, 0);
+			else if (arg == "right")
+				pushKey(events, Common::KEYCODE_RIGHT, 0);
+		} else if (cmd == "keydown" || cmd == "keyup") {
+			// Holds or releases an arrow key
+			Common::Event evt;
+			evt.type = (cmd == "keydown") ? Common::EVENT_KEYDOWN : Common::EVENT_KEYUP;
+			if (arg == "up")
+				evt.kbd = Common::KeyState(Common::KEYCODE_UP);
+			else if (arg == "down")
+				evt.kbd = Common::KeyState(Common::KEYCODE_DOWN);
+			else if (arg == "left")
+				evt.kbd = Common::KeyState(Common::KEYCODE_LEFT);
+			else
+				evt.kbd = Common::KeyState(Common::KEYCODE_RIGHT);
+			events->pushEvent(evt);
+		} else if (cmd == "shot") {
+			saveScreenshot(system, arg);
+			debug(1, "Test input: Saved '%s'", arg.c_str());
+		} else if (cmd == "probe") {
+			int x = 0, y = 0;
+			sscanf(arg.c_str(), "%d %d", &x, &y);
+			if (runtime->getActiveSharedScene())
+				probe(runtime->getActiveSharedScene().get(), Common::Point(x, y));
+			if (runtime->getActiveMainScene())
+				probe(runtime->getActiveMainScene().get(), Common::Point(x, y));
+		} else if (cmd == "quit") {
+			engine->quitGame();
+		}
+
+		_lineIndex++;
+	}
+}
+
 
 MTropolisEngine::MTropolisEngine(OSystem *syst, const MTropolisGameDescription *gameDesc) : Engine(syst), _gameDescription(gameDesc), _saveWriter(nullptr), _isTriggeredAutosave(false) {
 	const Common::FSNode gameDataDir(ConfMan.getPath("path"));
@@ -142,7 +464,23 @@ Common::Error MTropolisEngine::run() {
 	// Get project boot configuration
 	BootConfiguration bootConfig = bootProject(*_gameDescription);
 
+	// Development aid: "mtropolis_test_title" boots another title of the game
+	// directly, e.g. to test one Magic School Bus activity
+	if (ConfMan.hasKey("mtropolis_test_title")) {
+		Common::String startPath = bootConfig._mainSegmentPath;
+		size_t lastSlash = startPath.findLastOf('/');
+		Common::String titlePath = (lastSlash == Common::String::npos) ? Common::String() : startPath.substr(0, lastSlash + 1);
+		titlePath += ConfMan.get("mtropolis_test_title");
+
+		debug(1, "Test input: Booting title '%s'", titlePath.c_str());
+		bootConfig = bootProject(*_gameDescription, titlePath);
+	}
+
 	_runtime->queueProject(bootConfig._projectDesc);
+	Common::String mainSegmentPath = bootConfig._mainSegmentPath;
+	// Titles to return to, for Open Title, and the scene each one was left from
+	Common::Array<Common::String> titleStack;
+	Common::Array<Common::String> titleSceneStack;
 
 	preferredWidth = bootConfig._width;
 	preferredHeight = bootConfig._height;
@@ -275,6 +613,8 @@ Common::Error MTropolisEngine::run() {
 	if (selectedMode == kColorDepthModeInvalid)
 		error("Couldn't resolve a color depth mode");
 
+	debug(1, "Color depth mode %i, %s", static_cast<int>(selectedMode), modePixelFormats[selectedMode].toString().c_str());
+
 	// Set up supported pixel modes
 	for (int i = 0; i < kColorDepthModeCount; i++) {
 		if (haveExactMode[i] || haveCloseMode[i])
@@ -326,6 +666,9 @@ Common::Error MTropolisEngine::run() {
 		}
 	} else if (_gameDescription->gameID == GID_MTI) {
 		HackSuites::addMTIQuirks(*_gameDescription, _runtime->getHacks());
+	} else if (_gameDescription->gameID >= GID_MSB_ANIMAL && _gameDescription->gameID <= GID_MSB_WHALES) {
+		// Dialog lines swap in sound assets from other scenes
+		_runtime->getHacks().allowAssetsFromOtherScenes = true;
 	} else if (_gameDescription->gameID == GID_UNIT) {
 		Palette pal;
 		pal.initDefaultPalette(2);
@@ -333,8 +676,62 @@ Common::Error MTropolisEngine::run() {
 	}
 
 
+	Common::ScopedPtr<TestInputScript> testInput;
+	if (ConfMan.hasKey("mtropolis_test_input"))
+		testInput.reset(new TestInputScript(Common::Path(ConfMan.get("mtropolis_test_input"), Common::Path::kNativeSeparator)));
+
 	while (!shouldQuit()) {
+		if (testInput)
+			testInput->update(_system, _runtime.get(), this);
+
 		handleEvents();
+
+		Common::String openTitlePath;
+		bool addToReturnList = false;
+		if (_runtime->takeOpenTitleRequest(openTitlePath, addToReturnList)) {
+			// Titles are opened relative to the folder of the current main segment
+			static const char *const kStartupSegmentFolder = "<Startup Segment Folder>";
+
+			Common::String relPath = openTitlePath;
+			if (relPath.hasPrefixIgnoreCase(kStartupSegmentFolder))
+				relPath = relPath.substr(strlen(kStartupSegmentFolder));
+			for (uint i = 0; i < relPath.size(); i++)
+				if (relPath[i] == ':' || relPath[i] == '\\')
+					relPath.setChar('/', i);
+			while (relPath.hasPrefix("/"))
+				relPath.deleteChar(0);
+
+			size_t lastSlash = mainSegmentPath.findLastOf('/');
+			Common::String newMainSegment = (lastSlash == Common::String::npos) ? relPath : mainSegmentPath.substr(0, lastSlash + 1) + relPath;
+
+			debug(1, "Opening title '%s' as '%s'", openTitlePath.c_str(), newMainSegment.c_str());
+
+			BootConfiguration titleConfig = bootProject(*_gameDescription, newMainSegment);
+			if (addToReturnList) {
+				const Common::SharedPtr<Structural> &scene = _runtime->getActiveMainScene();
+				titleStack.push_back(mainSegmentPath);
+				titleSceneStack.push_back(scene ? scene->getName() : Common::String());
+			} else {
+				titleStack.clear();
+				titleSceneStack.clear();
+			}
+			mainSegmentPath = titleConfig._mainSegmentPath;
+			_runtime->queueProject(titleConfig._projectDesc);
+			_runtime->setCanReturnToPreviousTitle(!titleStack.empty());
+		} else if (_runtime->takeReturnToPreviousTitleRequest() && !titleStack.empty()) {
+			mainSegmentPath = titleStack.back();
+			titleStack.pop_back();
+			Common::String sceneName = titleSceneStack.back();
+			titleSceneStack.pop_back();
+
+			// Titles resume at the scene they were left from
+			debug(1, "Returning to title '%s' at scene '%s'", mainSegmentPath.c_str(), sceneName.c_str());
+
+			BootConfiguration titleConfig = bootProject(*_gameDescription, mainSegmentPath);
+			_runtime->queueProject(titleConfig._projectDesc);
+			_runtime->setStartSceneName(sceneName);
+			_runtime->setCanReturnToPreviousTitle(!titleStack.empty());
+		}
 
 		if (!_runtime->runFrame())
 			break;
@@ -347,6 +744,7 @@ Common::Error MTropolisEngine::run() {
 
 	return Common::kNoError;
 }
+
 
 void MTropolisEngine::pauseEngineIntern(bool pause) {
 	Engine::pauseEngineIntern(pause);

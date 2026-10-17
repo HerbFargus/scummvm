@@ -41,6 +41,25 @@
 
 namespace MTropolis {
 
+// Nearest palette entry to a color, for drawing solid colors on 8-bit displays
+static uint8 nearestPaletteIndex(const Palette &palette, const ColorRGB8 &color) {
+	const byte *paletteData = palette.getPalette();
+	uint8 best = 0;
+	uint32 bestDistance = 0xffffffffu;
+	for (uint i = 0; i < Palette::kNumColors; i++) {
+		int dr = paletteData[i * 3 + 0] - color.r;
+		int dg = paletteData[i * 3 + 1] - color.g;
+		int db = paletteData[i * 3 + 2] - color.b;
+		uint32 distance = dr * dr + dg * dg + db * db;
+		if (distance < bestDistance) {
+			bestDistance = distance;
+			best = i;
+		}
+	}
+
+	return best;
+}
+
 GraphicElement::GraphicElement() : _cacheBitmap(false) {
 }
 
@@ -360,6 +379,9 @@ void GraphicElement::render(Window *window) {
 			const Graphics::PixelFormat &pixFmt = window->getPixelFormat();
 			const ColorRGB8 fillColorRGB8 = _renderProps.getForeColor();
 			uint32 fillColor = pixFmt.ARGBToColor(255, fillColorRGB8.r, fillColorRGB8.g, fillColorRGB8.b);
+
+			if (pixFmt.isCLUT8())
+				fillColor = nearestPaletteIndex(getPalette() ? *getPalette() : getRuntime()->getGlobalPalette(), fillColorRGB8);
 
 			for (int32 srcY = clippedSrcRect.top; srcY < clippedSrcRect.bottom; srcY++) {
 				int32 spanWidth = clippedDrawRect.width();
@@ -1189,6 +1211,45 @@ CORO_BEGIN_DEFINITION(MovieElement::SeekToTimeCoroutine)
 	CORO_END_FUNCTION
 CORO_END_DEFINITION
 
+// Finds the asset that a script assigns to an element's "asset" attribute, by name or ID,
+// loading it if it belongs to another scene
+static Common::SharedPtr<Asset> resolveScriptAsset(MiniscriptThread *thread, const DynamicValue &value, AssetType assetType, Common::Array<Common::SharedPtr<Asset> > &outForceLoaded) {
+	Project *project = thread->getRuntime()->getProject();
+
+	uint32 assetID = 0;
+	if (value.getType() == DynamicValueTypes::kString) {
+		if (!project->getAssetIDByName(value.getString(), assetID)) {
+			warning("Element was assigned asset '%s', which doesn't exist", value.getString().c_str());
+			return nullptr;
+		}
+	} else {
+		DynamicValue converted;
+		if (!value.convertToType(DynamicValueTypes::kInteger, converted)) {
+			thread->error("Tried to set an element's asset to something that wasn't a name or ID");
+			return nullptr;
+		}
+		assetID = converted.getInt();
+	}
+
+	Common::SharedPtr<Asset> asset = project->getAssetByID(assetID).lock();
+	if (!asset) {
+		project->forceLoadAsset(assetID, outForceLoaded);
+		asset = project->getAssetByID(assetID).lock();
+	}
+
+	if (!asset) {
+		warning("Element was assigned asset %u, which couldn't be loaded", assetID);
+		return nullptr;
+	}
+
+	if (asset->getAssetType() != assetType) {
+		warning("Element was assigned asset %u, which is the wrong type", assetID);
+		return nullptr;
+	}
+
+	return asset;
+}
+
 ImageElement::ImageElement() : _cacheBitmap(false), _assetID(0) {
 }
 
@@ -1211,6 +1272,9 @@ bool ImageElement::readAttribute(MiniscriptThread *thread, DynamicValue &result,
 		// prompt buttons aren't layered correctly?
 		result.setString(_text);
 		return true;
+	} else if (attrib == "asset") {
+		result.setString(thread->getRuntime()->getProject()->getAssetNameByID(_assetID));
+		return true;
 	}
 
 	return VisualElement::readAttribute(thread, result, attrib);
@@ -1222,6 +1286,9 @@ MiniscriptInstructionOutcome ImageElement::writeRefAttribute(MiniscriptThread *t
 		return kMiniscriptInstructionOutcomeContinue;
 	} else if (attrib == "flushpriority") {
 		DynamicValueWriteFuncHelper<ImageElement, &ImageElement::scriptSetFlushPriority, true>::create(this, writeProxy);
+		return kMiniscriptInstructionOutcomeContinue;
+	} else if (attrib == "asset") {
+		DynamicValueWriteFuncHelper<ImageElement, &ImageElement::scriptSetAsset, true>::create(this, writeProxy);
 		return kMiniscriptInstructionOutcomeContinue;
 	}
 
@@ -1298,13 +1365,58 @@ void ImageElement::render(Window *window) {
 
 		if (inkMode == VisualElementRenderProperties::kInkModeBackgroundMatte || inkMode == VisualElementRenderProperties::kInkModeBackgroundTransparent) {
 			const ColorRGB8 transColorRGB8 = _renderProps.getBackColor();
-			uint32 transColor = optimized->format.ARGBToColor(0, transColorRGB8.r, transColorRGB8.g, transColorRGB8.b);
+			uint32 transColor = 0;
+			const Graphics::ManagedSurface *keyedSource = optimized.get();
+			Graphics::ManagedSurface remappedSurface;
 
-			// Awful hack to work around transBlit not working with either 0 or -1
-			if (transColor == 0)
-				transColor = optimized->format.ARGBToColor(255, transColorRGB8.r, transColorRGB8.g, transColorRGB8.b);
+			if (optimized->format.bytesPerPixel == 1 && _cachedImage->getOriginalColorDepth() == kColorDepthMode1Bit) {
+				// 1-bit images draw with white as 0 and black as 1
+				transColor = (transColorRGB8 == ColorRGB8(255, 255, 255)) ? 0 : 1;
+			} else if (optimized->format.bytesPerPixel == 1) {
+				// Paletted images are keyed by the palette entry matching the background color
+				const Palette *palette = getPalette().get();
+				if (!palette)
+					palette = &getRuntime()->getGlobalPalette();
 
-			window->getSurface()->transBlitFrom(*optimized, srcRect, destRect, transColor, false, alpha);
+				// Palettes can hold the color more than once (Magic School Bus Volcano's masks are
+				// white at index 255 in a palette that is also white at 0), so every match is keyed
+				const byte *paletteData = palette->getPalette();
+				bool isKeyed[Palette::kNumColors] = {};
+				uint numKeyed = 0;
+				for (uint i = 0; i < Palette::kNumColors; i++) {
+					if (transColorRGB8 == ColorRGB8(paletteData[i * 3 + 0], paletteData[i * 3 + 1], paletteData[i * 3 + 2])) {
+						if (numKeyed == 0)
+							transColor = i;
+						isKeyed[i] = true;
+						numKeyed++;
+					}
+				}
+
+				// Without an exact match, the nearest entry is keyed, as an 8-bit display would draw the
+				// color (Magic School Bus Animals keys the swamp game's 00ff00 field with 00ff33)
+				if (numKeyed == 0)
+					transColor = nearestPaletteIndex(*palette, transColorRGB8);
+
+				if (numKeyed > 1) {
+					remappedSurface.copyFrom(*optimized);
+					for (int y = 0; y < remappedSurface.h; y++) {
+						byte *row = static_cast<byte *>(remappedSurface.getBasePtr(0, y));
+						for (int x = 0; x < remappedSurface.w; x++) {
+							if (isKeyed[row[x]])
+								row[x] = transColor;
+						}
+					}
+					keyedSource = &remappedSurface;
+				}
+			} else {
+				transColor = optimized->format.ARGBToColor(0, transColorRGB8.r, transColorRGB8.g, transColorRGB8.b);
+
+				// Awful hack to work around transBlit not working with either 0 or -1
+				if (transColor == 0)
+					transColor = optimized->format.ARGBToColor(255, transColorRGB8.r, transColorRGB8.g, transColorRGB8.b);
+			}
+
+			window->getSurface()->transBlitFrom(*keyedSource, srcRect, destRect, transColor, false, alpha);
 		} else if (inkMode == VisualElementRenderProperties::kInkModeDefault || inkMode == VisualElementRenderProperties::kInkModeCopy) {
 			if (alpha != 255) {
 				warning("Alpha fade was applied to a default or copy image, this isn't supported yet");
@@ -1316,6 +1428,36 @@ void ImageElement::render(Window *window) {
 			warning("Unimplemented image ink mode");
 		}
 	}
+}
+
+// Background matte makes the background color pixels ignore the mouse
+bool ImageElement::isMouseCollisionAtPoint(int32 relativeX, int32 relativeY) const {
+	if (!VisualElement::isMouseCollisionAtPoint(relativeX, relativeY))
+		return false;
+
+	if (_renderProps.getInkMode() != VisualElementRenderProperties::kInkModeBackgroundMatte || !_cachedImage || _cachedImage->getOriginalColorDepth() == kColorDepthMode1Bit)
+		return true;
+
+	const Common::SharedPtr<Graphics::ManagedSurface> &surface = _cachedImage->optimize(getRuntime());
+	int32 x = relativeX - _rect.left;
+	int32 y = relativeY - _rect.top;
+	if (!surface || x < 0 || y < 0 || x >= surface->w || y >= surface->h)
+		return true;
+
+	uint32 pixel = surface->getPixel(x, y);
+	uint8 r = 0, g = 0, b = 0;
+	if (surface->format.isCLUT8()) {
+		const Palette *palette = getPalette().get();
+		if (!palette)
+			palette = &getRuntime()->getGlobalPalette();
+		const byte *paletteData = palette->getPalette();
+		r = paletteData[pixel * 3 + 0];
+		g = paletteData[pixel * 3 + 1];
+		b = paletteData[pixel * 3 + 2];
+	} else
+		surface->format.colorToRGB(pixel, r, g, b);
+
+	return !(_renderProps.getBackColor() == ColorRGB8(r, g, b));
 }
 
 Common::SharedPtr<Structural> ImageElement::shallowClone() const {
@@ -1335,6 +1477,30 @@ void ImageElement::debugInspect(IDebugInspectionReport *report) const {
 }
 #endif
 
+// Swaps in another image, which the element takes the size of (Magic School Bus Animals swaps
+// animal pictures for cursors with this)
+MiniscriptInstructionOutcome ImageElement::scriptSetAsset(MiniscriptThread *thread, const DynamicValue &value) {
+	Common::Array<Common::SharedPtr<Asset> > forceLoadedAssets;
+	Common::SharedPtr<Asset> asset = resolveScriptAsset(thread, value, kAssetTypeImage, forceLoadedAssets);
+	if (!asset)
+		return kMiniscriptInstructionOutcomeContinue;
+
+	if (asset->getAssetID() == _assetID && _cachedImage)
+		return kMiniscriptInstructionOutcomeContinue;
+
+	ImageAsset *imageAsset = static_cast<ImageAsset *>(asset.get());
+	_assetID = asset->getAssetID();
+	_cachedImage = imageAsset->loadAndCacheImage(thread->getRuntime());
+
+	const Common::Rect &assetRect = imageAsset->getRect();
+	_rect.right = _rect.left + assetRect.width();
+	_rect.bottom = _rect.top + assetRect.height();
+
+	thread->getRuntime()->setSceneGraphDirty();
+
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
 MiniscriptInstructionOutcome ImageElement::scriptSetFlushPriority(MiniscriptThread *thread, const DynamicValue &value) {
 	// We don't support flushing media, and this value isn't readable, so just discard it
 	return kMiniscriptInstructionOutcomeContinue;
@@ -1342,14 +1508,14 @@ MiniscriptInstructionOutcome ImageElement::scriptSetFlushPriority(MiniscriptThre
 
 MToonElement::MToonElement()
 	: _cacheBitmap(false), _maintainRate(false), _assetID(0), _rateTimes100000(0), _flushPriority(0), _celStartTimeMSec(0),
-	  _isPlaying(false), _isStopped(false), _renderedFrame(0), _playRange(IntRange(1, 1)), _cel(1), _hasIssuedRenderWarning(false) {
+	  _isPlaying(false), _isStopped(false), _renderedFrame(0), _playRange(IntRange(1, 1)), _cel(1), _hasIssuedRenderWarning(false), _playThroughOnce(false) {
 }
 
 MToonElement::MToonElement(const MToonElement &other)
 	: VisualElement(other), _cacheBitmap(other._cacheBitmap), _maintainRate(other._maintainRate), _assetID(other._assetID)
 	, _rateTimes100000(other._rateTimes100000), _flushPriority(other._flushPriority), _celStartTimeMSec(other._celStartTimeMSec)
 	, _isPlaying(other._isPlaying), _isStopped(other._isStopped), _renderSurface(nullptr), _renderedFrame(0), _metadata(other._metadata)
-	, _cachedMToon(other._cachedMToon), _playMediaSignaller(nullptr), _playRange(other._playRange), _cel(other._cel), _hasIssuedRenderWarning(false) {
+	, _cachedMToon(other._cachedMToon), _playMediaSignaller(nullptr), _playRange(other._playRange), _cel(other._cel), _hasIssuedRenderWarning(false), _playThroughOnce(false) {
 	_playMediaSignaller = other.getRuntime()->getProject()->notifyOnPlayMedia(this);
 }
 
@@ -1394,6 +1560,9 @@ bool MToonElement::readAttribute(MiniscriptThread *thread, DynamicValue &result,
 	} else if (attrib == "regpoint") {
 		result.setPoint(_cachedMToon->getMetadata()->registrationPoint);
 		return true;
+	} else if (attrib == "asset") {
+		result.setString(thread->getRuntime()->getProject()->getAssetNameByID(_assetID));
+		return true;
 	}
 
 	return VisualElement::readAttribute(thread, result, attrib);
@@ -1414,6 +1583,9 @@ MiniscriptInstructionOutcome MToonElement::writeRefAttribute(MiniscriptThread *t
 		return kMiniscriptInstructionOutcomeContinue;
 	} else if (attrib == "range") {
 		DynamicValueWriteOrRefAttribFuncHelper<MToonElement, &MToonElement::scriptSetRange, &MToonElement::scriptRangeWriteRefAttribute>::create(this, result);
+		return kMiniscriptInstructionOutcomeContinue;
+	} else if (attrib == "asset") {
+		DynamicValueWriteFuncHelper<MToonElement, &MToonElement::scriptSetAsset, true>::create(this, result);
 		return kMiniscriptInstructionOutcomeContinue;
 	}
 
@@ -1507,6 +1679,37 @@ void MToonElement::deactivate() {
 	_renderSurface.reset();
 }
 
+// Swaps in another mToon, which plays its whole range from the current cel where it has one
+// (Magic School Bus Animals swaps Keesha's poses in the snake game with this)
+MiniscriptInstructionOutcome MToonElement::scriptSetAsset(MiniscriptThread *thread, const DynamicValue &value) {
+	Common::Array<Common::SharedPtr<Asset> > forceLoadedAssets;
+	Common::SharedPtr<Asset> asset = resolveScriptAsset(thread, value, kAssetTypeMToon, forceLoadedAssets);
+	if (!asset)
+		return kMiniscriptInstructionOutcomeContinue;
+
+	if (asset->getAssetID() == _assetID && _cachedMToon)
+		return kMiniscriptInstructionOutcomeContinue;
+
+	uint hackFlags = 0;
+	_assetID = asset->getAssetID();
+	_cachedMToon = static_cast<MToonAsset *>(asset.get())->loadAndCacheMToon(thread->getRuntime(), hackFlags);
+	_metadata = _cachedMToon->getMetadata();
+	_renderSurface.reset();
+	_paletteSurface.reset();
+
+	int32 numFrames = _metadata->frames.size();
+	_playRange = IntRange(1, numFrames);
+	if (_cel < 1 || _cel > numFrames)
+		_cel = 1;
+
+	_rect.right = _rect.left + _metadata->rect.width();
+	_rect.bottom = _rect.top + _metadata->rect.height();
+
+	thread->getRuntime()->setSceneGraphDirty();
+
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
 void MToonElement::tryAutoSetName(Runtime *runtime, Project *project) {
 	_name = project->getAssetNameByID(_assetID);
 }
@@ -1529,14 +1732,29 @@ void MToonElement::render(Window *window) {
 
 		_cachedMToon->getOrRenderFrame(_renderedFrame, frame, _renderSurface);
 
+		Graphics::ManagedSurface *drawSurface = _renderSurface.get();
+
 		const Palette *palette = nullptr;
-		if (_renderSurface->format.bytesPerPixel == 1) {
+		if (_renderSurface->format.bytesPerPixel == 1 || getRuntime()->getRealColorDepth() == kColorDepthMode8Bit) {
 			palette = getPalette().get();
 			if (!palette)
 				palette = &getRuntime()->getGlobalPalette();
+		}
 
+		if (_renderSurface->format.bytesPerPixel == 1) {
 			// FIXME: Should support passing the palette to the blit function instead
 			_renderSurface->setPalette(palette->getPalette(), 0, 256);
+		} else if (palette) {
+			// True color mToon on an 8-bit display
+			if (!_paletteSurface || _renderedFrame != frame || _paletteSurface->w != _renderSurface->w || _paletteSurface->h != _renderSurface->h) {
+				Graphics::Surface *mapped = _renderSurface->rawSurface().convertTo(Graphics::PixelFormat::createFormatCLUT8(), nullptr, 0, palette->getPalette(), Palette::kNumColors, Graphics::kDitherNaive);
+				_paletteSurface.reset(new Graphics::ManagedSurface());
+				_paletteSurface->copyFrom(*mapped);
+				mapped->free();
+				delete mapped;
+			}
+			_paletteSurface->setPalette(palette->getPalette(), 0, 256);
+			drawSurface = _paletteSurface.get();
 		}
 
 		_renderedFrame = frame;
@@ -1568,7 +1786,7 @@ void MToonElement::render(Window *window) {
 				ColorRGB8 transColorRGB8 = _renderProps.getBackColor();
 				uint32 transColor = 0;
 
-				if (_renderSurface->format.bytesPerPixel == 1) {
+				if (drawSurface->format.bytesPerPixel == 1) {
 					assert(palette);
 
 					const byte *paletteData = palette->getPalette();
@@ -1589,11 +1807,11 @@ void MToonElement::render(Window *window) {
 						}
 					}
 				} else
-					transColor = _renderSurface->format.ARGBToColor(255, transColorRGB8.r, transColorRGB8.g, transColorRGB8.b);
+					transColor = drawSurface->format.ARGBToColor(255, transColorRGB8.r, transColorRGB8.g, transColorRGB8.b);
 
-				window->getSurface()->transBlitFrom(*_renderSurface, srcRect, destRect, transColor);
+				window->getSurface()->transBlitFrom(*drawSurface, srcRect, destRect, transColor);
 			} else if (inkMode == VisualElementRenderProperties::kInkModeCopy || inkMode == VisualElementRenderProperties::kInkModeDefault) {
-				window->getSurface()->blitFrom(*_renderSurface, srcRect, destRect);
+				window->getSurface()->blitFrom(*drawSurface, srcRect, destRect);
 			} else {
 				warning("Unsupported mToon ink mode");
 			}
@@ -1614,7 +1832,6 @@ bool MToonElement::isMouseCollisionAtPoint(int32 relativeX, int32 relativeY) con
 		if (_renderProps.getInkMode() == VisualElementRenderProperties::kInkModeBackgroundMatte) {
 			// TODO: This doesn't account for scaling
 			ColorRGB8 transColorRGB8 = _renderProps.getBackColor();
-			uint32 transColor = _renderSurface->format.ARGBToColor(255, transColorRGB8.r, transColorRGB8.g, transColorRGB8.b);
 
 			if (frameRect.width() == _renderSurface->w && frameRect.height() == _renderSurface->h) {
 				// Frame rect is the size of the render surface, meaning the frame is floating and we need to adjust to its coordinates
@@ -1627,8 +1844,21 @@ bool MToonElement::isMouseCollisionAtPoint(int32 relativeX, int32 relativeY) con
 			if (relativeX < 0 || relativeY < 0 || relativeX >= _renderSurface->w || relativeY >= _renderSurface->h)
 				return false;
 
-			// Check if the pixel is transparent
-			if (_renderSurface->getPixel(relativeX, relativeY) == transColor)
+			// Check if the pixel is transparent, comparing colors like rendering does
+			uint32 pixel = _renderSurface->getPixel(relativeX, relativeY);
+			uint8 r = 0, g = 0, b = 0;
+			if (_renderSurface->format.isCLUT8()) {
+				const Palette *palette = getPalette().get();
+				if (!palette)
+					palette = &getRuntime()->getGlobalPalette();
+				const byte *paletteData = palette->getPalette();
+				r = paletteData[pixel * 3 + 0];
+				g = paletteData[pixel * 3 + 1];
+				b = paletteData[pixel * 3 + 2];
+			} else
+				_renderSurface->format.colorToRGB(pixel, r, g, b);
+
+			if (transColorRGB8 == ColorRGB8(r, g, b))
 				return false;
 		}
 
@@ -1736,6 +1966,11 @@ void MToonElement::playMedia(Runtime *runtime, Project *project) {
 	int32 sanitizeMaxCel = _metadata->frames.size();
 	int32 targetCel = _cel;
 
+	// A looping one-cel range has nothing to animate, so a cel set from elsewhere stays.
+	// Magic School Bus dialogue highlights parts of looping button mToons this way.
+	if (minCel == maxCel && _loop && _cel != minCel && runtime->getProject()->getRuntimeVersion() >= kRuntimeVersion200)
+		return;
+
 	uint64 playTime = runtime->getPlayTime();
 	if (!_isPlaying) {
 		_isPlaying = true;
@@ -1772,7 +2007,7 @@ void MToonElement::playMedia(Runtime *runtime, Project *project) {
 		bool alreadyAtLastCel = (framesRemainingToOnePastEnd == 1);
 		if (framesRemainingToOnePastEnd <= framesAdvanced) {
 			ranPastEnd = true;
-			if (_loop)
+			if (_loop && !_playThroughOnce)
 				targetCel = isReversed ? maxCel : minCel;
 			else
 				targetCel = isReversed ? minCel : maxCel;
@@ -1785,6 +2020,18 @@ void MToonElement::playMedia(Runtime *runtime, Project *project) {
 			targetCel = sanitizeMaxCel;
 
 		if (_cel != targetCel) {
+			// Media cues on mToons are at cels
+			if (!isReversed && _mediaCues.size() > 0) {
+				bool wrapped = (targetCel < _cel);
+				for (MediaCueState *mediaCue : _mediaCues) {
+					if (wrapped) {
+						mediaCue->checkTimestampChange(runtime, _cel, maxCel, true, true);
+						mediaCue->checkTimestampChange(runtime, minCel - 1, targetCel, true, true);
+					} else
+						mediaCue->checkTimestampChange(runtime, _cel, targetCel, true, true);
+				}
+			}
+
 			_cel = targetCel;
 			_contentsDirty = true;
 		}
@@ -1803,7 +2050,7 @@ void MToonElement::playMedia(Runtime *runtime, Project *project) {
 			runtime->queueMessage(dispatch);
 		}
 
-		if (ranPastEnd && !_loop) {
+		if (ranPastEnd && (!_loop || _playThroughOnce)) {
 			_paused = true;
 
 			Common::SharedPtr<MessageProperties> msgProps(new MessageProperties(Event(EventIDs::kPause, 0), DynamicValue(), getSelfReference()));
@@ -1834,6 +2081,11 @@ MiniscriptInstructionOutcome MToonElement::scriptSetCel(MiniscriptThread *thread
 	//
 	// We also need to loop around to 1 (exactly) if the range is exceeded.  MTI depends on this
 	// in the piano to loop the sound bank display mToon.
+	//
+	// mTropolis 2.0 ignores cel 0: Magic School Bus Mars sets its readout digits to the "0" cel,
+	// then to the digit value, which leaves the "0" showing for a zero.
+	if (newCel < 1 && getRuntime()->getProject()->getRuntimeVersion() >= kRuntimeVersion200)
+		return kMiniscriptInstructionOutcomeContinue;
 	if (newCel < 1 || newCel > maxCel)
 		newCel = 1;
 
@@ -1845,13 +2097,34 @@ MiniscriptInstructionOutcome MToonElement::scriptSetCel(MiniscriptThread *thread
 	return kMiniscriptInstructionOutcomeContinue;
 }
 
-MiniscriptInstructionOutcome MToonElement::scriptSetRange(MiniscriptThread *thread, const DynamicValue &value) {
+MiniscriptInstructionOutcome MToonElement::scriptSetRange(MiniscriptThread *thread, const DynamicValue &valueRef) {
+	const DynamicValue value = valueRef.dereference();
+
+	// A number picks a range by its name, or failing that by its position (Magic School Bus Bugs
+	// steps through Liz's mirror taunts with a counter)
+	if ((value.getType() == DynamicValueTypes::kInteger || value.getType() == DynamicValueTypes::kFloat) && _metadata) {
+		int32 rangeNum = 0;
+		value.roundToInt(rangeNum);
+		Common::String name = Common::String::format("%i", static_cast<int>(rangeNum));
+		for (const MToonMetadata::FrameRangeDef &frameRange : _metadata->frameRanges) {
+			if (caseInsensitiveEqual(frameRange.name, name))
+				return scriptSetRangeByName(thread, name);
+		}
+
+		if (rangeNum >= 1 && static_cast<uint>(rangeNum) <= _metadata->frameRanges.size()) {
+			const MToonMetadata::FrameRangeDef &frameRange = _metadata->frameRanges[rangeNum - 1];
+			return scriptSetRangeTyped(thread, IntRange(frameRange.startFrame + 1, frameRange.endFrame + 1));
+		}
+	}
+
 	if (value.getType() == DynamicValueTypes::kIntegerRange)
 		return scriptSetRangeTyped(thread, value.getIntRange());
 	if (value.getType() == DynamicValueTypes::kPoint)
 		return scriptSetRangeTyped(thread, value.getPoint());
 	if (value.getType() == DynamicValueTypes::kLabel)
 		return scriptSetRangeTyped(thread, value.getLabel());
+	if (value.getType() == DynamicValueTypes::kString)
+		return scriptSetRangeByName(thread, value.getString());
 
 	if (thread)
 		thread->error("Invalid type for mToon range");
@@ -1897,6 +2170,7 @@ MiniscriptInstructionOutcome MToonElement::scriptRangeWriteRefAttribute(Miniscri
 
 MiniscriptInstructionOutcome MToonElement::scriptSetRangeTyped(MiniscriptThread *thread, const IntRange &intRangeRef) {
 	IntRange intRange = intRangeRef;
+	_playThroughOnce = false;
 
 	int32 maxFrame = _metadata->frames.size();
 
@@ -1947,6 +2221,12 @@ MiniscriptInstructionOutcome MToonElement::scriptSetRangeTyped(MiniscriptThread 
 		return kMiniscriptInstructionOutcomeFailed;
 	}
 
+	return scriptSetRangeByName(thread, *nameStrPtr);
+}
+
+MiniscriptInstructionOutcome MToonElement::scriptSetRangeByName(MiniscriptThread *thread, const Common::String &name) {
+	const Common::String *nameStrPtr = &name;
+
 	if (!_metadata) {
 		if (thread)
 			thread->error("mToon range couldn't be resolved because the metadata wasn't loaded yet");
@@ -1960,8 +2240,44 @@ MiniscriptInstructionOutcome MToonElement::scriptSetRangeTyped(MiniscriptThread 
 		}
 	}
 
-	if (thread)
-		thread->error("mToon range was assigned to a label but the label doesn't exist in the mToon data");
+	// Range names in mTropolis 2.0 titles are referenced without the spaces in their names
+	Common::String compactName = name;
+	Common::replace(compactName, " ", "");
+	for (const MToonMetadata::FrameRangeDef &frameRange : _metadata->frameRanges) {
+		Common::String compactRangeName = frameRange.name;
+		Common::replace(compactRangeName, " ", "");
+		if (caseInsensitiveEqual(compactRangeName, compactName))
+			return scriptSetRangeTyped(thread, IntRange(frameRange.startFrame + 1, frameRange.endFrame + 1));
+	}
+
+	if (thread) {
+		Common::String available;
+		for (const MToonMetadata::FrameRangeDef &frameRange : _metadata->frameRanges)
+			available += " '" + frameRange.name + "'";
+
+		// mTropolis 2.0 scripts carry on when a range doesn't exist (Magic School Bus Mars sets
+		// ranges named for another button's mToon), leaving the range as it was
+		if (getRuntime()->getProject()->getRuntimeVersion() >= kRuntimeVersion200) {
+			debug(2, "mToon '%s' has no range '%s', ranges:%s", _name.c_str(), name.c_str(), available.c_str());
+			return kMiniscriptInstructionOutcomeContinue;
+		}
+
+		thread->error("mToon range '" + name + "' doesn't exist in the mToon data, ranges:" + available);
+	} else if (getRuntime()->getProject()->getRuntimeVersion() >= kRuntimeVersion200) {
+		if (gDebugLevel >= 2) {
+			Common::String available;
+			for (const MToonMetadata::FrameRangeDef &frameRange : _metadata->frameRanges)
+				available += Common::String::format(" '%s' %u-%u", frameRange.name.c_str(), frameRange.startFrame + 1, frameRange.endFrame + 1);
+			debug(2, "mToon '%s' has no range '%s' to play, ranges:%s", _name.c_str(), name.c_str(), available.c_str());
+		}
+
+		// mTropolis 2.0 plays the whole mToon once for a Play with a range it doesn't have.
+		// Magic School Bus relies on this to stop its map buttons on their last cel.
+		scriptSetRangeTyped(nullptr, IntRange(1, _metadata->frames.size()));
+		_cel = 1;
+		_contentsDirty = true;
+		_playThroughOnce = true;
+	}
 
 	return kMiniscriptInstructionOutcomeFailed;
 }
@@ -2133,6 +2449,8 @@ void TextLabelElement::render(Window *window) {
 		if (_fontFamilyName.size() > 0) {
 			font = FontMan.getFontByName(_fontFamilyName.c_str());
 			if (!font)
+				font = getRuntime()->getWindowsFont(_fontFamilyName, _size, _styleFlags.bold, _styleFlags.italic);
+			if (!font)
 				font = FontMan.getFontByUsage(getDefaultUsageForNamedFont(_fontFamilyName, _size));
 		} else if (_macFontID != 0) {
 			// TODO: Formatting spans
@@ -2262,7 +2580,30 @@ void TextLabelElement::render(Window *window) {
 		color.r, color.g, color.b
 	};
 
-	if (_renderedText) {
+	// Copy ink draws the background color behind the text
+	if (_renderProps.getInkMode() == VisualElementRenderProperties::kInkModeCopy) {
+		const ColorRGB8 &backColor = _renderProps.getBackColor();
+		uint32 fillColor = target->format.ARGBToColor(255, backColor.r, backColor.g, backColor.b);
+
+		if (target->format.isCLUT8())
+			fillColor = nearestPaletteIndex(getPalette() ? *getPalette() : getRuntime()->getGlobalPalette(), backColor);
+
+		target->fillRect(destRect.findIntersectingRect(Common::Rect(0, 0, target->w, target->h)), fillColor);
+	}
+
+	if (_renderedText && target->format.isCLUT8()) {
+		// Blits between paletted surfaces copy indexes, so draw the text in the screen palette's nearest color
+		uint8 textColor = nearestPaletteIndex(getPalette() ? *getPalette() : getRuntime()->getGlobalPalette(), color);
+		Common::Rect clipped = destRect.findIntersectingRect(Common::Rect(0, 0, target->w, target->h));
+		for (int y = clipped.top; y < clipped.bottom; y++) {
+			const byte *src = static_cast<const byte *>(_renderedText->getBasePtr(clipped.left - destRect.left, y - destRect.top));
+			byte *dest = static_cast<byte *>(target->getBasePtr(clipped.left, y));
+			for (int x = 0; x < clipped.width(); x++) {
+				if (src[x])
+					dest[x] = textColor;
+			}
+		}
+	} else if (_renderedText) {
 		_renderedText->setPalette(drawPalette, 0, 2);
 		target->transBlitFrom(*_renderedText.get(), srcRect, destRect, 0);
 	}
@@ -2317,13 +2658,37 @@ void TextLabelElement::visitInternalReferences(IStructuralReferenceVisitor *visi
 	VisualElement::visitInternalReferences(visitor);
 }
 
+// Numbers are shown as text, as in Magic School Bus Volcano's high scores and Mars's age on Mars,
+// and nothing (an empty message value) as no text
+static bool textLabelValueToString(const DynamicValue &value, Common::String &outStr) {
+	DynamicValue derefValue = value.dereference();
+	switch (derefValue.getType()) {
+	case DynamicValueTypes::kInteger:
+		outStr = Common::String::format("%i", static_cast<int>(derefValue.getInt()));
+		return true;
+	case DynamicValueTypes::kFloat:
+		outStr = Common::String::format("%g", derefValue.getFloat());
+		return true;
+	case DynamicValueTypes::kBoolean:
+		outStr = derefValue.getBool() ? "true" : "false";
+		return true;
+	case DynamicValueTypes::kNull:
+		outStr.clear();
+		return true;
+	case DynamicValueTypes::kString:
+		outStr = derefValue.getString();
+		return true;
+	default:
+		return false;
+	}
+}
+
 MiniscriptInstructionOutcome TextLabelElement::scriptSetText(MiniscriptThread *thread, const DynamicValue &value) {
-	if (value.getType() != DynamicValueTypes::kString) {
+	if (!textLabelValueToString(value, _text)) {
 		thread->error("Tried to set a text label element's text to something that wasn't a string");
 		return kMiniscriptInstructionOutcomeFailed;
 	}
 
-	_text = value.getString();
 	_needsRender = true;
 	_isBitmap = false;
 	_contentsDirty = true;
@@ -2334,9 +2699,8 @@ MiniscriptInstructionOutcome TextLabelElement::scriptSetText(MiniscriptThread *t
 
 
 MiniscriptInstructionOutcome TextLabelElement::scriptSetLine(MiniscriptThread *thread, size_t lineIndex, const DynamicValue &value) {
-	DynamicValue derefValue = value.dereference();
-
-	if (derefValue.getType() != DynamicValueTypes::kString) {
+	Common::String lineText;
+	if (!textLabelValueToString(value, lineText)) {
 		thread->error("Tried to set a text label element's text to something that wasn't a string");
 		return kMiniscriptInstructionOutcomeFailed;
 	}
@@ -2344,14 +2708,14 @@ MiniscriptInstructionOutcome TextLabelElement::scriptSetLine(MiniscriptThread *t
 	uint32 startPos;
 	uint32 endPos;
 	if (findLineRange(lineIndex, startPos, endPos))
-		_text = _text.substr(0, startPos) + derefValue.getString() + _text.substr(endPos, _text.size() - endPos);
+		_text = _text.substr(0, startPos) + lineText + _text.substr(endPos, _text.size() - endPos);
 	else {
 		size_t numLines = countLines();
 		while (numLines <= lineIndex) {
 			_text += '\r';
 			numLines++;
 		}
-		_text += derefValue.getString();
+		_text += lineText;
 	}
 
 	_needsRender = true;
@@ -2554,6 +2918,16 @@ bool SoundElement::canAutoPlay() const {
 }
 
 void SoundElement::playMedia(Runtime *runtime, Project *project) {
+	// Sounds in a scene that was only loaded to deliver a message don't play until the scene is shown
+	// (Magic School Bus Mars sends messages into a scene holding all of its sounds when quitting)
+	const Structural *scene = this;
+	while (scene && scene->getSceneLoadState() == Structural::SceneLoadState::kNotAScene)
+		scene = scene->getParent();
+	if (scene && !runtime->isSceneOnStack(scene)) {
+		stopPlayer();
+		return;
+	}
+
 	if (_shouldPlayIfNotPaused) {
 		if (_paused) {
 			// Goal state is paused

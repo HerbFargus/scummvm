@@ -123,6 +123,7 @@ bool isModifier(DataObjectType type) {
 	case kColorTableModifier:
 	case kSoundFadeModifier:
 	case kSaveAndRestoreModifier:
+	case kSaveAndRestoreModifierV2:
 	case kCompoundVariableModifier:
 	case kBooleanVariableModifier:
 	case kIntegerVariableModifier:
@@ -595,6 +596,18 @@ bool PlugInTypeTaggedValue::load(DataReader &reader) {
 	}
 
 	return true;
+}
+
+Common::String PlugInTypeTaggedValue::getVarRefName() const {
+	if (type != kVariableReference || extraData.size() < 2 || extraData.back() != 0)
+		return Common::String();
+
+	for (size_t i = 0; i < extraData.size() - 1; i++) {
+		if (extraData[i] < 0x20 || extraData[i] >= 0x7f)
+			return Common::String();
+	}
+
+	return Common::String(reinterpret_cast<const char *>(&extraData[0]));
 }
 
 PlugInTypeTaggedValue::ValueUnion::ValueUnion() {
@@ -1308,11 +1321,29 @@ DataReadErrorCode SoundFadeModifier::load(DataReader &reader) {
 	return kDataReadErrorNone;
 }
 
-SaveAndRestoreModifier::SaveAndRestoreModifier()
-	: unknown1{0, 0, 0, 0}, unknown5{0, 0, 0, 0, 0, 0, 0, 0}, lengthOfFilePath(0), lengthOfFileName(0), lengthOfVariableName(0), lengthOfVariableString(0) {
+SaveAndRestoreModifier::SaveAndRestoreModifier(uint version)
+	: version(version), unknown1{0, 0, 0, 0}, unknown5{0, 0, 0, 0, 0, 0, 0, 0}, lengthOfFilePath(0), lengthOfFileName(0), lengthOfVariableName(0), lengthOfVariableString(0), unknown6{0, 0, 0, 0},
+	  lengthOfFilePathVarName(0), lengthOfFilePathVarString(0), unknown7(0) {
 }
 
 DataReadErrorCode SaveAndRestoreModifier::load(DataReader &reader) {
+	if (version == 2) {
+		if (_revision != 2000)
+			return kDataReadErrorUnsupportedRevision;
+
+		if (!modHeader.load(reader, true) || !reader.readBytes(unknown1) || !saveWhen.load(reader) || !restoreWhen.load(reader)
+			|| !saveOrRestoreValue.load(reader) || !filePathValue.load(reader) || !reader.readBytes(unknown6)
+			|| !reader.readU8(lengthOfVariableName) || !reader.readU8(lengthOfVariableString)
+			|| !reader.readU8(lengthOfFilePathVarName) || !reader.readU8(lengthOfFilePathVarString)
+			|| !reader.readU8(lengthOfFileName) || !reader.readU8(unknown7)
+			|| !reader.readNonTerminatedStr(varName, lengthOfVariableName) || !reader.readNonTerminatedStr(varString, lengthOfVariableString)
+			|| !reader.readNonTerminatedStr(filePathVarName, lengthOfFilePathVarName) || !reader.readNonTerminatedStr(filePathVarString, lengthOfFilePathVarString)
+			|| !reader.readNonTerminatedStr(fileName, lengthOfFileName))
+			return kDataReadErrorReadFailed;
+
+		return kDataReadErrorNone;
+	}
+
 	if (_revision != 1001)
 		return kDataReadErrorUnsupportedRevision;
 
@@ -1542,7 +1573,7 @@ DragMotionModifier::DragMotionModifier()
 }
 
 DataReadErrorCode DragMotionModifier::load(DataReader &reader) {
-	if (_revision != 1000)
+	if (_revision != 1000 && _revision != 2000)
 		return kDataReadErrorUnsupportedRevision;
 
 	if (!modHeader.load(reader, _revision >= 2000))
@@ -1701,7 +1732,7 @@ BoundaryDetectionMessengerModifier::BoundaryDetectionMessengerModifier()
 }
 
 DataReadErrorCode BoundaryDetectionMessengerModifier::load(DataReader &reader) {
-	if (_revision != 1002)
+	if (_revision != 1002 && _revision != 2002)
 		return kDataReadErrorUnsupportedRevision;
 
 	if (!modHeader.load(reader, _revision >= 2000))
@@ -1828,7 +1859,7 @@ ImageEffectModifier::ImageEffectModifier() : flags(0), type(0), bevelWidth(0), t
 }
 
 DataReadErrorCode ImageEffectModifier::load(DataReader &reader) {
-	if (_revision != 1000)
+	if (_revision != 1000 && _revision != 2000)
 		return kDataReadErrorUnsupportedRevision;
 
 	if (!modHeader.load(reader, _revision >= 2000) || !reader.readU32(flags) || !reader.readU16(type) || !applyWhen.load(reader) || !removeWhen.load(reader)
@@ -1879,17 +1910,22 @@ CursorModifierV1::MacOnlyPart::MacOnlyPart() : unknown1(0), unknown2(0), cursorI
 
 CompoundVariableModifier::CompoundVariableModifier()
 	: modifierFlags(0), sizeIncludingTag(0), unknown1{0, 0}, guid(0), unknown4{0, 0, 0, 0, 0, 0}, unknown5(0),
-	  lengthOfName(0), numChildren(0), unknown7{0, 0, 0, 0} {
+	  lengthOfName(0), numChildren(0), unknown8(0), unknown7{0, 0, 0, 0} {
 }
 
 DataReadErrorCode CompoundVariableModifier::load(DataReader &reader) {
-	if (_revision != 1)
+	if (_revision != 1 && _revision != 2)
 		return kDataReadErrorUnsupportedRevision;
 
 	if (!reader.readU32(modifierFlags) || !reader.readU32(sizeIncludingTag) || !reader.readBytes(unknown1)
 		|| !reader.readU32(guid) || !reader.readBytes(unknown4) || !reader.readU32(unknown5)
-		|| !editorLayoutPosition.load(reader) || !reader.readU16(lengthOfName) || !reader.readU16(numChildren)
-		|| !reader.readTerminatedStr(name, lengthOfName) || !reader.readBytes(unknown7))
+		|| !editorLayoutPosition.load(reader) || !reader.readU16(lengthOfName) || !reader.readU16(numChildren))
+		return kDataReadErrorReadFailed;
+
+	if (_revision >= 2 && !reader.readU32(unknown8))
+		return kDataReadErrorReadFailed;
+
+	if (!reader.readTerminatedStr(name, lengthOfName) || !reader.readBytes(unknown7))
 		return kDataReadErrorReadFailed;
 
 	return kDataReadErrorNone;
@@ -1951,7 +1987,7 @@ PointVariableModifier::PointVariableModifier() : unknown5{0, 0, 0, 0} {
 }
 
 DataReadErrorCode PointVariableModifier::load(DataReader &reader) {
-	if (_revision != 1000)
+	if (_revision != 1000 && _revision != 2000)
 		return kDataReadErrorUnsupportedRevision;
 
 	if (!modHeader.load(reader, _revision >= 2000) || !reader.readBytes(unknown5) || !value.load(reader))
@@ -1964,7 +2000,7 @@ FloatingPointVariableModifier::FloatingPointVariableModifier() : unknown1{0, 0, 
 }
 
 DataReadErrorCode FloatingPointVariableModifier::load(DataReader &reader) {
-	if (_revision != 1000)
+	if (_revision != 1000 && _revision != 2000)
 		return kDataReadErrorUnsupportedRevision;
 
 	if (!modHeader.load(reader, _revision >= 2000) || !reader.readBytes(unknown1) || !reader.readPlatformFloat(value))
@@ -1977,10 +2013,17 @@ StringVariableModifier::StringVariableModifier() : lengthOfString(0), unknown1{0
 }
 
 DataReadErrorCode StringVariableModifier::load(DataReader &reader) {
-	if (_revision != 1000)
+	if (_revision != 1000 && _revision != 2000)
 		return kDataReadErrorUnsupportedRevision;
 
-	if (!modHeader.load(reader, _revision >= 2000) || !reader.readU32(lengthOfString) || !reader.readBytes(unknown1) || !reader.readTerminatedStr(value, lengthOfString))
+	if (!modHeader.load(reader, _revision >= 2000) || !reader.readU32(lengthOfString) || !reader.readBytes(unknown1))
+		return kDataReadErrorReadFailed;
+
+	// Revision 2000 strings are not null-terminated
+	if (_revision >= 2000) {
+		if (!reader.readNonTerminatedStr(value, lengthOfString))
+			return kDataReadErrorReadFailed;
+	} else if (!reader.readTerminatedStr(value, lengthOfString))
 		return kDataReadErrorReadFailed;
 
 	return kDataReadErrorNone;
@@ -2005,7 +2048,7 @@ PlugInModifierData::~PlugInModifierData() {
 PlugInModifier::PlugInModifier()
 	: modifierFlags(0), codedSize(0), modifierName{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
 	  guid(0), unknown2{0, 0, 0, 0, 0, 0}, plugInRevision(0), unknown4(0),
-	  lengthOfName(0), subObjectSize(0) {
+	  lengthOfName(0), unknown5(0), subObjectSize(0) {
 }
 
 DataReadErrorCode PlugInModifier::load(DataReader &reader) {
@@ -2015,6 +2058,10 @@ DataReadErrorCode PlugInModifier::load(DataReader &reader) {
 	if (!reader.readU32(modifierFlags) || !reader.readU32(codedSize) || !reader.read(modifierName, 16)
 		|| !reader.readU32(guid) || !reader.readBytes(unknown2) || !reader.readU16(plugInRevision)
 		|| !reader.readU32(unknown4) || !editorLayoutPosition.load(reader) || !reader.readU16(lengthOfName))
+		return kDataReadErrorReadFailed;
+
+	const bool isV2 = (_revision >= 2000);
+	if (isV2 && !reader.readU32(unknown5))
 		return kDataReadErrorReadFailed;
 
 	if (lengthOfName > 0 && !reader.readTerminatedStr(name, lengthOfName))
@@ -2035,9 +2082,10 @@ DataReadErrorCode PlugInModifier::load(DataReader &reader) {
 		subObjectSize -= lengthOfName;
 	}
 
-	if (subObjectSize < 52)
+	const uint32 headerSize = isV2 ? 56 : 52;
+	if (subObjectSize < headerSize)
 		return kDataReadErrorReadFailed;
-	subObjectSize -= 52;
+	subObjectSize -= headerSize;
 
 	return kDataReadErrorNone;
 }
@@ -2572,7 +2620,10 @@ DataReadErrorCode loadDataObject(const PlugInModifierRegistry &registry, DataRea
 		dataObject = new SoundFadeModifier();
 		break;
 	case DataObjectTypes::kSaveAndRestoreModifier:
-		dataObject = new SaveAndRestoreModifier();
+		dataObject = new SaveAndRestoreModifier(1);
+		break;
+	case DataObjectTypes::kSaveAndRestoreModifierV2:
+		dataObject = new SaveAndRestoreModifier(2);
 		break;
 	case DataObjectTypes::kMessengerModifier:
 		dataObject = new MessengerModifier();
@@ -2721,7 +2772,7 @@ DataReadErrorCode loadDataObject(const PlugInModifierRegistry &registry, DataRea
 	Common::SharedPtr<DataObject> sharedPtr(dataObject);
 	DataReadErrorCode errorCode = dataObject->load(static_cast<DataObjectTypes::DataObjectType>(type), revision, reader);
 	if (errorCode != kDataReadErrorNone) {
-		warning("Data object type 0x%x failed to load (err %d)", static_cast<int>(type), static_cast<int>(errorCode));
+		warning("Data object type 0x%x revision %u failed to load (err %d)", static_cast<int>(type), static_cast<uint>(revision), static_cast<int>(errorCode));
 		outObject.reset();
 		return errorCode;
 	}
@@ -2737,7 +2788,7 @@ DataReadErrorCode loadDataObject(const PlugInModifierRegistry &registry, DataRea
 		Common::SharedPtr<PlugInModifierData> plugInModifierData(plugInLoader->createModifierData());
 		errorCode = plugInModifierData->load(plugInLoader->getPlugIn(), *static_cast<const PlugInModifier *>(dataObject), reader);
 		if (errorCode != kDataReadErrorNone) {
-			warning("Plug-in modifier failed to load");
+			warning("Plug-in modifier %s failed to load", static_cast<const PlugInModifier *>(dataObject)->modifierName);
 			outObject.reset();
 			return errorCode;
 		}

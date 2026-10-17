@@ -401,16 +401,19 @@ void CachedMToon::loadRLEFrames(const Common::Array<uint8> &data) {
 		}
 
 		rleFrame.isKeyframe = (headerInts[0] == kMToonRLEKeyframePrefix);
-		if (headerInts[1] == 0x01000001) {
-			if (bpp != 8)
-				error("Unknown mToon encoding");
-		} else if (headerInts[1] == 0x01000002) {
-			if (bpp != 16)
-				error("Unknown mToon encoding");
-		} else
-			error("Unknown mToon encoding");
 
-		rleFrame.version = headerInts[1];
+		// mTropolis 2.0 sets the high bit of the version, the data is the same
+		const uint32 rleVersion = headerInts[1] & 0x7fffffffu;
+		if (rleVersion == 0x01000001) {
+			if (bpp != 8)
+				error("Unknown mToon encoding (RLE version %x, %u bpp)", headerInts[1], bpp);
+		} else if (rleVersion == 0x01000002) {
+			if (bpp != 16)
+				error("Unknown mToon encoding (RLE version %x, %u bpp)", headerInts[1], bpp);
+		} else
+			error("Unknown mToon encoding (RLE version %x, %u bpp)", headerInts[1], bpp);
+
+		rleFrame.version = rleVersion;
 		rleFrame.width = headerInts[2];
 		rleFrame.height = headerInts[3];
 
@@ -436,7 +439,7 @@ void CachedMToon::loadRLEFrames(const Common::Array<uint8> &data) {
 						i16[swapIndex] = FROM_BE_16(i16[swapIndex]);
 				}
 			} else
-				error("Unknown mToon encoding");
+				error("Unknown mToon encoding (%u bpp)", bpp);
 		}
 	}
 
@@ -445,7 +448,7 @@ void CachedMToon::loadRLEFrames(const Common::Array<uint8> &data) {
 	else if (bpp == 16)
 		_rleInternalFormat = Graphics::PixelFormat(2, 5, 5, 5, 0, 10, 5, 0, 15);
 	else
-		error("Unknown mToon encoding");
+		error("Unknown mToon encoding (%u bpp)", bpp);
 
 	_rleOptimizedFormat = _rleInternalFormat;
 }
@@ -478,7 +481,7 @@ void CachedMToon::loadUncompressedFrame(const Common::Array<uint8> &data, size_t
 	else if (bpp == 32)
 		pixFmt = Graphics::PixelFormat(4, 8, 8, 8, 0, 0, 8, 16, 24);
 	else
-		error("Unknown mToon encoding");
+		error("Unknown mToon encoding (%u bpp)", bpp);
 
 	size_t w = frameDef.rect.width();
 	size_t h = frameDef.rect.height();
@@ -902,6 +905,13 @@ const Common::SharedPtr<Graphics::ManagedSurface> &CachedImage::optimize(Runtime
 				_optimizedSurface.reset(new Graphics::ManagedSurface());
 				_optimizedSurface->create(w, h, renderFmt);
 				Render::convert16To32(*_optimizedSurface, *_surface);
+			} else if (renderDepth == kColorDepthMode8Bit && (_colorDepth == kColorDepthMode16Bit || _colorDepth == kColorDepthMode32Bit)) {
+				// Map to the palette, like the original player on a 256 color display
+				Graphics::Surface *mapped = _surface->rawSurface().convertTo(renderFmt, nullptr, 0, runtime->getGlobalPalette().getPalette(), Palette::kNumColors, Graphics::kDitherNaive);
+				_optimizedSurface.reset(new Graphics::ManagedSurface());
+				_optimizedSurface->copyFrom(*mapped);
+				mapped->free();
+				delete mapped;
 			} else {
 				return _surface; // Can't optimize
 			}

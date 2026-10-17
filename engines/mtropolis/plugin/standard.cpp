@@ -35,6 +35,9 @@
 
 #include "mtropolis/miniscript.h"
 #include "mtropolis/plugin/standard.h"
+#include "engines/engine.h"
+#include "common/system.h"
+#include "common/savefile.h"
 #include "mtropolis/plugins.h"
 
 #include "mtropolis/miniscript.h"
@@ -925,7 +928,7 @@ bool ListVariableModifier::load(const PlugInModifierLoaderContext &context, cons
 		storage->_preferredContentType = DynamicValueTypes::kObject;
 		if (data.persistentValuesGarbled) {
 			// Ignore and let the game fix it
-		} else {
+		} else if (data.havePersistentData && data.numValues > 0) {
 			warning("Loading object reference lists from data is not implemented");
 		}
 		loadData = false;
@@ -982,6 +985,17 @@ bool ListVariableModifier::varSetValue(MiniscriptThread *thread, const DynamicVa
 		for (size_t i = 0; i < sourceList->getSize(); i++) {
 			DynamicValue sourceElement;
 			sourceList->getAtIndex(i, sourceElement);
+
+			// A list of variables assigned to a list of values takes their values, as Magic School Bus
+			// Bugs does for its game show answers (one of which is misspelled, so it is an empty
+			// reference and gets the default value)
+			if (sourceElement.getType() == DynamicValueTypes::kObject && storage->_preferredContentType != DynamicValueTypes::kObject) {
+				Common::SharedPtr<RuntimeObject> obj = sourceElement.getObject().object.lock();
+				if (obj && obj->isModifier() && static_cast<Modifier *>(obj.get())->isVariable())
+					static_cast<VariableModifier *>(obj.get())->varGetValue(sourceElement);
+				else if (!obj && storage->_preferredContentType == DynamicValueTypes::kInteger)
+					sourceElement.setInt(0);
+			}
 
 			DynamicValue convertedElement;
 
@@ -1085,7 +1099,47 @@ bool ListVariableModifier::readAttributeIndexed(MiniscriptThread *thread, Dynami
 
 	if (attrib == "value") {
 		size_t realIndex = 0;
-		return storage->_list->dynamicValueToIndex(realIndex, index) && storage->_list->getAtIndex(realIndex, result);
+		bool validIndex = storage->_list->dynamicValueToIndex(realIndex, index);
+		if (validIndex && storage->_list->getAtIndex(realIndex, result))
+			return true;
+
+		// mTropolis 2.0 reads outside of a list as an empty value, which Magic School Bus relies
+		// on before its lists are filled (and Animals reads index 0 before anything is picked)
+		if (thread->getRuntime()->getProject()->getRuntimeVersion() < kRuntimeVersion200)
+			return false;
+
+		DynamicValue indexNumber;
+		if (!validIndex && !index.convertToType(DynamicValueTypes::kInteger, indexNumber))
+			return false;
+
+		debug(3, "List '%s' read outside its %u values", getName().c_str(), static_cast<uint>(storage->_list->getSize()));
+
+		switch (storage->_list->getType()) {
+		case DynamicValueTypes::kBoolean:
+			result.setBool(false);
+			break;
+		case DynamicValueTypes::kInteger:
+			result.setInt(0);
+			break;
+		case DynamicValueTypes::kFloat:
+			result.setFloat(0.0);
+			break;
+		case DynamicValueTypes::kString:
+			result.setString("");
+			break;
+		case DynamicValueTypes::kPoint:
+			result.setPoint(Common::Point(0, 0));
+			break;
+		default:
+			if (storage->_preferredContentType == DynamicValueTypes::kBoolean)
+				result.setBool(false);
+			else if (storage->_preferredContentType == DynamicValueTypes::kInteger)
+				result.setInt(0);
+			else
+				result.clear();
+			break;
+		}
+		return true;
 	} else if (attrib == "delete") {
 		size_t realIndex = 0;
 		if (!storage->_list->dynamicValueToIndex(realIndex, index))
@@ -1107,8 +1161,35 @@ MiniscriptInstructionOutcome ListVariableModifier::writeRefAttribute(MiniscriptT
 		DynamicValueWriteFuncHelper<ListVariableModifier, &ListVariableModifier::scriptSetCount, true>::create(this, writeProxy);
 		return kMiniscriptInstructionOutcomeContinue;
 	}
+	if (attrib == "foralldo") {
+		DynamicValueWriteFuncHelper<ListVariableModifier, &ListVariableModifier::scriptForAllDo, true>::create(this, writeProxy);
+		return kMiniscriptInstructionOutcomeContinue;
+	}
 
 	return VariableModifier::writeRefAttribute(thread, writeProxy, attrib);
+}
+
+// mTropolis 2.0: runs a script modifier once for each item, with the item as its incoming data
+MiniscriptInstructionOutcome ListVariableModifier::scriptForAllDo(MiniscriptThread *thread, const DynamicValue &value) {
+	if (value.getType() != DynamicValueTypes::kObject)
+		return kMiniscriptInstructionOutcomeFailed;
+
+	Common::SharedPtr<RuntimeObject> obj = value.getObject().object.lock();
+	if (!obj || !obj->isModifier())
+		return kMiniscriptInstructionOutcomeFailed;
+
+	Modifier *modifier = static_cast<Modifier *>(obj.get());
+	const Common::SharedPtr<DynamicList> list = static_cast<ListVariableStorage *>(_storage.get())->_list;
+
+	// Tasks run last pushed first, so the items are pushed backwards to run in order
+	for (size_t i = list->getSize(); i > 0; i--) {
+		DynamicValue item;
+		list->getAtIndex(i - 1, item);
+		if (!modifier->runWithIncomingData(thread->getRuntime(), item))
+			return kMiniscriptInstructionOutcomeFailed;
+	}
+
+	return kMiniscriptInstructionOutcomeContinue;
 }
 
 MiniscriptInstructionOutcome ListVariableModifier::writeRefAttributeIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &writeProxy, const Common::String &attrib, const DynamicValue &index) {
@@ -1122,7 +1203,50 @@ MiniscriptInstructionOutcome ListVariableModifier::writeRefAttributeIndexed(Mini
 		storage->_list->createWriteProxyForIndex(realIndex, writeProxy);
 		writeProxy.containerList = storage->_list;
 		return kMiniscriptInstructionOutcomeContinue;
+	} else if (attrib == "insert") {
+		size_t realIndex = 0;
+		if (!storage->_list->dynamicValueToIndex(realIndex, index))
+			return kMiniscriptInstructionOutcomeFailed;
+
+		writeProxy.pod.ifc = DynamicValueWriteInterfaceGlue<InsertProxyInterface>::getInstance();
+		writeProxy.pod.objectRef = storage->_list.get();
+		writeProxy.pod.ptrOrOffset = realIndex;
+		writeProxy.containerList = storage->_list;
+		return kMiniscriptInstructionOutcomeContinue;
 	}
+	return kMiniscriptInstructionOutcomeFailed;
+}
+
+MiniscriptInstructionOutcome ListVariableModifier::InsertProxyInterface::write(MiniscriptThread *thread, const DynamicValue &dest, void *objectRef, uintptr ptrOrOffset) {
+	DynamicList *list = static_cast<DynamicList *>(objectRef);
+	size_t size = list->getSize();
+
+	if (ptrOrOffset < size) {
+		// Shift the following entries up
+		DynamicValue last;
+		if (!list->getAtIndex(size - 1, last) || !list->setAtIndex(size, last))
+			return kMiniscriptInstructionOutcomeFailed;
+
+		for (size_t i = size - 1; i > ptrOrOffset; i--) {
+			DynamicValue moved;
+			if (!list->getAtIndex(i - 1, moved) || !list->setAtIndex(i, moved))
+				return kMiniscriptInstructionOutcomeFailed;
+		}
+	}
+
+	if (!list->setAtIndex(ptrOrOffset, dest)) {
+		thread->error("Failed to insert into list");
+		return kMiniscriptInstructionOutcomeFailed;
+	}
+
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
+MiniscriptInstructionOutcome ListVariableModifier::InsertProxyInterface::refAttrib(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib) {
+	return kMiniscriptInstructionOutcomeFailed;
+}
+
+MiniscriptInstructionOutcome ListVariableModifier::InsertProxyInterface::refAttribIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib, const DynamicValue &index) {
 	return kMiniscriptInstructionOutcomeFailed;
 }
 
@@ -1754,7 +1878,7 @@ const char *NavigateModifier::getDefaultName() const {
 }
 
 OpenTitleModifier::OpenTitleModifier()
-	/*: _addToReturnList(false) */ {
+	: _addToReturnList(false) {
 }
 
 OpenTitleModifier::~OpenTitleModifier() {
@@ -1769,7 +1893,8 @@ bool OpenTitleModifier::load(const PlugInModifierLoaderContext &context, const D
 
 	_pathOrUrl = data.pathOrUrl.value.asString;
 
-	//_addToReturnList = static_cast<bool>(data.addToReturnList.value.asInt);
+	// mTropolis 2.0 titles store flags here, with bit 0 for adding to the return list
+	_addToReturnList = ((data.addToReturnList.value.asInt & 1) != 0);
 
 	return true;
 }
@@ -1779,10 +1904,9 @@ bool OpenTitleModifier::respondsToEvent(const Event &evt) const {
 }
 
 VThreadState OpenTitleModifier::consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) {
-#ifdef MTROPOLIS_DEBUG_ENABLE
-	if (Debugger *debugger = runtime->debugGetDebugger())
-		debugger->notify(kDebugSeverityWarning, "Open Title modifier was executed, which isn't implemented yet");
-#endif
+	if (_executeWhen.respondsTo(msg->getEvent()))
+		runtime->requestOpenTitle(_pathOrUrl, _addToReturnList);
+
 	return kVThreadReturn;
 }
 
@@ -1838,6 +1962,759 @@ const char *OpenAppModifier::getDefaultName() const {
 	return "Open App Modifier"; // ???
 }
 
+FileModifier::FileModifier()
+	: _defaultOpenMode(kOpenModeReadWrite), _isOpen(false), _isWritable(false), _isDirty(false), _position(0), _lastDelimiter(0), _error(kErrorNone) {
+}
+
+static Common::String fileModString(const Data::PlugInTypeTaggedValue &value) {
+	return (value.type == Data::PlugInTypeTaggedValue::kString) ? value.value.asString : Common::String();
+}
+
+bool FileModifier::load(const PlugInModifierLoaderContext &context, const Data::Standard::FileModifier &data) {
+	if (data.openWhen.type == Data::PlugInTypeTaggedValue::kEvent && !_openWhen.load(data.openWhen.value.asEvent))
+		return false;
+	if (data.closeWhen.type == Data::PlugInTypeTaggedValue::kEvent && !_closeWhen.load(data.closeWhen.value.asEvent))
+		return false;
+
+	_filePath = fileModString(data.filePath);
+	_chunkDelimiters = fileModString(data.chunkDelimiters);
+	_macType = fileModString(data.macFileType);
+	_macCreator = fileModString(data.macCreator);
+	if (data.openMode.type == Data::PlugInTypeTaggedValue::kInteger)
+		_defaultOpenMode = data.openMode.value.asInt;
+
+	return true;
+}
+
+bool FileModifier::respondsToEvent(const Event &evt) const {
+	return _openWhen.respondsTo(evt) || _closeWhen.respondsTo(evt);
+}
+
+VThreadState FileModifier::consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) {
+	if (_openWhen.respondsTo(msg->getEvent()))
+		_error = openFile(runtime, _defaultOpenMode);
+	else if (_closeWhen.respondsTo(msg->getEvent()))
+		closeFile();
+
+	return kVThreadReturn;
+}
+
+void FileModifier::disable(Runtime *runtime) {
+	closeFile();
+}
+
+Common::String FileModifier::getSaveFileName() const {
+	// Files are kept as save files named after the file, without its folder,
+	// the same way as named Save and Restore files, which scripts check for
+	Common::String fileName = _filePath;
+	for (uint i = 0; i < _filePath.size(); i++) {
+		char c = _filePath[i];
+		if (c == ':' || c == '\\' || c == '/')
+			fileName = _filePath.substr(i + 1);
+	}
+	fileName.toLowercase();
+
+	return ConfMan.getActiveDomainName() + "." + fileName;
+}
+
+FileModifier::ErrorCode FileModifier::openFile(Runtime *runtime, int mode) {
+	if (_isOpen)
+		return kErrorOpenFailed;
+
+	if (_filePath.empty()) {
+		debug(2, "FileMod: '%s' has no file path", _name.c_str());
+		return kErrorInvalidPath;
+	}
+
+	_contents.clear();
+	_position = 0;
+	_isDirty = false;
+
+	if (mode != kOpenModeOverwrite) {
+		Common::ScopedPtr<Common::SeekableReadStream> stream(g_system->getSavefileManager()->openForLoading(getSaveFileName()));
+		if (!stream)
+			stream.reset(runtime->getProject()->createReadStreamForProjectPath(_filePath));
+
+		if (stream) {
+			_contents.resize(stream->size());
+			if (_contents.size() > 0)
+				stream->read(&_contents[0], _contents.size());
+		} else if (mode == kOpenModeRead) {
+			debug(2, "FileMod: '%s' not found", getSaveFileName().c_str());
+			return kErrorOpenFailed;
+		}
+	}
+
+	debug(2, "FileMod: Opened '%s' in mode %i, %u bytes", getSaveFileName().c_str(), mode, _contents.size());
+
+	_isOpen = true;
+	_isWritable = (mode != kOpenModeRead);
+	_isDirty = (mode == kOpenModeOverwrite);
+	return kErrorNone;
+}
+
+void FileModifier::flush() {
+	if (!_isOpen || !_isWritable || !_isDirty)
+		return;
+
+	Common::ScopedPtr<Common::OutSaveFile> out(g_system->getSavefileManager()->openForSaving(getSaveFileName(), false));
+	if (!out) {
+		warning("FileMod: Couldn't write '%s'", getSaveFileName().c_str());
+		return;
+	}
+
+	if (_contents.size() > 0)
+		out->write(&_contents[0], _contents.size());
+	out->finalize();
+	_isDirty = false;
+}
+
+void FileModifier::closeFile() {
+	flush();
+	_isOpen = false;
+	_isWritable = false;
+	_contents.clear();
+	_position = 0;
+}
+
+FileModifier::ErrorCode FileModifier::readCharacters(uint count, Common::String &outStr) {
+	outStr.clear();
+
+	if (!_isOpen)
+		return kErrorNotOpen;
+
+	if (_position >= _contents.size())
+		return kErrorEndOfFile;
+
+	count = MIN<uint>(count, _contents.size() - _position);
+	outStr = Common::String(&_contents[_position], count);
+	_position += count;
+	return kErrorNone;
+}
+
+FileModifier::ErrorCode FileModifier::readChunk(Common::String &outStr) {
+	outStr.clear();
+
+	if (!_isOpen)
+		return kErrorNotOpen;
+
+	if (_chunkDelimiters.empty()) {
+		uint count = _contents.size() - MIN<uint>(_position, _contents.size());
+		return readCharacters(count, outStr);
+	}
+
+	if (_position >= _contents.size())
+		return kErrorEndOfFile;
+
+	uint end = _position;
+	while (end < _contents.size() && !strchr(_chunkDelimiters.c_str(), _contents[end]))
+		end++;
+
+	outStr = Common::String(&_contents[_position], end - _position);
+	_position = end;
+	_lastDelimiter = 0;
+
+	if (end < _contents.size()) {
+		_lastDelimiter = _contents[end];
+		_position++;
+
+		// CR LF counts as one delimiter, and LF is reported as CR
+		if (_lastDelimiter == '\r') {
+			if (_position < _contents.size() && _contents[_position] == '\n')
+				_position++;
+		} else if (_lastDelimiter == '\n')
+			_lastDelimiter = '\r';
+	}
+
+	return kErrorNone;
+}
+
+bool FileModifier::readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) {
+	Common::String str;
+
+	if (attrib == "filepath") {
+		result.setString(_filePath);
+		return true;
+	}
+	if (attrib == "filename") {
+		Common::String fileName = _filePath;
+		for (uint i = 0; i < _filePath.size(); i++)
+			if (_filePath[i] == ':' || _filePath[i] == '\\' || _filePath[i] == '/')
+				fileName = _filePath.substr(i + 1);
+		result.setString(fileName);
+		return true;
+	}
+	if (attrib == "openmode") {
+		result.setInt(_defaultOpenMode);
+		return true;
+	}
+	if (attrib == "chunkdelimiters") {
+		result.setString(_chunkDelimiters);
+		return true;
+	}
+	if (attrib == "lastdelimiter") {
+		result.setString(_lastDelimiter ? Common::String(_lastDelimiter) : Common::String());
+		return true;
+	}
+	if (attrib == "mactype") {
+		result.setString(_macType);
+		return true;
+	}
+	if (attrib == "maccreator") {
+		result.setString(_macCreator);
+		return true;
+	}
+	if (attrib == "error") {
+		result.setInt(_error);
+		return true;
+	}
+	if (attrib == "index") {
+		result.setInt(_position + 1);
+		return true;
+	}
+	if (attrib == "index0") {
+		result.setInt(_position);
+		return true;
+	}
+	if (attrib == "length") {
+		_error = _isOpen ? kErrorNone : kErrorNotOpen;
+		result.setInt(_isOpen ? _contents.size() : 0);
+		return true;
+	}
+	if (attrib == "readcharacter" || attrib == "read") {
+		_error = readCharacters(1, str);
+		result.setString(str);
+		return true;
+	}
+	if (attrib == "readchunk") {
+		_error = readChunk(str);
+		result.setString(str);
+		return true;
+	}
+	if (attrib == "readtoend") {
+		_error = readCharacters(_contents.size(), str);
+		result.setString(str);
+		return true;
+	}
+	if (attrib == "chunkcount") {
+		uint savedPosition = _position;
+		int32 count = 0;
+		_position = 0;
+		while (readChunk(str) == kErrorNone)
+			count++;
+		_position = savedPosition;
+		result.setInt(count);
+		return true;
+	}
+
+	return Modifier::readAttribute(thread, result, attrib);
+}
+
+bool FileModifier::readAttributeIndexed(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib, const DynamicValue &index) {
+	if (attrib == "read") {
+		int32 count = 0;
+		if (!index.roundToInt(count) || count < 0)
+			return false;
+
+		Common::String str;
+		_error = readCharacters(count, str);
+		result.setString(str);
+		return true;
+	}
+
+	return Modifier::readAttributeIndexed(thread, result, attrib, index);
+}
+
+MiniscriptInstructionOutcome FileModifier::writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) {
+	static const struct {
+		const char *name;
+		WritableAttribute attrib;
+	} kAttribs[] = {
+		{"openmode", kAttribOpenMode},
+		{"close", kAttribClose},
+		{"write", kAttribWrite},
+		{"append", kAttribAppend},
+		{"index", kAttribIndex},
+		{"index0", kAttribIndex0},
+		{"length", kAttribLength},
+		{"filepath", kAttribFilePath},
+		{"chunkdelimiters", kAttribChunkDelimiters},
+		{"mactype", kAttribMacType},
+		{"maccreator", kAttribMacCreator},
+	};
+
+	for (const auto &entry : kAttribs) {
+		if (attrib == entry.name) {
+			result.pod.ifc = DynamicValueWriteInterfaceGlue<WriteProxy>::getInstance();
+			result.pod.objectRef = this;
+			result.pod.ptrOrOffset = entry.attrib;
+			return kMiniscriptInstructionOutcomeContinue;
+		}
+	}
+
+	return Modifier::writeRefAttribute(thread, result, attrib);
+}
+
+MiniscriptInstructionOutcome FileModifier::WriteProxy::write(MiniscriptThread *thread, const DynamicValue &value, void *objectRef, uintptr ptrOrOffset) {
+	FileModifier *self = static_cast<FileModifier *>(objectRef);
+	self->_error = self->writeAttribute(thread->getRuntime(), static_cast<WritableAttribute>(ptrOrOffset), value);
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
+MiniscriptInstructionOutcome FileModifier::WriteProxy::refAttrib(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib) {
+	return kMiniscriptInstructionOutcomeFailed;
+}
+
+MiniscriptInstructionOutcome FileModifier::WriteProxy::refAttribIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib, const DynamicValue &index) {
+	return kMiniscriptInstructionOutcomeFailed;
+}
+
+FileModifier::ErrorCode FileModifier::writeAttribute(Runtime *runtime, WritableAttribute attrib, const DynamicValue &valueIn) {
+	Common::String str;
+	int32 n = 0;
+
+	// mTropolis 2.0 passes variables by reference
+	DynamicValue value = valueIn;
+	if (value.getType() == DynamicValueTypes::kObject) {
+		Common::SharedPtr<RuntimeObject> obj = value.getObject().object.lock();
+		if (obj && obj->isModifier() && static_cast<Modifier *>(obj.get())->isVariable())
+			static_cast<VariableModifier *>(obj.get())->varGetValue(value);
+	}
+
+	// Numbers can be written as text, other values only matter as flags
+	if (value.getType() == DynamicValueTypes::kString)
+		str = value.getString();
+	else if (value.getType() == DynamicValueTypes::kInteger)
+		str = Common::String::format("%i", static_cast<int>(value.getInt()));
+	else if (value.getType() == DynamicValueTypes::kFloat)
+		str = Common::String::format("%g", value.getFloat());
+	value.roundToInt(n);
+
+	switch (attrib) {
+	case kAttribOpenMode: {
+			int mode = _defaultOpenMode;
+			if (value.getType() == DynamicValueTypes::kString) {
+				if (str.equalsIgnoreCase("read"))
+					mode = kOpenModeRead;
+				else if (str.equalsIgnoreCase("readwrite"))
+					mode = kOpenModeReadWrite;
+				else if (str.equalsIgnoreCase("overwrite"))
+					mode = kOpenModeOverwrite;
+				else if (!str.equalsIgnoreCase("default"))
+					mode = atoi(str.c_str());
+			} else
+				mode = n;
+
+			ErrorCode err = openFile(runtime, mode);
+			if (err == kErrorNone)
+				_defaultOpenMode = mode;
+			return err;
+		}
+	case kAttribClose:
+		closeFile();
+		return kErrorNone;
+	case kAttribWrite:
+	case kAttribAppend:
+		if (!_isOpen || !_isWritable)
+			return kErrorNotWritable;
+
+		if (attrib == kAttribAppend)
+			_position = _contents.size();
+
+		if (_position + str.size() > _contents.size())
+			_contents.resize(_position + str.size());
+		if (str.size() > 0)
+			memcpy(&_contents[_position], str.c_str(), str.size());
+		_position += str.size();
+		_isDirty = true;
+		flush();
+		return kErrorNone;
+	case kAttribIndex:
+	case kAttribIndex0:
+		if (attrib == kAttribIndex)
+			n--;
+		if (n < 0)
+			return kErrorEndOfFile;
+		if (static_cast<uint>(n) > _contents.size())
+			return kErrorEndOfFile;
+		_position = n;
+		return kErrorNone;
+	case kAttribLength:
+		if (!_isOpen || !_isWritable)
+			return kErrorNotWritable;
+		if (n < 0)
+			n = 0;
+		_contents.resize(n);
+		if (_position > _contents.size())
+			_position = _contents.size();
+		_isDirty = true;
+		flush();
+		return kErrorNone;
+	case kAttribFilePath:
+		closeFile();
+		_filePath = str;
+		return kErrorNone;
+	case kAttribChunkDelimiters:
+		_chunkDelimiters = str;
+		return kErrorNone;
+	case kAttribMacType:
+		_macType = str;
+		return kErrorNone;
+	case kAttribMacCreator:
+		_macCreator = str;
+		return kErrorNone;
+	}
+
+	return kErrorNone;
+}
+
+#ifdef MTROPOLIS_DEBUG_ENABLE
+void FileModifier::debugInspect(IDebugInspectionReport *report) const {
+	Modifier::debugInspect(report);
+
+	report->declareDynamic("filePath", _filePath);
+	report->declareDynamic("isOpen", _isOpen ? "true" : "false");
+	report->declareDynamic("position", Common::String::format("%u", _position));
+}
+#endif
+
+Common::SharedPtr<Modifier> FileModifier::shallowClone() const {
+	Common::SharedPtr<FileModifier> clone(new FileModifier(*this));
+	clone->_isOpen = false;
+	clone->_contents.clear();
+	return clone;
+}
+
+const char *FileModifier::getDefaultName() const {
+	return "File";
+}
+
+PointMotionModifier::PointMotionModifier()
+	: _easeFlags(0), _durationMode(false), _speed(100.0), _duration(3.0), _updateRate(30), _fixedStep(false), _hasDoneSend(false),
+	  _running(false), _curX(0.0), _curY(0.0), _progress(0.0), _startTime(0.0), _lastTime(0.0) {
+}
+
+PointMotionModifier::~PointMotionModifier() {
+	if (_scheduledEvent)
+		_scheduledEvent->cancel();
+}
+
+bool PointMotionModifier::load(const PlugInModifierLoaderContext &context, const Data::Standard::PointMotionModifier &data) {
+	if (data.startWhen.type != Data::PlugInTypeTaggedValue::kEvent || !_startWhen.load(data.startWhen.value.asEvent))
+		return false;
+	if (data.stopWhen.type != Data::PlugInTypeTaggedValue::kEvent || !_stopWhen.load(data.stopWhen.value.asEvent))
+		return false;
+
+	if (data.destination.type == Data::PlugInTypeTaggedValue::kPoint && !data.destination.value.asPoint.toScummVMPoint(_destination))
+		return false;
+
+	// The low half holds the ease flags and the high half the timing mode
+	_easeFlags = data.unknown1 & 0xffff;
+	_durationMode = ((data.unknown1 >> 16) == 1);
+
+	if (data.unknown2Float.type == Data::PlugInTypeTaggedValue::kFloat)
+		_speed = data.unknown2Float.value.asFloat.toXPFloat().toDouble();
+	if (data.unknown3Float.type == Data::PlugInTypeTaggedValue::kFloat)
+		_duration = data.unknown3Float.value.asFloat.toXPFloat().toDouble();
+	if (data.unknown4Int.type == Data::PlugInTypeTaggedValue::kInteger)
+		_updateRate = CLIP<int32>(data.unknown4Int.value.asInt, 1, 100);
+
+	_fixedStep = (data.unknown5 != 0);
+
+	// The done message, unless its event is "none"
+	if (data.unknown6Event.type == Data::PlugInTypeTaggedValue::kEvent && data.unknown6Event.value.asEvent.eventID != 1) {
+		int32 msgFlags = (data.unknown9Int.type == Data::PlugInTypeTaggedValue::kInteger) ? data.unknown9Int.value.asInt : 0;
+
+		MessageFlags messageFlags;
+		messageFlags.immediate = ((msgFlags & Data::Standard::MediaCueMessengerModifier::kMessageFlagImmediate) != 0);
+		messageFlags.cascade = ((msgFlags & Data::Standard::MediaCueMessengerModifier::kMessageFlagCascade) != 0);
+		messageFlags.relay = ((msgFlags & Data::Standard::MediaCueMessengerModifier::kMessageFlagRelay) != 0);
+
+		uint32 destination = (data.unknown7Label.type == Data::PlugInTypeTaggedValue::kLabel) ? data.unknown7Label.value.asLabel.labelID : 0;
+		if (!_doneSend.load(data.unknown6Event, messageFlags, data.unknown8VarRef, destination))
+			return false;
+
+		_hasDoneSend = true;
+	}
+
+	return true;
+}
+
+bool PointMotionModifier::respondsToEvent(const Event &evt) const {
+	return _startWhen.respondsTo(evt) || _stopWhen.respondsTo(evt) || evt.eventType == EventIDs::kParentDisabled;
+}
+
+VThreadState PointMotionModifier::consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) {
+	if (_running && (_stopWhen.respondsTo(msg->getEvent()) || msg->getEvent().eventType == EventIDs::kParentDisabled)) {
+		stop(runtime, false);
+		return kVThreadReturn;
+	}
+
+	if (!_running && _startWhen.respondsTo(msg->getEvent()))
+		start(runtime);
+
+	return kVThreadReturn;
+}
+
+void PointMotionModifier::disable(Runtime *runtime) {
+	if (_running)
+		stop(runtime, false);
+}
+
+void PointMotionModifier::start(Runtime *runtime) {
+	Structural *owner = findStructuralOwner();
+	if (!owner || !owner->isElement() || !static_cast<Element *>(owner)->isVisual())
+		return;
+
+	const Common::Rect &rect = static_cast<VisualElement *>(owner)->getRelativeRect();
+	_curX = rect.left;
+	_curY = rect.top;
+	_progress = 0.0;
+	_startTime = _lastTime = static_cast<double>(runtime->getPlayTime());
+	_running = true;
+
+	scheduleTick(runtime);
+	sendToOwner(runtime, EventIDs::kMotionStarted);
+}
+
+void PointMotionModifier::stop(Runtime *runtime, bool completed) {
+	_running = false;
+	if (_scheduledEvent) {
+		_scheduledEvent->cancel();
+		_scheduledEvent.reset();
+	}
+
+	// These are pushed tasks, so the done message is sent first
+	sendToOwner(runtime, EventIDs::kMotionEnded);
+	if (completed && _hasDoneSend)
+		_doneSend.sendFromMessenger(runtime, this, nullptr, DynamicValue(), nullptr);
+}
+
+void PointMotionModifier::scheduleTick(Runtime *runtime) {
+	uint64 period = MAX<uint64>(1, 1000 / _updateRate);
+	_scheduledEvent = runtime->getScheduler().scheduleMethod<PointMotionModifier, &PointMotionModifier::trigger>(runtime->getPlayTime() + period, this);
+}
+
+void PointMotionModifier::trigger(Runtime *runtime) {
+	_scheduledEvent.reset();
+
+	Structural *owner = findStructuralOwner();
+	if (!owner || !owner->isElement() || !static_cast<Element *>(owner)->isVisual()) {
+		_running = false;
+		return;
+	}
+
+	VisualElement *visual = static_cast<VisualElement *>(owner);
+	const Common::Rect &rect = visual->getRelativeRect();
+
+	// Pick up moves made by something else
+	if (static_cast<int32>(round(_curX)) != rect.left || static_cast<int32>(round(_curY)) != rect.top) {
+		_curX = rect.left;
+		_curY = rect.top;
+	}
+
+	// Without a speed it would never arrive
+	if (!_durationMode && _speed <= 1e-6) {
+		stop(runtime, false);
+		return;
+	}
+
+	double now = static_cast<double>(runtime->getPlayTime());
+	bool done = _durationMode ? durationStep(now) : speedStep(now);
+
+	int32 dx = static_cast<int32>(round(_curX)) - rect.left;
+	int32 dy = static_cast<int32>(round(_curY)) - rect.top;
+	if (dx != 0 || dy != 0) {
+		VisualElement::OffsetTranslateTaskData *taskData = runtime->getVThread().pushTask("VisualElement::offsetTranslateTask", visual, &VisualElement::offsetTranslateTask);
+		taskData->dx = dx;
+		taskData->dy = dy;
+	}
+
+	if (done)
+		stop(runtime, true);
+	else
+		scheduleTick(runtime);
+}
+
+bool PointMotionModifier::speedStep(double now) {
+	double dx = _destination.x - _curX;
+	double dy = _destination.y - _curY;
+	double dist = sqrt(dx * dx + dy * dy);
+
+	double ease = 1.0;
+	if ((_easeFlags & kEaseIn) && _progress < 0.2)
+		ease = MAX(_progress / 0.2, 0.05);
+	else if ((_easeFlags & kEaseOut) && _progress > 0.8)
+		ease = MAX((1.0 - _progress) / 0.2, 0.05);
+
+	double step = 0.0;
+	if (_fixedStep)
+		step = _speed / _updateRate * ease;
+	else {
+		step = _speed * ease * (now - _lastTime) / 1000.0;
+		_lastTime = now;
+	}
+
+	if (_progress < 1.0 && dist > 0.0) {
+		double total = dist / (1.0 - _progress);
+		_progress = (total - dist + step) / total;
+	}
+
+	if (dist > 0.5 && step < dist) {
+		_curX += dx * (step / dist);
+		_curY += dy * (step / dist);
+		return false;
+	}
+
+	_curX = _destination.x;
+	_curY = _destination.y;
+	return true;
+}
+
+// Area left under the velocity profile at time t, which ramps over the eased parts and is flat between them
+double PointMotionModifier::durationRemainingArea(double t) const {
+	double total = _duration * 1000.0;
+	double end = _startTime + total;
+	double rampInEnd = _startTime + ((_easeFlags & kEaseIn) ? 0.2 * total : 0.0);
+	double rampOutStart = _startTime + ((_easeFlags & kEaseOut) ? 0.8 * total : total);
+
+	if (t >= end)
+		return 0.0;
+	if (t >= rampOutStart)
+		return (end - t) * (end - t) / (end - rampOutStart) / 2.0;
+	if (t >= rampInEnd)
+		return (end + rampOutStart) / 2.0 - t;
+	return (end - (t - _startTime) * (t - _startTime) / (rampInEnd - _startTime) - rampInEnd - _startTime + rampOutStart) / 2.0;
+}
+
+bool PointMotionModifier::durationStep(double now) {
+	double dx = _destination.x - _curX;
+	double dy = _destination.y - _curY;
+	double dist = sqrt(dx * dx + dy * dy);
+
+	double prev = _lastTime;
+	_lastTime = now;
+
+	if (_duration * 1000.0 - (now - _startTime) > 0.0) {
+		double prevArea = durationRemainingArea(prev);
+		double move = (prevArea > 0.0) ? dist - durationRemainingArea(now) * (dist / prevArea) : dist;
+		if (dist > 0.5 && move < dist) {
+			_curX += dx * (move / dist);
+			_curY += dy * (move / dist);
+			return false;
+		}
+	}
+
+	_curX = _destination.x;
+	_curY = _destination.y;
+	return true;
+}
+
+void PointMotionModifier::sendToOwner(Runtime *runtime, EventIDs::EventID eventID) {
+	Structural *owner = findStructuralOwner();
+	if (!owner)
+		return;
+
+	Common::SharedPtr<MessageProperties> props(new MessageProperties(Event(eventID, 0), DynamicValue(), getSelfReference()));
+	Common::SharedPtr<MessageDispatch> dispatch(new MessageDispatch(props, owner, true, true, false));
+	runtime->sendMessageOnVThread(dispatch);
+}
+
+bool PointMotionModifier::readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) {
+	if (attrib == "destination") {
+		result.setPoint(_destination);
+		return true;
+	} else if (attrib == "speed") {
+		result.setFloat(_speed);
+		return true;
+	} else if (attrib == "duration") {
+		result.setFloat(_duration);
+		return true;
+	} else if (attrib == "updaterate") {
+		result.setInt(_updateRate);
+		return true;
+	}
+
+	return Modifier::readAttribute(thread, result, attrib);
+}
+
+MiniscriptInstructionOutcome PointMotionModifier::writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &writeProxy, const Common::String &attrib) {
+	if (attrib == "destination") {
+		DynamicValueWriteOrRefAttribFuncHelper<PointMotionModifier, &PointMotionModifier::scriptSetDestination, &PointMotionModifier::scriptWriteRefDestinationAttribute>::create(this, writeProxy);
+		return kMiniscriptInstructionOutcomeContinue;
+	} else if (attrib == "speed") {
+		DynamicValueWriteFuncHelper<PointMotionModifier, &PointMotionModifier::scriptSetSpeed, true>::create(this, writeProxy);
+		return kMiniscriptInstructionOutcomeContinue;
+	} else if (attrib == "duration") {
+		DynamicValueWriteFuncHelper<PointMotionModifier, &PointMotionModifier::scriptSetDuration, true>::create(this, writeProxy);
+		return kMiniscriptInstructionOutcomeContinue;
+	} else if (attrib == "updaterate") {
+		DynamicValueWriteFuncHelper<PointMotionModifier, &PointMotionModifier::scriptSetUpdateRate, true>::create(this, writeProxy);
+		return kMiniscriptInstructionOutcomeContinue;
+	}
+
+	return Modifier::writeRefAttribute(thread, writeProxy, attrib);
+}
+
+MiniscriptInstructionOutcome PointMotionModifier::scriptSetDestination(MiniscriptThread *thread, const DynamicValue &value) {
+	if (value.getType() != DynamicValueTypes::kPoint)
+		return kMiniscriptInstructionOutcomeFailed;
+
+	_destination = value.getPoint();
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
+// Magic School Bus Animals nudges the destination with destination.y
+MiniscriptInstructionOutcome PointMotionModifier::scriptWriteRefDestinationAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, const Common::String &attrib) {
+	return DynamicValueWritePointHelper::refAttrib(thread, proxy, &_destination, 0, attrib);
+}
+
+MiniscriptInstructionOutcome PointMotionModifier::scriptSetSpeed(MiniscriptThread *thread, const DynamicValue &value) {
+	DynamicValue converted;
+	if (!value.convertToType(DynamicValueTypes::kFloat, converted) || converted.getFloat() <= 0.0)
+		return kMiniscriptInstructionOutcomeFailed;
+
+	_speed = converted.getFloat();
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
+MiniscriptInstructionOutcome PointMotionModifier::scriptSetDuration(MiniscriptThread *thread, const DynamicValue &value) {
+	DynamicValue converted;
+	if (!value.convertToType(DynamicValueTypes::kFloat, converted) || converted.getFloat() <= 0.0)
+		return kMiniscriptInstructionOutcomeFailed;
+
+	_duration = converted.getFloat();
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
+MiniscriptInstructionOutcome PointMotionModifier::scriptSetUpdateRate(MiniscriptThread *thread, const DynamicValue &value) {
+	int32 rate = 0;
+	if (!value.roundToInt(rate) || rate < 1 || rate > 100)
+		return kMiniscriptInstructionOutcomeFailed;
+
+	_updateRate = rate;
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
+Common::SharedPtr<Modifier> PointMotionModifier::shallowClone() const {
+	Common::SharedPtr<PointMotionModifier> clone(new PointMotionModifier(*this));
+	clone->_scheduledEvent.reset();
+	clone->_running = false;
+	return clone;
+}
+
+const char *PointMotionModifier::getDefaultName() const {
+	return "Point Motion";
+}
+
+void PointMotionModifier::linkInternalReferences(ObjectLinkingScope *scope) {
+	_doneSend.linkInternalReferences(scope);
+}
+
+void PointMotionModifier::visitInternalReferences(IStructuralReferenceVisitor *visitor) {
+	_doneSend.visitInternalReferences(visitor);
+}
+
 StandardPlugInHacks::StandardPlugInHacks() : allowGarbledListModData(false) {
 }
 
@@ -1853,7 +2730,9 @@ StandardPlugIn::StandardPlugIn()
 	, _printModifierFactory(this)
 	, _navigateModifierFactory(this)
 	, _openTitleModifierFactory(this)
-	, _openAppModifierFactory(this) {
+	, _openAppModifierFactory(this)
+	, _fileModifierFactory(this)
+	, _pointMotionModifierFactory(this) {
 }
 
 StandardPlugIn::~StandardPlugIn() {
@@ -1873,6 +2752,8 @@ void StandardPlugIn::registerModifiers(IPlugInModifierRegistrar *registrar) cons
 	registrar->registerPlugInModifier("Navigate", &_navigateModifierFactory);
 	registrar->registerPlugInModifier("OpenTitle", &_openTitleModifierFactory);
 	registrar->registerPlugInModifier("openApp", &_openAppModifierFactory);
+	registrar->registerPlugInModifier("FileMod", &_fileModifierFactory);
+	registrar->registerPlugInModifier("PointMotion", &_pointMotionModifierFactory);
 }
 
 const StandardPlugInHacks &StandardPlugIn::getHacks() const {

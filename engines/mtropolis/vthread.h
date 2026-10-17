@@ -147,6 +147,9 @@ public:
 
 	bool popFrame();
 
+	// Counts pushed frames, to tell whether something pushed a task
+	uint getPushCount() const;
+
 	VThreadTaskData *pushCoroutineFrame(const CompiledCoroutine *compiledCoro, const CoroutineParamsBase &params, const CoroutineReturnValueRefBase &returnValueRef);
 
 	template<typename TCoroutine, typename TReturnValue, typename ...TParams>
@@ -177,6 +180,7 @@ private:
 	Common::Array<VThreadStackChunk> _stackChunks;
 	ICoroutineManager *_coroManager;
 	uint _numActiveStackChunks;
+	uint _pushCount;
 };
 
 template<typename TClass, typename TData>

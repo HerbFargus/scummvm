@@ -109,6 +109,7 @@ public:
 
 	bool respondsToEvent(const Event &evt) const override;
 	VThreadState consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) override;
+	bool runWithIncomingData(Runtime *runtime, const DynamicValue &value) override;
 
 	void disable(Runtime *runtime) override {}
 
@@ -139,6 +140,8 @@ public:
 	VThreadState consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) override;
 
 	void disable(Runtime *runtime) override {}
+
+	bool isColorTable() const override { return true; }
 
 #ifdef MTROPOLIS_DEBUG_ENABLE
 	const char *debugGetTypeName() const override { return "Color Table Modifier"; }
@@ -206,10 +209,16 @@ private:
 	Event _saveWhen;
 	Event _restoreWhen;
 
+	Common::String getFileName() const;
+
 	DynamicValueSource _saveOrRestoreValue;
 
 	Common::String _filePath;
 	Common::String _fileName;
+
+	// mTropolis 2.0 can take the file path from a variable instead
+	DynamicValueSource _filePathSource;
+	bool _haveFilePathSource = false;
 };
 
 class MessengerModifier : public Modifier {
@@ -1156,6 +1165,7 @@ private:
 	MiniscriptInstructionOutcome writeRefAttributeIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &writeProxy, const Common::String &attrib, const DynamicValue &index) override;
 
 	Modifier *findChildByName(Runtime *runtime, const Common::String &name) const;
+	Modifier *childFromScriptIndex(MiniscriptThread *thread, const DynamicValue &index) const;
 
 	Common::Array<Common::SharedPtr<Modifier> > _children;
 };

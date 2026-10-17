@@ -191,6 +191,39 @@ protected:
 	DataReadErrorCode load(PlugIn &plugIn, const PlugInModifier &prefix, DataReader &reader) override;
 };
 
+struct FileModifier : public PlugInModifierData {
+	PlugInTypeTaggedValue openWhen;
+	PlugInTypeTaggedValue closeWhen;
+	PlugInTypeTaggedValue filePath;
+	PlugInTypeTaggedValue chunkDelimiters;
+	PlugInTypeTaggedValue macFileType;
+	PlugInTypeTaggedValue macCreator;
+	PlugInTypeTaggedValue openMode;
+
+protected:
+	DataReadErrorCode load(PlugIn &plugIn, const PlugInModifier &prefix, DataReader &reader) override;
+};
+
+struct PointMotionModifier : public PlugInModifierData {
+	PointMotionModifier();
+
+	PlugInTypeTaggedValue startWhen;
+	PlugInTypeTaggedValue stopWhen;
+	PlugInTypeTaggedValue destination;
+	uint32 unknown1;	// Stored after the point
+	PlugInTypeTaggedValue unknown2Float;
+	PlugInTypeTaggedValue unknown3Float;
+	PlugInTypeTaggedValue unknown4Int;
+	uint16 unknown5;
+	PlugInTypeTaggedValue unknown6Event;
+	PlugInTypeTaggedValue unknown7Label;
+	PlugInTypeTaggedValue unknown8VarRef;
+	PlugInTypeTaggedValue unknown9Int;
+
+protected:
+	DataReadErrorCode load(PlugIn &plugIn, const PlugInModifier &prefix, DataReader &reader) override;
+};
+
 } // End of namespace Standard
 
 } // End of namespace Data

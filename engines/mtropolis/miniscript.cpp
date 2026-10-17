@@ -90,11 +90,30 @@ MiniscriptReferences::GlobalRef::GlobalRef() : guid(0) {
 MiniscriptReferences::MiniscriptReferences(const Common::Array<LocalRef> &localRefs, const Common::Array<GlobalRef> &globalRefs) : _localRefs(localRefs), _globalRefs(globalRefs) {
 }
 
+static Common::String runtimeObjectName(RuntimeObject *obj) {
+	if (obj->isModifier())
+		return static_cast<Modifier *>(obj)->getName();
+	if (obj->isStructural())
+		return static_cast<Structural *>(obj)->getName();
+	return Common::String();
+}
+
 void MiniscriptReferences::linkInternalReferences(ObjectLinkingScope *scope) {
 	// Resolve using name lookups since there are some known cases where the GUID is broken
 	// e.g. "bArriveFromCutScene" in "Set bArriveFromCutScene on PE" in Obsidian
-	for (Common::Array<LocalRef>::iterator it = _localRefs.begin(), itEnd = _localRefs.end(); it != itEnd; ++it)
+	for (Common::Array<LocalRef>::iterator it = _localRefs.begin(), itEnd = _localRefs.end(); it != itEnd; ++it) {
 		it->resolution = scope->resolve(it->guid, it->name, false);
+
+		// A GUID can also belong to a different object than the one the script names, after objects
+		// were copied (in Magic School Bus Animals' penguin game, "lstiRCIdxMap" has listGood's GUID
+		// and "i" has a timer's), so in mTropolis 2.0 an object with the name takes priority
+		Common::SharedPtr<RuntimeObject> obj = it->resolution.lock();
+		if (obj && !it->name.empty() && scope->getPreferNamesOverGUIDs() && !caseInsensitiveEqual(runtimeObjectName(obj.get()), it->name)) {
+			Common::WeakPtr<RuntimeObject> byName = scope->resolve(it->name, false);
+			if (!byName.expired())
+				it->resolution = byName;
+		}
+	}
 
 	for (Common::Array<GlobalRef>::iterator it = _globalRefs.begin(), itEnd = _globalRefs.end(); it != itEnd; ++it)
 		it->resolution = scope->resolve(it->guid, "", true);
@@ -204,6 +223,16 @@ bool MiniscriptInstructionLoader<MiniscriptInstructions::BuiltinFunc>::loadInstr
 		return false; // Unknown function
 
 	new (dest) MiniscriptInstructions::BuiltinFunc(static_cast<MiniscriptInstructions::BuiltinFunc::BuiltinFunctionID>(functionID));
+	return true;
+}
+
+template<>
+bool MiniscriptInstructionLoader<MiniscriptInstructions::CallFunction>::loadInstruction(void *dest, uint32 instrFlags, Data::DataReader &instrDataReader, IMiniscriptInstructionParserFeedback &feedback) {
+	uint32 functionNameAttribute, numArgs;
+	if (!instrDataReader.readU32(functionNameAttribute) || !instrDataReader.readU32(numArgs))
+		return false;
+
+	new (dest) MiniscriptInstructions::CallFunction(functionNameAttribute, numArgs);
 	return true;
 }
 
@@ -414,8 +443,10 @@ bool MiniscriptParser::parse(const Data::MiniscriptProgram &program, Common::Sha
 		SIMiniscriptInstructionFactory *factory = resolveOpcode(rawInstruction.opcode);
 		rawInstruction.instrFactory = factory;
 
-		if (!factory)
+		if (!factory) {
+			warning("Miniscript: Unknown opcode %x", static_cast<uint>(rawInstruction.opcode));
 			return false;
+		}
 
 		size_t compiledSize = 0;
 		size_t compiledAlignment = 0;
@@ -454,6 +485,8 @@ bool MiniscriptParser::parse(const Data::MiniscriptProgram &program, Common::Sha
 		Data::DataReader instrContentsReader(0, instrContentsStream, reader.getDataFormat(), reader.getRuntimeVersion(), reader.isVersionAutoDetect());
 
 		if (!rawInstruction.instrFactory->create(&programData[baseOffset + rawInstruction.pdPosition], rawInstruction.flags, instrContentsReader, miniscriptInstructions[i], parserFeedback)) {
+			warning("Miniscript: Failed to load instruction with opcode %x, flags %x, %u bytes of data", static_cast<uint>(rawInstruction.opcode), static_cast<uint>(rawInstruction.flags), rawInstruction.contents.size());
+
 			// Destroy any already-created instructions
 			for (size_t di = 0; di < i; di++) {
 				miniscriptInstructions[i - 1 - di]->~MiniscriptInstruction();
@@ -526,6 +559,10 @@ SIMiniscriptInstructionFactory *MiniscriptParser::resolveOpcode(uint16 opcode) {
 		return MiniscriptInstructionFactory<MiniscriptInstructions::ListAppend>::getInstance();
 	case 0x137:
 		return MiniscriptInstructionFactory<MiniscriptInstructions::ListCreate>::getInstance();
+	case 0x138:
+		return MiniscriptInstructionFactory<MiniscriptInstructions::ArgSeparator>::getInstance();
+	case 0x3ea:
+		return MiniscriptInstructionFactory<MiniscriptInstructions::CallFunction>::getInstance();
 	case 0x191:
 		return MiniscriptInstructionFactory<MiniscriptInstructions::PushValue>::getInstance();
 	case 0x192:
@@ -561,11 +598,25 @@ MiniscriptInstructionOutcome Set::execute(MiniscriptThread *thread) const {
 
 	if (target.value.getType() == DynamicValueTypes::kWriteProxy) {
 		const DynamicValueWriteProxy &proxy = target.value.getWriteProxy();
+		uint pushCount = thread->getRuntime()->getVThread().getPushCount();
 		outcome = proxy.pod.ifc->write(thread, srcValue.value, proxy.pod.objectRef, proxy.pod.ptrOrOffset);
 		if (outcome == kMiniscriptInstructionOutcomeFailed) {
+			// mTropolis 2.0 carries on after assigning a list to a variable that can't hold it
+			// (Magic School Bus Bugs initializes an integer with a list), leaving it unchanged
+			if (srcValue.value.getType() == DynamicValueTypes::kList && thread->getRuntime()->getProject()->getRuntimeVersion() >= kRuntimeVersion200) {
+				debug(2, "Miniscript: '%s' assigned a list to a value that can't hold it", thread->getModifier()->getName().c_str());
+				thread->popValues(2);
+				return kMiniscriptInstructionOutcomeContinue;
+			}
+
 			thread->error("Failed to assign value to proxy");
 			return outcome;
 		}
+
+		// A write that sent messages (such as cancelling a dialogue line, which sends its done
+		// message) pushed tasks that have to run before the script carries on
+		if (outcome == kMiniscriptInstructionOutcomeContinue && thread->getRuntime()->getVThread().getPushCount() != pushCount)
+			outcome = kMiniscriptInstructionOutcomeYieldToVThread;
 	} else {
 		VariableModifier *var = nullptr;
 		if (target.value.getType() == DynamicValueTypes::kObject) {
@@ -615,6 +666,9 @@ MiniscriptInstructionOutcome Send::execute(MiniscriptThread *thread) const {
 		thread->popValues(2);
 		return kMiniscriptInstructionOutcomeContinue;
 	}
+
+	debug(3, "Miniscript: '%s' sends %u/%u to '%s'", thread->getModifier()->getName().c_str(), static_cast<uint>(_evt.eventType), _evt.eventInfo,
+		obj->isModifier() ? static_cast<Modifier *>(obj.get())->getName().c_str() : (obj->isStructural() ? static_cast<Structural *>(obj.get())->getName().c_str() : "?"));
 
 	Common::SharedPtr<MessageProperties> msgProps(new MessageProperties(_evt, payloadValue, thread->getModifier()->getSelfReference()));
 	Common::SharedPtr<MessageDispatch> dispatch;
@@ -779,6 +833,23 @@ MiniscriptInstructionOutcome Modulo::arithExecute(MiniscriptThread *thread, doub
 	return kMiniscriptInstructionOutcomeContinue;
 }
 
+static bool isNullObjectReference(MiniscriptThread *thread, const DynamicValue &value) {
+	if (value.getType() != DynamicValueTypes::kObject)
+		return false;
+
+	Common::SharedPtr<RuntimeObject> obj = value.getObject().object.lock();
+	if (!obj)
+		return true;
+
+	if (obj->isModifier() && static_cast<Modifier *>(obj.get())->isVariable()) {
+		DynamicValue target;
+		if (obj->readAttribute(thread, target, "object"))
+			return target.getType() == DynamicValueTypes::kNull || (target.getType() == DynamicValueTypes::kObject && target.getObject().object.expired());
+	}
+
+	return false;
+}
+
 MiniscriptInstructionOutcome UnorderedCompareInstruction::execute(MiniscriptThread *thread) const {
 	if (thread->getStackSize() < 2) {
 		thread->error("Stack underflow");
@@ -798,7 +869,20 @@ MiniscriptInstructionOutcome UnorderedCompareInstruction::execute(MiniscriptThre
 
 	bool isEqual = false;
 	bool isUndefined = false;
+
+	// An object reference to nothing equals null, including an object reference variable
+	// (which compares as itself, so that its attributes can be reached) that refers to nothing
+	bool lsIsNullObject = isNullObjectReference(thread, lsDest);
+	bool rsIsNullObject = isNullObjectReference(thread, rs);
+
 	switch (lsDest.getType()) {
+	case DynamicValueTypes::kNull:
+	case DynamicValueTypes::kObject:
+		if ((lsIsNullObject || lsDest.getType() == DynamicValueTypes::kNull) && (rsIsNullObject || rs.getType() == DynamicValueTypes::kNull))
+			isEqual = true;
+		else
+			isEqual = (lsDest == rs);
+		break;
 	case DynamicValueTypes::kString:
 		if (rs.getType() == DynamicValueTypes::kString)
 			isEqual = caseInsensitiveEqual(lsDest.getString(), rs.getString());
@@ -1374,6 +1458,41 @@ MiniscriptInstructionOutcome PointCreate::execute(MiniscriptThread *thread) cons
 	return kMiniscriptInstructionOutcomeContinue;
 }
 
+// Makes a vector from an (angle, magnitude) pair, angle in degrees
+MiniscriptInstructionOutcome VectorCreate::execute(MiniscriptThread *thread) const {
+	if (thread->getStackSize() < 2) {
+		thread->error("Stack underflow");
+		return kMiniscriptInstructionOutcomeFailed;
+	}
+
+	MiniscriptInstructionOutcome outcome = thread->dereferenceRValue(0);
+	if (outcome != kMiniscriptInstructionOutcomeContinue)
+		return outcome;
+
+	outcome = thread->dereferenceRValue(1);
+	if (outcome != kMiniscriptInstructionOutcomeContinue)
+		return outcome;
+
+	DynamicValue &magVal = thread->getStackValueFromTop(0).value;
+	DynamicValue &angleValDest = thread->getStackValueFromTop(1).value;
+
+	DynamicValue angleConverted;
+	DynamicValue magConverted;
+	if (!angleValDest.convertToType(DynamicValueTypes::kFloat, angleConverted) || !magVal.convertToType(DynamicValueTypes::kFloat, magConverted)) {
+		thread->error("Invalid input for vector creation");
+		return kMiniscriptInstructionOutcomeFailed;
+	}
+
+	AngleMagVector vec;
+	vec.angleDegrees = angleConverted.getFloat();
+	vec.magnitude = magConverted.getFloat();
+	angleValDest.setVector(vec);
+
+	thread->popValues(1);
+
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
 MiniscriptInstructionOutcome RangeCreate::execute(MiniscriptThread *thread) const {
 	if (thread->getStackSize() < 2) {
 		thread->error("Stack underflow");
@@ -1434,6 +1553,443 @@ MiniscriptInstructionOutcome RangeCreate::execute(MiniscriptThread *thread) cons
 
 GetChild::GetChild(uint32 attribute, bool isLValue, bool isIndexed)
 	: _attribute(attribute), _isLValue(isLValue), _isIndexed(isIndexed) {
+}
+
+MiniscriptInstructionOutcome ArgSeparator::execute(MiniscriptThread *thread) const {
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
+CallFunction::CallFunction(uint32 functionNameAttribute, uint32 numArgs) : _functionNameAttribute(functionNameAttribute), _numArgs(numArgs) {
+}
+
+namespace StringFunctions {
+
+static const char *const kWordDelimiters = " \t\n\r";
+static const char *const kParagraphDelimiters = "\n\r";
+
+static bool isDelimiter(const char *delimiters, char c) {
+	// Matches strchr, which also finds the terminator
+	return c == '\0' || strchr(delimiters, c) != nullptr;
+}
+
+// Converts a 1-based range (negative values count from the end) to an offset and length
+static void clampRange(int32 start, int32 end, int32 length, int32 &outOffset, int32 &outCount) {
+	outOffset = 0;
+	outCount = 0;
+
+	if ((start == 0 && end == 0) || length < 1)
+		return;
+
+	start = CLIP<int32>(start, -length, length + 1);
+	end = CLIP<int32>(end, -length, length + 1);
+
+	if (start < 0)
+		start += length + 1;
+	if (end < 0)
+		end += length + 1;
+
+	if (end == 0) {
+		outCount = 0;
+		outOffset = start - 1;
+	} else {
+		if (start == 0)
+			start = 1;
+
+		int32 lo = MIN(start, end);
+		int32 hi = MAX(start, end);
+		outOffset = lo - 1;
+		outCount = hi - lo + 1;
+	}
+
+	if (outOffset + outCount > length)
+		outCount = length - outOffset;
+}
+
+static int32 countChunks(const Common::String &str, const char *delimiters, bool collapse) {
+	int32 count = 0;
+	bool prevWasDelimiter = false;
+
+	for (uint i = 0; i < str.size(); i++) {
+		bool delim = strchr(delimiters, str[i]) != nullptr;
+		if (delim && (!collapse || !prevWasDelimiter))
+			count++;
+		prevWasDelimiter = delim;
+	}
+
+	if (!prevWasDelimiter)
+		count++;
+
+	if (isDelimiter(delimiters, str.empty() ? '\0' : str[0]))
+		count--;
+
+	return count;
+}
+
+// Finds chunk n (1-based, negative counts from the end) as [start, end)
+static void findChunk(const Common::String &str, const char *delimiters, int32 n, int32 &outStart, int32 &outEnd, bool collapse) {
+	outStart = 0;
+	outEnd = 0;
+
+	if (n == 0)
+		return;
+
+	if (n < 0) {
+		n += countChunks(str, delimiters, collapse) + 1;
+		if (n < 1)
+			return;
+	}
+
+	const char *s = str.c_str();
+
+	if (collapse && isDelimiter(delimiters, s[0]))
+		outStart = strspn(s, delimiters);
+
+	outEnd = outStart + strcspn(s + outStart, delimiters);
+	n--;
+
+	if (n == 0)
+		return;
+
+	while (s[outEnd] != '\0') {
+		outStart = outEnd + 1;
+		if (collapse)
+			outStart += strspn(s + outStart, delimiters);
+		outEnd = outStart + strcspn(s + outStart, delimiters);
+		n--;
+		if (n == 0)
+			return;
+	}
+
+	outStart = outEnd;
+}
+
+static bool getString(const DynamicValue &value, Common::String &outStr) {
+	if (value.getType() == DynamicValueTypes::kString) {
+		outStr = value.getString();
+		return true;
+	}
+
+	DynamicValue converted;
+	if (!value.convertToType(DynamicValueTypes::kString, converted))
+		return false;
+
+	outStr = converted.getString();
+	return true;
+}
+
+static bool getInt(const DynamicValue &value, int32 &outInt) {
+	return value.roundToInt(outInt);
+}
+
+static bool getBool(const DynamicValue &value, bool &outBool) {
+	DynamicValue converted;
+	if (!value.convertToType(DynamicValueTypes::kBoolean, converted))
+		return false;
+
+	outBool = converted.getBool();
+	return true;
+}
+
+// Ranges may also be given as a single index
+static bool getRange(const DynamicValue &value, int32 &outStart, int32 &outEnd) {
+	if (value.getType() == DynamicValueTypes::kIntegerRange) {
+		outStart = value.getIntRange().min;
+		outEnd = value.getIntRange().max;
+		return true;
+	}
+
+	if (!getInt(value, outStart))
+		return false;
+
+	outEnd = outStart;
+	return true;
+}
+
+static void setRangeResult(DynamicValue &result, int32 start, int32 end) {
+	result.setIntRange(IntRange(start, end));
+}
+
+static int32 compareStrings(const Common::String &a, const Common::String &b, bool caseSensitive) {
+	int32 cmp = caseSensitive ? a.compareTo(b) : a.compareToIgnoreCase(b);
+	return (cmp < 0) ? -1 : ((cmp > 0) ? 1 : 0);
+}
+
+static int32 findString(const char *haystack, const char *needle, bool caseSensitive) {
+	size_t needleLength = strlen(needle);
+	if (needleLength == 0)
+		return -1;
+
+	for (const char *p = haystack; *p; p++) {
+		bool match = caseSensitive ? (strncmp(p, needle, needleLength) == 0) : (scumm_strnicmp(p, needle, needleLength) == 0);
+		if (match)
+			return p - haystack;
+	}
+
+	return -1;
+}
+
+// Offset of occurrence n (1-based) searching forwards, or -1
+static int32 findOccurrence(const Common::String &haystack, const Common::String &needle, bool caseSensitive, int32 n) {
+	int32 offset = 0;
+	int32 found = -1;
+
+	while (n > 0) {
+		n--;
+		int32 pos = findString(haystack.c_str() + offset, needle.c_str(), caseSensitive);
+		if (pos < 0)
+			return -1;
+
+		found = offset + pos;
+		offset = found + needle.size();
+	}
+
+	return found;
+}
+
+// Offset of occurrence n (1-based) searching backwards, or -1
+static int32 findOccurrenceReverse(const Common::String &haystack, const Common::String &needle, bool caseSensitive, int32 n) {
+	int32 pos = static_cast<int32>(haystack.size()) - static_cast<int32>(needle.size());
+	if (needle.empty())
+		return -1;
+
+	while (n > 0 && pos >= 0) {
+		bool match = caseSensitive ? (strncmp(haystack.c_str() + pos, needle.c_str(), needle.size()) == 0)
+								   : (scumm_strnicmp(haystack.c_str() + pos, needle.c_str(), needle.size()) == 0);
+		if (match) {
+			n--;
+			if (n == 0)
+				return pos;
+			pos -= needle.size();
+		} else
+			pos--;
+	}
+
+	return -1;
+}
+
+enum ChunkMode {
+	kChunkModeSubstring,
+	kChunkModeRange,
+};
+
+static bool chunkFunction(const DynamicValue &rangeArg, const Common::String &str, const char *delimiters, ChunkMode mode, bool collapse, DynamicValue &result) {
+	int32 first = 0;
+	int32 last = 0;
+	if (!getRange(rangeArg, first, last))
+		return false;
+
+	int32 start = 0;
+	int32 end = 0;
+	if (first != 0 || last != 0) {
+		int32 start1, end1, start2, end2;
+		findChunk(str, delimiters, first, start1, end1, collapse);
+		findChunk(str, delimiters, last, start2, end2, collapse);
+		start = MIN(start1, start2);
+		end = MAX(end1, end2);
+	}
+
+	if (mode == kChunkModeSubstring) {
+		result.setString(str.substr(start, end - start));
+	} else {
+		if (start != 0 || end != 0) {
+			if (start == end)
+				start = end = 0;
+			else
+				start++;
+		}
+		setRangeResult(result, start, end);
+	}
+
+	return true;
+}
+
+static bool replaceRange(const DynamicValue &rangeArg, const Common::String &str, const Common::String &replacement, DynamicValue &result) {
+	int32 first = 0;
+	int32 last = 0;
+	if (!getRange(rangeArg, first, last))
+		return false;
+
+	int32 offset = 0;
+	int32 count = 0;
+	clampRange(first, last, str.size(), offset, count);
+
+	result.setString(str.substr(0, offset) + replacement + str.substr(offset + count));
+	return true;
+}
+
+} // End of namespace StringFunctions
+
+MiniscriptInstructionOutcome CallFunction::execute(MiniscriptThread *thread) const {
+	using namespace StringFunctions;
+
+	const Common::Array<MiniscriptProgram::Attribute> &attribs = thread->getProgram()->getAttributes();
+	if (_functionNameAttribute >= attribs.size()) {
+		thread->error("Invalid function name index");
+		return kMiniscriptInstructionOutcomeFailed;
+	}
+
+	if (_numArgs == 0 || thread->getStackSize() < _numArgs) {
+		thread->error("Stack underflow");
+		return kMiniscriptInstructionOutcomeFailed;
+	}
+
+	for (uint i = 0; i < _numArgs; i++) {
+		MiniscriptInstructionOutcome outcome = thread->dereferenceRValue(i);
+		if (outcome != kMiniscriptInstructionOutcomeContinue)
+			return outcome;
+	}
+
+	Common::Array<DynamicValue> args;
+	args.resize(_numArgs);
+	for (uint i = 0; i < _numArgs; i++)
+		args[i] = thread->getStackValueFromTop(_numArgs - 1 - i).value;
+
+	const Common::String &func = attribs[_functionNameAttribute].name;
+	const uint numArgs = _numArgs;
+	DynamicValue result;
+	bool ok = false;
+
+	Common::String str, str2;
+	int32 n = 0;
+	bool flag = false;
+
+	if (func.equalsIgnoreCase("stringlength")) {
+		if (numArgs == 1 && getString(args[0], str)) {
+			result.setInt(str.size());
+			ok = true;
+		}
+	} else if (func.equalsIgnoreCase("character")) {
+		int32 first, last;
+		if (numArgs == 2 && getRange(args[0], first, last) && getString(args[1], str)) {
+			int32 offset, count;
+			clampRange(first, last, str.size(), offset, count);
+			result.setString(str.substr(offset, count));
+			ok = true;
+		}
+	} else if (func.equalsIgnoreCase("chunk") || func.equalsIgnoreCase("chunkrange")) {
+		if (numArgs == 3 && getString(args[1], str) && getString(args[2], str2))
+			ok = chunkFunction(args[0], str, str2.c_str(), func.equalsIgnoreCase("chunk") ? kChunkModeSubstring : kChunkModeRange, false, result);
+	} else if (func.equalsIgnoreCase("chunkcount")) {
+		if (numArgs == 2 && getString(args[0], str) && getString(args[1], str2)) {
+			result.setInt(countChunks(str, str2.c_str(), false));
+			ok = true;
+		}
+	} else if (func.equalsIgnoreCase("word") || func.equalsIgnoreCase("wordrange")) {
+		if (numArgs == 2 && getString(args[1], str))
+			ok = chunkFunction(args[0], str, kWordDelimiters, func.equalsIgnoreCase("word") ? kChunkModeSubstring : kChunkModeRange, true, result);
+	} else if (func.equalsIgnoreCase("wordcount")) {
+		if (numArgs == 1 && getString(args[0], str)) {
+			result.setInt(countChunks(str, kWordDelimiters, true));
+			ok = true;
+		}
+	} else if (func.equalsIgnoreCase("paragraph") || func.equalsIgnoreCase("paragraphrange")) {
+		if (numArgs == 2 && getString(args[1], str))
+			ok = chunkFunction(args[0], str, kParagraphDelimiters, func.equalsIgnoreCase("paragraph") ? kChunkModeSubstring : kChunkModeRange, false, result);
+	} else if (func.equalsIgnoreCase("paragraphcount")) {
+		if (numArgs == 1 && getString(args[0], str)) {
+			result.setInt(countChunks(str, kParagraphDelimiters, false));
+			ok = true;
+		}
+	} else if (func.equalsIgnoreCase("comparestrings") || func.equalsIgnoreCase("equalstrings")) {
+		if ((numArgs == 2 || numArgs == 3) && getString(args[0], str) && getString(args[1], str2) && (numArgs < 3 || getBool(args[2], flag))) {
+			int32 cmp = compareStrings(str, str2, flag);
+			if (func.equalsIgnoreCase("comparestrings"))
+				result.setInt(cmp);
+			else
+				result.setBool(cmp == 0);
+			ok = true;
+		}
+	} else if (func.equalsIgnoreCase("deletestring")) {
+		if (numArgs == 2 && getString(args[1], str))
+			ok = replaceRange(args[0], str, Common::String(), result);
+	} else if (func.equalsIgnoreCase("replacestring")) {
+		if (numArgs == 3 && getString(args[1], str) && getString(args[2], str2))
+			ok = replaceRange(args[0], str, str2, result);
+	} else if (func.equalsIgnoreCase("insertstring")) {
+		// Inserts the first argument into the second, before the position in the third
+		if (numArgs == 3 && getString(args[0], str2) && getString(args[1], str) && getInt(args[2], n)) {
+			DynamicValue range;
+			range.setIntRange(IntRange(n, 0));
+			ok = replaceRange(range, str, str2, result);
+		}
+	} else if (func.equalsIgnoreCase("findstringrange")) {
+		int32 occurrence = 1;
+		if (numArgs >= 2 && numArgs <= 4 && getString(args[0], str2) && getString(args[1], str)
+			&& (numArgs < 3 || getBool(args[2], flag)) && (numArgs < 4 || getInt(args[3], occurrence))) {
+			int32 pos = (occurrence < 1) ? findOccurrenceReverse(str, str2, flag, -occurrence) : findOccurrence(str, str2, flag, occurrence);
+			if (pos < 0)
+				setRangeResult(result, 0, 0);
+			else
+				setRangeResult(result, pos + 1, pos + str2.size());
+			ok = true;
+		}
+	} else if (func.equalsIgnoreCase("findstringcount")) {
+		if ((numArgs == 2 || numArgs == 3) && getString(args[0], str2) && getString(args[1], str) && (numArgs < 3 || getBool(args[2], flag))) {
+			int32 count = 0;
+			int32 offset = 0;
+			for (;;) {
+				int32 pos = findString(str.c_str() + offset, str2.c_str(), flag);
+				if (pos < 0)
+					break;
+				count++;
+				offset += pos + str2.size();
+			}
+			result.setInt(count);
+			ok = true;
+		}
+	} else if (func.equalsIgnoreCase("chartoascii")) {
+		if (numArgs == 1 && getString(args[0], str)) {
+			result.setInt(str.empty() ? 0 : static_cast<int32>(static_cast<int8>(str[0])));
+			ok = true;
+		}
+	} else if (func.equalsIgnoreCase("asciitochar")) {
+		if (numArgs == 1 && getInt(args[0], n)) {
+			result.setString(Common::String(static_cast<char>(n)));
+			ok = true;
+		}
+	} else if (func.equalsIgnoreCase("lowercase") || func.equalsIgnoreCase("uppercase")) {
+		if (numArgs == 1 && getString(args[0], str)) {
+			if (func.equalsIgnoreCase("lowercase"))
+				str.toLowercase();
+			else
+				str.toUppercase();
+			result.setString(str);
+			ok = true;
+		}
+	} else if (func.equalsIgnoreCase("canget") || func.equalsIgnoreCase("canset")) {
+		bool canAccess = false;
+		if (numArgs == 2 && getString(args[1], str)) {
+			Common::SharedPtr<RuntimeObject> obj;
+			if (args[0].getType() == DynamicValueTypes::kObject)
+				obj = args[0].getObject().object.lock();
+
+			if (obj) {
+				str.toLowercase();
+				if (func.equalsIgnoreCase("canget")) {
+					DynamicValue unused;
+					canAccess = obj->readAttribute(thread, unused, str);
+				} else {
+					DynamicValueWriteProxy proxy;
+					canAccess = (obj->writeRefAttribute(thread, proxy, str) == kMiniscriptInstructionOutcomeContinue);
+				}
+			}
+			result.setBool(canAccess);
+			ok = true;
+		}
+	} else {
+		thread->error("Function '" + func + "' is not implemented");
+		return kMiniscriptInstructionOutcomeFailed;
+	}
+
+	if (!ok) {
+		thread->error(Common::String::format("Invalid arguments to function '%s'", func.c_str()));
+		return kMiniscriptInstructionOutcomeFailed;
+	}
+
+	thread->popValues(numArgs);
+	thread->pushValue(result);
+
+	return kMiniscriptInstructionOutcomeContinue;
 }
 
 MiniscriptInstructionOutcome GetChild::execute(MiniscriptThread *thread) const {
@@ -1629,7 +2185,12 @@ MiniscriptInstructionOutcome GetChild::readRValueAttribIndexed(MiniscriptThread 
 				thread->error("Unable to read object indexed attribute '" + attrib + "' from invalid object");
 				return kMiniscriptInstructionOutcomeFailed;
 			} else if (!obj->readAttributeIndexed(thread, valueSrcDest, attrib, index)) {
-				thread->error("Unable to read object indexed attribute '" + attrib + "'");
+				Common::String objName;
+				if (obj->isModifier())
+					objName = static_cast<Modifier *>(obj.get())->getName();
+				else if (obj->isStructural())
+					objName = static_cast<Structural *>(obj.get())->getName();
+				thread->error("Unable to read object indexed attribute '" + attrib + "' of '" + objName + "'");
 				return kMiniscriptInstructionOutcomeFailed;
 			}
 		} break;
@@ -1688,20 +2249,52 @@ MiniscriptInstructionOutcome ListCreate::execute(MiniscriptThread *thread) const
 	MiniscriptStackValue &rs = thread->getStackValueFromTop(0);
 	MiniscriptStackValue &lsDest = thread->getStackValueFromTop(1);
 
+	// Lists of variables keep the variables, but a variable listed with numbers goes in as its
+	// value (Magic School Bus Bugs lists a variable then numbers for its eye puzzle facets)
 	Common::SharedPtr<DynamicList> list(new DynamicList());
-	if (!list->setAtIndex(0, lsDest.value)) {
-		thread->error("Failed to set value 1 of list");
-		return kMiniscriptInstructionOutcomeFailed;
-	}
-	if (!list->setAtIndex(1, rs.value)) {
-		thread->error("Failed to set value 2 of list");
-		return kMiniscriptInstructionOutcomeFailed;
+	if (!list->setAtIndex(0, lsDest.value) || !list->setAtIndex(1, rs.value)) {
+		MiniscriptInstructionOutcome outcome = thread->dereferenceRValue(0);
+		if (outcome == kMiniscriptInstructionOutcomeContinue)
+			outcome = thread->dereferenceRValue(1);
+		if (outcome != kMiniscriptInstructionOutcomeContinue)
+			return outcome;
+
+		list.reset(new DynamicList());
+		if (!list->setAtIndex(0, lsDest.value)) {
+			thread->error("Failed to set value 1 of list");
+			return kMiniscriptInstructionOutcomeFailed;
+		}
+		if (!list->setAtIndex(1, rs.value)) {
+			thread->error("Failed to set value 2 of list");
+			return kMiniscriptInstructionOutcomeFailed;
+		}
 	}
 
 	lsDest.value.setList(list);
 	thread->popValues(1);
 
 	return kMiniscriptInstructionOutcomeContinue;
+}
+
+// Converts a list of variables to a list of their values, or returns null if it isn't one
+static Common::SharedPtr<DynamicList> listOfVariableValues(const DynamicList &list) {
+	if (list.getType() != DynamicValueTypes::kObject)
+		return nullptr;
+
+	Common::SharedPtr<DynamicList> valueList(new DynamicList());
+	const Common::Array<ObjectReference> &refs = list.getObjectReference();
+	for (size_t i = 0; i < refs.size(); i++) {
+		Common::SharedPtr<RuntimeObject> obj = refs[i].object.lock();
+		if (!obj || !obj->isModifier() || !static_cast<Modifier *>(obj.get())->isVariable())
+			return nullptr;
+
+		DynamicValue value;
+		static_cast<VariableModifier *>(obj.get())->varGetValue(value);
+		if (!valueList->setAtIndex(i, value))
+			return nullptr;
+	}
+
+	return valueList;
 }
 
 MiniscriptInstructionOutcome ListAppend::execute(MiniscriptThread *thread) const {
@@ -1724,9 +2317,26 @@ MiniscriptInstructionOutcome ListAppend::execute(MiniscriptThread *thread) const
 		lsDest.value.setList(listRef);
 	}
 
+	// A list started with variables holds their values once something else is added to it, as with
+	// list creation (Magic School Bus Animals lists integer variables with numbers in its scat game)
+	if (listRef->getType() == DynamicValueTypes::kObject && rs.value.getType() != DynamicValueTypes::kObject) {
+		Common::SharedPtr<DynamicList> valueList = listOfVariableValues(*listRef);
+		if (valueList) {
+			listRef = valueList;
+			lsDest.value.setList(listRef);
+		}
+	}
+
 	if (!listRef->setAtIndex(listRef->getSize(), rs.value)) {
-		thread->error("Failed to expand list");
-		return kMiniscriptInstructionOutcomeFailed;
+		// A variable added to a list of values goes in as its value
+		MiniscriptInstructionOutcome outcome = thread->dereferenceRValue(0);
+		if (outcome != kMiniscriptInstructionOutcomeContinue)
+			return outcome;
+
+		if (!listRef->setAtIndex(listRef->getSize(), thread->getStackValueFromTop(0).value)) {
+			thread->error("Failed to expand list");
+			return kMiniscriptInstructionOutcomeFailed;
+		}
 	}
 
 	thread->popValues(1);
@@ -1897,9 +2507,9 @@ MiniscriptInstructionOutcome Jump::execute(MiniscriptThread *thread) const {
 		thread->popValues(1);
 
 		if (!isTrue)
-			thread->jumpOffset(this->_instrOffset);
+			thread->jumpOffset(static_cast<int32>(this->_instrOffset));
 	} else {
-		thread->jumpOffset(this->_instrOffset);
+		thread->jumpOffset(static_cast<int32>(this->_instrOffset));
 	}
 
 	return kMiniscriptInstructionOutcomeContinue;
@@ -1916,7 +2526,7 @@ void MiniscriptThread::error(const Common::String &message) {
 	if (_runtime->debugGetDebugger())
 		_runtime->debugGetDebugger()->notify(kDebugSeverityError, Common::String("Miniscript error: " + message));
 #endif
-	warning("Miniscript error in (%x '%s'): %s", _modifier->getStaticGUID(), _modifier->getName().c_str(), message.c_str());
+	warning("Miniscript error in (%x '%s') at instruction %u: %s", _modifier->getStaticGUID(), _modifier->getName().c_str(), static_cast<uint>(_currentInstruction - 1), message.c_str());
 
 	// This should be redundant
 	_failed = true;
@@ -1990,14 +2600,15 @@ MiniscriptInstructionOutcome MiniscriptThread::dereferenceRValue(size_t offset) 
 	return kMiniscriptInstructionOutcomeContinue;
 }
 
-void MiniscriptThread::jumpOffset(size_t offset) {
+void MiniscriptThread::jumpOffset(int32 offset) {
 	if (offset == 0) {
 		this->error("Invalid jump offset");
 		_failed = true;
 		return;
 	}
 
-	_currentInstruction += offset - 1;
+	// Negative offsets jump backwards (loops)
+	_currentInstruction = static_cast<size_t>(static_cast<int64>(_currentInstruction) + offset - 1);
 }
 
 bool MiniscriptThread::evaluateTruthOfResult(bool &isTrue) {
@@ -2027,12 +2638,34 @@ void MiniscriptThread::retryInstruction() {
 }
 
 MiniscriptInstructionOutcome MiniscriptThread::IncomingDataWriteInterface::write(MiniscriptThread *thread, const DynamicValue &value, void *objectRef, uintptr ptrOrOffset) {
+	// In mTropolis 2.0, a message sent with a variable as its data passes the variable by reference,
+	// so writing to the incoming data sets the sender's variable.
+	const DynamicValue &incoming = thread->_msgProps->getValue();
+	if (thread->getRuntime()->getProject()->getRuntimeVersion() >= kRuntimeVersion200 && incoming.getType() == DynamicValueTypes::kObject) {
+		Common::SharedPtr<RuntimeObject> obj = incoming.getObject().object.lock();
+		if (obj && obj->isModifier() && static_cast<Modifier *>(obj.get())->isVariable()) {
+			if (!static_cast<VariableModifier *>(obj.get())->varSetValue(thread, value))
+				return kMiniscriptInstructionOutcomeFailed;
+			return kMiniscriptInstructionOutcomeContinue;
+		}
+	}
+
 	thread->_msgProps->setValue(value);
 
 	return kMiniscriptInstructionOutcomeContinue;
 }
 
 MiniscriptInstructionOutcome MiniscriptThread::IncomingDataWriteInterface::refAttrib(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib) {
+	// An object passed as the data has its attributes written, as when Magic School Bus Bugs runs a
+	// script for each stamp in a list. In mTropolis 2.0 that includes a variable passed by reference,
+	// such as the start of a range in Bugs's random number script.
+	const DynamicValue &incoming = thread->_msgProps->getValue();
+	if (incoming.getType() == DynamicValueTypes::kObject) {
+		Common::SharedPtr<RuntimeObject> obj = incoming.getObject().object.lock();
+		if (obj && (!obj->isModifier() || !static_cast<Modifier *>(obj.get())->isVariable() || thread->getRuntime()->getProject()->getRuntimeVersion() >= kRuntimeVersion200))
+			return obj->writeRefAttribute(thread, proxy, attrib);
+	}
+
 	// TODO: Generic refAttrib for dynamic values
 	return kMiniscriptInstructionOutcomeFailed;
 }

@@ -215,6 +215,7 @@ enum DataObjectType : uint {
 	kColorTableModifier						= 0x4c4,
 	kSoundFadeModifier						= 0x4ce,
 	kSaveAndRestoreModifier					= 0x4d8,
+	kSaveAndRestoreModifierV2				= 0x4e2,
 
 	kCompoundVariableModifier				= 0x2c7,
 	kBooleanVariableModifier				= 0x321,
@@ -513,6 +514,9 @@ struct PlugInTypeTaggedValue : public Common::NonCopyable {
 	Common::Array<uint8> extraData;
 
 	bool load(DataReader &reader);
+
+	// The variable name stored after a variable reference, or empty if there isn't one
+	Common::String getVarRefName() const;
 };
 
 class DataObject : public Common::NonCopyable {
@@ -1128,7 +1132,9 @@ protected:
 };
 
 struct SaveAndRestoreModifier : public DataObject {
-	SaveAndRestoreModifier();
+	explicit SaveAndRestoreModifier(uint version);
+
+	uint version;
 
 	TypicalModifierHeader modHeader;
 	uint8 unknown1[4];
@@ -1147,6 +1153,16 @@ struct SaveAndRestoreModifier : public DataObject {
 	Common::String varString;
 	Common::String filePath;
 	Common::String fileName;
+
+	// V2 only: the file path comes from a value instead of a literal
+	InternalTypeTaggedValue filePathValue;
+	uint8 unknown6[4];
+	uint8 lengthOfFilePathVarName;
+	uint8 lengthOfFilePathVarString;
+	uint8 unknown7;
+
+	Common::String filePathVarName;
+	Common::String filePathVarString;
 
 protected:
 	DataReadErrorCode load(DataReader &reader) override;
@@ -1798,6 +1814,7 @@ struct CompoundVariableModifier : public DataObject {
 	Point editorLayoutPosition;
 	uint16 lengthOfName;
 	uint16 numChildren;
+	uint32 unknown8;	// Revision 2 only
 	uint8 unknown7[4];
 
 	Common::String name;
@@ -1913,6 +1930,7 @@ struct PlugInModifier : public DataObject {
 	uint32 unknown4;
 	Point editorLayoutPosition;
 	uint16 lengthOfName;
+	uint32 unknown5;	// Revision 2001 only
 
 	Common::String name;
 

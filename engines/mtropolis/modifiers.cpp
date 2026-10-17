@@ -259,6 +259,13 @@ VThreadState MiniscriptModifier::consumeMessage(Runtime *runtime, const Common::
 	return kVThreadReturn;
 }
 
+bool MiniscriptModifier::runWithIncomingData(Runtime *runtime, const DynamicValue &value) {
+	Common::SharedPtr<MessageProperties> msg(new MessageProperties(_enableWhen, value, getSelfReference()));
+	Common::SharedPtr<MiniscriptThread> thread(new MiniscriptThread(runtime, msg, _program, _references, this));
+	runtime->getVThread().pushCoroutine<MiniscriptThread::ResumeThreadCoroutine>(thread);
+	return true;
+}
+
 Common::SharedPtr<Modifier> MiniscriptModifier::shallowClone() const {
 	MiniscriptModifier *clonePtr = new MiniscriptModifier(*this);
 	Common::SharedPtr<Modifier> clone(clonePtr);
@@ -309,15 +316,14 @@ VThreadState ColorTableModifier::consumeMessage(Runtime *runtime, const Common::
 
 				Palette palette(colors);
 
-				if (runtime->getFakeColorDepth() <= kColorDepthMode8Bit) {
-					runtime->setGlobalPalette(palette);
+				// Above 8-bit, a color table on a visual element only colors that element.  One on a
+				// subsection or section still sets the palette for all 8-bit art (Magic School Bus Bugs'
+				// Build a Bug is a thousands-of-colors title with 8-bit art and a subsection color table)
+				Structural *structural = this->findStructuralOwner();
+				if (runtime->getFakeColorDepth() > kColorDepthMode8Bit && structural != nullptr && structural->isElement() && static_cast<Element *>(structural)->isVisual()) {
+					static_cast<VisualElement *>(structural)->setPalette(Common::SharedPtr<Palette>(new Palette(palette)));
 				} else {
-					Structural *structural = this->findStructuralOwner();
-					if (structural != nullptr && structural->isElement() && static_cast<Element *>(structural)->isVisual()) {
-						static_cast<VisualElement *>(structural)->setPalette(Common::SharedPtr<Palette>(new Palette(palette)));
-					} else {
-						warning("Attempted to apply a color table to a non-element");
-					}
+					runtime->setGlobalPalette(palette);
 				}
 			} else {
 				error("Color table modifier applied an asset that wasn't a color table");
@@ -353,7 +359,40 @@ bool SaveAndRestoreModifier::load(ModifierLoaderContext &context, const Data::Sa
 	_filePath = data.filePath;
 	_fileName = data.fileName;
 
+	debug(2, "Save and Restore '%s': file '%s', path value type %x '%s'", _name.c_str(), _fileName.c_str(), static_cast<uint>(data.filePathValue.type), data.filePathVarName.c_str());
+	if (data.version == 2 && data.filePathValue.type == Data::InternalTypeTaggedValue::kVariableReference) {
+		if (!_filePathSource.load(data.filePathValue, data.filePathVarName, data.filePathVarString))
+			return false;
+		_haveFilePathSource = true;
+	}
+
 	return true;
+}
+
+// Saves are named after the file without its folder, so scripts that pick the
+// file at run time (one per player in Magic School Bus) get separate saves
+Common::String SaveAndRestoreModifier::getFileName() const {
+	if (!_haveFilePathSource)
+		return _fileName;
+
+	DynamicValue pathValue = _filePathSource.produceValue(DynamicValue());
+	if (pathValue.getType() == DynamicValueTypes::kObject) {
+		Common::SharedPtr<RuntimeObject> obj = pathValue.getObject().object.lock();
+		if (obj && obj->isModifier() && static_cast<Modifier *>(obj.get())->isVariable())
+			static_cast<VariableModifier *>(obj.get())->varGetValue(pathValue);
+	}
+	if (pathValue.getType() != DynamicValueTypes::kString || pathValue.getString().empty())
+		return _fileName;
+
+	const Common::String &path = pathValue.getString();
+	debug(2, "Save and Restore '%s': path '%s'", _name.c_str(), path.c_str());
+	Common::String fileName = path;
+	for (uint i = 0; i < path.size(); i++) {
+		if (path[i] == ':' || path[i] == '\\' || path[i] == '/')
+			fileName = path.substr(i + 1);
+	}
+
+	return fileName;
 }
 
 
@@ -434,8 +473,10 @@ VThreadState SaveAndRestoreModifier::consumeMessage(Runtime *runtime, const Comm
 		bool succeeded = false;
 		if (isPrompt)
 			succeeded = runtime->getSaveProvider()->promptSave(&saver, screenshotOverride);
-		else
-			succeeded = runtime->getSaveProvider()->namedSave(&saver, screenshotOverride, _fileName);
+		else {
+			debug(1, "Save and Restore '%s': Saving '%s'", getName().c_str(), getFileName().c_str());
+			succeeded = runtime->getSaveProvider()->namedSave(&saver, screenshotOverride, getFileName());
+		}
 
 		if (succeeded) {
 			for (const Common::SharedPtr<SaveLoadHooks> &hooks : runtime->getHacks().saveLoadHooks)
@@ -448,8 +489,10 @@ VThreadState SaveAndRestoreModifier::consumeMessage(Runtime *runtime, const Comm
 		bool succeeded = false;
 		if (isPrompt)
 			succeeded = runtime->getLoadProvider()->promptLoad(&loader);
-		else
-			succeeded = runtime->getLoadProvider()->namedLoad(&loader, _fileName);
+		else {
+			debug(1, "Save and Restore '%s': Restoring '%s'", getName().c_str(), getFileName().c_str());
+			succeeded = runtime->getLoadProvider()->namedLoad(&loader, getFileName());
+		}
 
 		if (succeeded) {
 			for (const Common::SharedPtr<SaveLoadHooks> &hooks : runtime->getHacks().saveLoadHooks)
@@ -465,12 +508,16 @@ void SaveAndRestoreModifier::linkInternalReferences(ObjectLinkingScope *scope) {
 	Modifier::linkInternalReferences(scope);
 
 	_saveOrRestoreValue.linkInternalReferences(scope);
+	if (_haveFilePathSource)
+		_filePathSource.linkInternalReferences(scope);
 }
 
 void SaveAndRestoreModifier::visitInternalReferences(IStructuralReferenceVisitor *visitor) {
 	Modifier::visitInternalReferences(visitor);
 
 	_saveOrRestoreValue.visitInternalReferences(visitor);
+	if (_haveFilePathSource)
+		_filePathSource.visitInternalReferences(visitor);
 }
 
 Common::SharedPtr<Modifier> SaveAndRestoreModifier::shallowClone() const {
@@ -750,6 +797,7 @@ VThreadState ChangeSceneModifier::consumeMessage(Runtime *runtime, const Common:
 		}
 
 		if (targetScene) {
+			debug(2, "Change Scene '%s': selection %i to '%s'", _name.c_str(), static_cast<int>(_sceneSelectionType), targetScene->getName().c_str());
 			runtime->addSceneStateTransition(HighLevelSceneTransition(targetScene, HighLevelSceneTransition::kTypeChangeToScene, _addToDestList, _addToReturnList));
 		} else {
 			warning("Change Scene Modifier failed, scene could not be resolved");
@@ -1105,7 +1153,7 @@ VThreadState PathMotionModifier::advanceFrameTask(const AdvanceFrameTaskData &ta
 	uint nextPointIndex = 0;
 	if (isPlayingForward) {
 		nextPointIndex = _currentPointIndex + 1;
-		if (nextPointIndex > _points.size())
+		if (nextPointIndex >= _points.size())
 			nextPointIndex = 0;
 	} else {
 		if (_currentPointIndex == 0)
@@ -2458,6 +2506,63 @@ bool KeyboardMessengerModifier::checkKeyEventTrigger(Runtime *runtime, Common::E
 	if (_keyCodeType != kAny && resolvedType != _keyCodeType)
 		return false;
 
+	// Special keys send their Macintosh character codes
+	if (outCharStr.empty()) {
+		char specialChar = 0;
+		switch (resolvedType) {
+		case kHome:
+			specialChar = 0x01;
+			break;
+		case kEnter:
+			specialChar = 0x03;
+			break;
+		case kEnd:
+			specialChar = 0x04;
+			break;
+		case kHelp:
+			specialChar = 0x05;
+			break;
+		case kBackspace:
+			specialChar = 0x08;
+			break;
+		case kTab:
+			specialChar = 0x09;
+			break;
+		case kPageUp:
+			specialChar = 0x0b;
+			break;
+		case kPageDown:
+			specialChar = 0x0c;
+			break;
+		case kReturn:
+			specialChar = 0x0d;
+			break;
+		case kEscape:
+			specialChar = 0x1b;
+			break;
+		case kArrowLeft:
+			specialChar = 0x1c;
+			break;
+		case kArrowRight:
+			specialChar = 0x1d;
+			break;
+		case kArrowUp:
+			specialChar = 0x1e;
+			break;
+		case kArrowDown:
+			specialChar = 0x1f;
+			break;
+		case kDelete:
+			specialChar = 0x7f;
+			break;
+		default:
+			break;
+		}
+
+		if (specialChar)
+			outCharStr = Common::String(specialChar);
+	}
+
 	if (_keyCodeType == kMacRomanChar && (outCharStr.size() == 0 || outCharStr[0] != _macRomanChar))
 		return false;
 
@@ -2851,16 +2956,42 @@ void CompoundVariableModifier::visitInternalReferences(IStructuralReferenceVisit
 }
 
 bool CompoundVariableModifier::readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) {
+	if (attrib == "childobjectcount") {
+		result.setInt(_children.size());
+		return true;
+	}
+
 	Modifier *var = findChildByName(thread->getRuntime(), attrib);
 	if (var) {
 		// Shouldn't dereference the value here, some scripts (e.g. "<go dest> on MUI" in Obsidian) depend on it not being dereferenced
 		result.setObject(var->getSelfReference());
 		return true;
 	}
-	return Modifier::readAttribute(thread, result, attrib);
+
+	if (Modifier::readAttribute(thread, result, attrib))
+		return true;
+
+	// mTropolis 2.0 scripts carry on after reading a member that doesn't exist, which Magic School
+	// Bus Bugs does with a misspelled answer in its game show, so it reads as no object
+	if (thread->getRuntime()->getProject()->getRuntimeVersion() >= kRuntimeVersion200) {
+		debug(2, "Compound variable '%s' has no member '%s'", _name.c_str(), attrib.c_str());
+		result.setObject(Common::WeakPtr<RuntimeObject>());
+		return true;
+	}
+
+	return false;
 }
 
 bool CompoundVariableModifier::readAttributeIndexed(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib, const DynamicValue &index) {
+	if (attrib == "childobject") {
+		Modifier *child = childFromScriptIndex(thread, index);
+		if (!child)
+			return false;
+
+		result.setObject(child->getSelfReference());
+		return true;
+	}
+
 	Modifier *var = findChildByName(thread->getRuntime(), attrib);
 	if (!var || !var->isVariable())
 		return false;
@@ -2884,11 +3015,32 @@ MiniscriptInstructionOutcome CompoundVariableModifier::writeRefAttribute(Miniscr
 }
 
 MiniscriptInstructionOutcome CompoundVariableModifier::writeRefAttributeIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &writeProxy, const Common::String &attrib, const DynamicValue &index) {
+	// Writes through a child, such as childobject[i].score
+	if (attrib == "childobject") {
+		Modifier *child = childFromScriptIndex(thread, index);
+		if (!child)
+			return kMiniscriptInstructionOutcomeFailed;
+
+		DynamicValueWriteObjectHelper::create(child, writeProxy);
+		return kMiniscriptInstructionOutcomeContinue;
+	}
+
 	Modifier *var = findChildByName(thread->getRuntime(), attrib);
 	if (!var || !var->isModifier())
 		return kMiniscriptInstructionOutcomeFailed;
 
 	return var->writeRefAttributeIndexed(thread, writeProxy, "value", index);
+}
+
+// The child for a 1-based script index, as in childobject[i]
+Modifier *CompoundVariableModifier::childFromScriptIndex(MiniscriptThread *thread, const DynamicValue &index) const {
+	DynamicValue indexConverted;
+	if (!index.convertToType(DynamicValueTypes::kInteger, indexConverted) || indexConverted.getInt() < 1 || static_cast<uint32>(indexConverted.getInt()) > _children.size()) {
+		thread->error("Invalid index for 'childobject'");
+		return nullptr;
+	}
+
+	return _children[indexConverted.getInt() - 1].get();
 }
 
 Modifier *CompoundVariableModifier::findChildByName(Runtime *runtime, const Common::String &name) const {
@@ -2918,6 +3070,11 @@ Modifier *CompoundVariableModifier::findChildByName(Runtime *runtime, const Comm
 		Modifier *modifier = it->get();
 		if (caseInsensitiveEqual(name, modifier->getName()))
 			return modifier;
+	}
+
+	for (const Common::SharedPtr<Modifier> &modifier : _children) {
+		if (scriptNameKeyEqual(modifier->getName(), name))
+			return modifier.get();
 	}
 
 	return nullptr;
@@ -2995,8 +3152,9 @@ CompoundVariableModifier::SaveLoad::SaveLoad(Runtime *runtime, CompoundVariableM
 
 void CompoundVariableModifier::SaveLoad::saveInternal(Common::WriteStream *stream) const {
 	stream->writeUint32BE(_childrenSaveLoad.size());
-	for (const ChildSaveLoad &childSL : _childrenSaveLoad)
+	for (const ChildSaveLoad &childSL : _childrenSaveLoad) {
 		childSL.saveLoad->save(childSL.modifier, stream);
+	}
 }
 
 bool CompoundVariableModifier::SaveLoad::loadInternal(Common::ReadStream *stream, uint32 saveFileVersion) {
@@ -3004,12 +3162,16 @@ bool CompoundVariableModifier::SaveLoad::loadInternal(Common::ReadStream *stream
 	if (stream->err())
 		return false;
 
-	if (numChildren != _childrenSaveLoad.size())
+	if (numChildren != _childrenSaveLoad.size()) {
+		warning("Compound variable save has %u children, expected %u", static_cast<uint>(numChildren), static_cast<uint>(_childrenSaveLoad.size()));
 		return false;
+	}
 
 	for (const ChildSaveLoad &childSL : _childrenSaveLoad) {
-		if (!childSL.saveLoad->load(childSL.modifier, stream, saveFileVersion))
+		if (!childSL.saveLoad->load(childSL.modifier, stream, saveFileVersion)) {
+			warning("Failed to load saved variable '%s'", childSL.modifier->getName().c_str());
 			return false;
+		}
 	}
 
 	return true;

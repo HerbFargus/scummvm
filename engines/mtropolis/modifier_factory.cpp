@@ -78,6 +78,7 @@ SIModifierFactory *getModifierFactoryForDataObjectType(const Data::DataObjectTyp
 	case Data::DataObjectTypes::kSoundFadeModifier:
 		return ModifierFactory<SoundFadeModifier, Data::SoundFadeModifier>::getInstance();
 	case Data::DataObjectTypes::kSaveAndRestoreModifier:
+	case Data::DataObjectTypes::kSaveAndRestoreModifierV2:
 		return ModifierFactory<SaveAndRestoreModifier, Data::SaveAndRestoreModifier>::getInstance();
 	case Data::DataObjectTypes::kAliasModifier:
 		return ModifierFactory<AliasModifier, Data::AliasModifier>::getInstance();

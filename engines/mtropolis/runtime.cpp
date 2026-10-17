@@ -26,6 +26,7 @@
 #include "common/random.h"
 #include "common/substream.h"
 #include "common/system.h"
+#include "common/events.h"
 
 #include "graphics/cursorman.h"
 #include "graphics/managed_surface.h"
@@ -34,6 +35,8 @@
 #include "graphics/wincursor.h"
 #include "graphics/maccursor.h"
 #include "graphics/macgui/macfontmanager.h"
+#include "graphics/fonts/ttf.h"
+#include "graphics/font.h"
 
 #include "audio/mixer.h"
 
@@ -399,6 +402,26 @@ Common::String toCaseInsensitive(const Common::String &str) {
 		lowered[i] = invariantToLower(str[i]);
 
 	return Common::String(&lowered[0], strLen);
+}
+
+// The player looks up the objects that scripts name by a key of the first 16 characters of the
+// name, so longer names match on those alone. Magic School Bus Animals relies on this with
+// names that differ after that (reefEcoBrainSponges for reefEcoBrainSponge, lstoCurrentInsets
+// for lstoCurrentInset, WandaClassroomPose for WandaClassroomPose1). Lookups try an exact
+// match first and this second.
+bool scriptNameKeyEqual(const Common::String &name, const Common::String &scriptName) {
+	const size_t kKeyLength = 16;
+
+	// Names shorter than the key only match exactly
+	if (name.size() < kKeyLength || scriptName.size() < kKeyLength)
+		return false;
+
+	for (size_t i = 0; i < kKeyLength; i++) {
+		if (invariantToLower(name[i]) != invariantToLower(scriptName[i]))
+			return false;
+	}
+
+	return true;
 }
 
 bool caseInsensitiveEqual(const Common::String& str1, const Common::String& str2) {
@@ -1036,7 +1059,9 @@ bool DynamicList::dynamicValueToIndex(size_t &outIndex, const DynamicValue &valu
 		if (i < 1)
 			return false;
 		outIndex = static_cast<size_t>(i - 1);
-	}
+	} else
+		return false;
+
 	return true;
 }
 
@@ -1228,7 +1253,7 @@ MiniscriptInstructionOutcome DynamicList::WriteProxyInterface::refAttribIndexed(
 
 			Common::SharedPtr<RuntimeObject> obj = list->getObjectReference()[ptrOrOffset].object.lock();
 			proxy.containerList.reset();
-			if (!obj && !obj->writeRefAttributeIndexed(thread, proxy, attrib, index))
+			if (!obj || obj->writeRefAttributeIndexed(thread, proxy, attrib, index) == kMiniscriptInstructionOutcomeFailed)
 				return kMiniscriptInstructionOutcomeFailed;
 
 			return kMiniscriptInstructionOutcomeContinue;
@@ -1983,7 +2008,9 @@ bool DynamicValueSource::load(const Data::PlugInTypeTaggedValue &data) {
 		return true;
 	case Data::PlugInTypeTaggedValue::kVariableReference:
 		_sourceType = DynamicValueSourceTypes::kVariableReference;
-		new (&_valueUnion._varReference) VarReference(data.value.asVarRefGUID, "");
+		// The name lets the reference fall back to a same-named variable when its GUID is stale, as
+		// in Magic School Bus Animals, whose point motion modifiers send a variable copied from elsewhere
+		new (&_valueUnion._varReference) VarReference(data.value.asVarRefGUID, data.getVarRefName());
 		return true;
 	default:
 		_sourceType = DynamicValueSourceTypes::kConstant;
@@ -2127,12 +2154,12 @@ void DynamicValueWriteDiscardHelper::create(DynamicValueWriteProxy &proxy) {
 MiniscriptInstructionOutcome DynamicValueWritePointHelper::write(MiniscriptThread *thread, const DynamicValue &value, void *objectRef, uintptr ptrOrOffset) {
 	DynamicValue derefValue = value.dereference();
 
-	if (value.getType() != DynamicValueTypes::kPoint) {
+	if (derefValue.getType() != DynamicValueTypes::kPoint) {
 		thread->error("Can't set point to invalid type");
 		return kMiniscriptInstructionOutcomeFailed;
 	}
 
-	*static_cast<Common::Point *>(objectRef) = value.getPoint();
+	*static_cast<Common::Point *>(objectRef) = derefValue.getPoint();
 
 	return kMiniscriptInstructionOutcomeContinue;
 }
@@ -2396,11 +2423,38 @@ void MessengerSendSpec::resolveDestination(Runtime *runtime, Modifier *sender, R
 					}
 				}
 			} break;
-		case kMessageDestChildren:
 		case kMessageDestSubsection:
+			resolveHierarchyStructuralDestination(runtime, sender, outStructuralDest, outModifierDest, isSubsectionFilter);
+			break;
 		case kMessageDestBehavior:
-		case kMessageDestBehaviorsParent:
-			warning("Not-yet-implemented message destination type");
+		case kMessageDestBehaviorsParent: {
+				// The nearest behavior containing the sender
+				Common::SharedPtr<Modifier> behavior;
+				RuntimeObject *obj = sender->getParent().lock().get();
+				while (obj && obj->isModifier()) {
+					Modifier *modifier = static_cast<Modifier *>(obj);
+					if (modifier->isBehavior()) {
+						behavior = modifier->getSelfReference().lock().staticCast<Modifier>();
+						break;
+					}
+					obj = modifier->getParent().lock().get();
+				}
+
+				if (!behavior)
+					break;
+
+				if (destination == kMessageDestBehavior) {
+					outModifierDest = behavior;
+				} else {
+					RuntimeObject *parentObj = behavior->getParent().lock().get();
+					if (parentObj && parentObj->isModifier())
+						outModifierDest = parentObj->getSelfReference().staticCast<Modifier>();
+					else if (parentObj && parentObj->isStructural())
+						outStructuralDest = parentObj->getSelfReference().staticCast<Structural>();
+				}
+			} break;
+		case kMessageDestChildren:
+			warning("Not-yet-implemented message destination type %x", static_cast<uint>(destination));
 			break;
 		default:
 			break;
@@ -3043,8 +3097,11 @@ MiniscriptInstructionOutcome WorldManagerInterface::writeRefAttribute(Miniscript
 #endif
 		DynamicValueWriteDiscardHelper::create(result);
 		return kMiniscriptInstructionOutcomeContinue;
-	} else if (attrib == "cursor") {
+	} else if (attrib == "cursor" || attrib == "cursorelement") {
 		DynamicValueWriteFuncHelper<WorldManagerInterface, &WorldManagerInterface::setCursor, true>::create(this, result);
+		return kMiniscriptInstructionOutcomeContinue;
+	} else if (attrib == "cursorhotspot") {
+		DynamicValueWriteFuncHelper<WorldManagerInterface, &WorldManagerInterface::setCursorHotspot, true>::create(this, result);
 		return kMiniscriptInstructionOutcomeContinue;
 	}
 	return RuntimeObject::writeRefAttribute(thread, result, attrib);
@@ -3108,12 +3165,44 @@ MiniscriptInstructionOutcome WorldManagerInterface::setWinSndBufferSize(Miniscri
 	return kMiniscriptInstructionOutcomeContinue;
 }
 
+static Common::SharedPtr<VisualElement> findVisualElementByName(Structural *structural, const Common::String &name) {
+	for (const Common::SharedPtr<Structural> &child : structural->getChildren()) {
+		if (child->isElement() && static_cast<Element *>(child.get())->isVisual() && caseInsensitiveEqual(child->getName(), name))
+			return child.staticCast<VisualElement>();
+
+		Common::SharedPtr<VisualElement> found = findVisualElementByName(child.get(), name);
+		if (found)
+			return found;
+	}
+
+	return nullptr;
+}
+
+MiniscriptInstructionOutcome WorldManagerInterface::setCursorHotspot(MiniscriptThread *thread, const DynamicValue &value) {
+	if (value.getType() != DynamicValueTypes::kPoint) {
+		thread->error("Cursor hotspot wasn't a point");
+		return kMiniscriptInstructionOutcomeFailed;
+	}
+
+	thread->getRuntime()->setCursorElementHotspot(value.getPoint());
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
 MiniscriptInstructionOutcome WorldManagerInterface::setCursor(MiniscriptThread *thread, const DynamicValue &value) {
 	switch (value.getType())
 	{
 	case DynamicValueTypes::kNull:
 		thread->getRuntime()->setCursorElement(Common::WeakPtr<VisualElement>());
 		return kMiniscriptInstructionOutcomeContinue;
+	case DynamicValueTypes::kString: {
+			// A string names an element in the scene, otherwise it's a system cursor such as "systemArrow"
+			Common::SharedPtr<VisualElement> element;
+			Common::SharedPtr<Structural> scene = thread->getRuntime()->getActiveMainScene();
+			if (scene)
+				element = findVisualElementByName(scene.get(), value.getString());
+			thread->getRuntime()->setCursorElement(element);
+			return kMiniscriptInstructionOutcomeContinue;
+		}
 	case DynamicValueTypes::kObject: {
 			Common::SharedPtr<RuntimeObject> obj = value.getObject().object.lock();
 			if (obj && obj->isElement() && static_cast<Element *>(obj.get())->isVisual()) {
@@ -3150,6 +3239,18 @@ bool SystemInterface::readAttribute(MiniscriptThread *thread, DynamicValue &resu
 		bool hasVolume = thread->getRuntime()->getVolumeState(_volumeName.c_str(), volID, isMounted);
 
 		result.setBool(hasVolume && isMounted);
+		return true;
+	} else if (attrib == "controlkeydown" || attrib == "shiftkeydown" || attrib == "altkeydown" || attrib == "optionkeydown" || attrib == "commandkeydown") {
+		int modifierState = g_system->getEventManager()->getModifierState();
+		int mask = Common::KBD_CTRL;
+		if (attrib == "shiftkeydown")
+			mask = Common::KBD_SHIFT;
+		else if (attrib == "altkeydown" || attrib == "optionkeydown")
+			mask = Common::KBD_ALT;
+		else if (attrib == "commandkeydown")
+			mask = Common::KBD_META;
+
+		result.setBool((modifierState & mask) != 0);
 		return true;
 	}
 
@@ -3350,9 +3451,61 @@ void Structural::setSceneLoadState(SceneLoadState sceneLoadState) {
 }
 
 
+// Absolute path of an object, as the "path" attribute, e.g. "/Project/Section/Subsection/Scene/Element/Modifier"
+static Common::String objectPathForScript(RuntimeObject *obj) {
+	Common::String path;
+	while (obj) {
+		if (obj->isStructural()) {
+			path = "/" + static_cast<Structural *>(obj)->getName() + path;
+			obj = static_cast<Structural *>(obj)->getParent();
+		} else if (obj->isModifier()) {
+			path = "/" + static_cast<Modifier *>(obj)->getName() + path;
+			obj = static_cast<Modifier *>(obj)->getParent().lock().get();
+		} else
+			break;
+	}
+	return path;
+}
+
+// Converts a 1-based script index for the mTropolis 2.0 child attributes
+static bool childIndexFromScript(MiniscriptThread *thread, const DynamicValue &index, size_t count, const char *attrib, size_t &outIndex) {
+	DynamicValue indexConverted;
+	if (!index.convertToType(DynamicValueTypes::kInteger, indexConverted)) {
+		thread->error(Common::String::format("Invalid index for '%s'", attrib));
+		return false;
+	}
+
+	int32 indexInt = indexConverted.getInt();
+	if (indexInt < 1 || static_cast<uint32>(indexInt) > count) {
+		thread->error(Common::String::format("Index out of range for '%s'", attrib));
+		return false;
+	}
+
+	outIndex = indexInt - 1;
+	return true;
+}
+
 bool Structural::readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) {
-	if (attrib == "name") {
+	if (attrib == "childelemcount" || attrib == "childobjectcount") {
+		// childobjectcount goes with the childobject attribute (Magic School Bus Animals counts
+		// the penguin game's pieces with it)
+		result.setInt(_children.size());
+		return true;
+	} else if (attrib == "childmodcount") {
+		result.setInt(_modifiers.size());
+		return true;
+	} else if (attrib == "childelem" && _children.size() > 0) {
+		// Without an index, the first child
+		result.setObject(_children[0]->getSelfReference());
+		return true;
+	} else if (attrib == "childmod" && _modifiers.size() > 0) {
+		result.setObject(_modifiers[0]->getSelfReference());
+		return true;
+	} else if (attrib == "name") {
 		result.setString(_name);
+		return true;
+	} else if (attrib == "path") {
+		result.setString(objectPathForScript(this));
 		return true;
 	} else if (attrib == "paused") {
 		result.setBool(_paused);
@@ -3517,21 +3670,56 @@ bool Structural::readAttribute(MiniscriptThread *thread, DynamicValue &result, c
 	}
 
 	// Traverse children (modifiers must be first)
-	for (const Common::SharedPtr<Modifier> &modifier : _modifiers) {
-		if (caseInsensitiveEqual(modifier->getName(), attrib)) {
-			result.setObject(modifier);
-			return true;
-		}
+	if (Modifier *modifier = findChildModifierForScript(attrib)) {
+		result.setObject(modifier->getSelfReference());
+		return true;
 	}
 
-	for (const Common::SharedPtr<Structural> &child : _children) {
-		if (caseInsensitiveEqual(child->getName(), attrib)) {
-			result.setObject(child);
-			return true;
-		}
+	if (Structural *child = findChildForScript(attrib)) {
+		result.setObject(child->getSelfReference());
+		return true;
 	}
 
 	return false;
+}
+
+Modifier *Structural::findChildModifierForScript(const Common::String &name) const {
+	for (const Common::SharedPtr<Modifier> &modifier : _modifiers) {
+		if (caseInsensitiveEqual(modifier->getName(), name))
+			return modifier.get();
+	}
+
+	for (const Common::SharedPtr<Modifier> &modifier : _modifiers) {
+		if (scriptNameKeyEqual(modifier->getName(), name))
+			return modifier.get();
+	}
+
+	return nullptr;
+}
+
+Structural *Structural::findChildForScript(const Common::String &name) const {
+	for (const Common::SharedPtr<Structural> &child : _children) {
+		if (caseInsensitiveEqual(child->getName(), name))
+			return child.get();
+	}
+
+	for (const Common::SharedPtr<Structural> &child : _children) {
+		if (scriptNameKeyEqual(child->getName(), name))
+			return child.get();
+	}
+
+	// mTropolis 2.0 also finds elements further down, as Magic School Bus Animals does with the
+	// bus front's Liz mirror, which is inside the mirror element
+	if (getRuntime() && getRuntime()->getProject() && getRuntime()->getProject()->getRuntimeVersion() >= kRuntimeVersion200) {
+		for (const Common::SharedPtr<Structural> &child : _children) {
+			if (child->isElement()) {
+				if (Structural *found = child->findChildForScript(name))
+					return found;
+			}
+		}
+	}
+
+	return nullptr;
 }
 
 MiniscriptInstructionOutcome Structural::writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) {
@@ -3540,6 +3728,13 @@ MiniscriptInstructionOutcome Structural::writeRefAttribute(MiniscriptThread *thr
 		return kMiniscriptInstructionOutcomeContinue;
 	} else if (attrib == "paused") {
 		DynamicValueWriteFuncHelper<Structural, &Structural::scriptSetPaused, true>::create(this, result);
+		return kMiniscriptInstructionOutcomeContinue;
+	} else if (attrib == "childelem" && _children.size() > 0) {
+		// Without an index, the first child, as in childelem.clone
+		DynamicValueWriteObjectHelper::create(_children[0].get(), result);
+		return kMiniscriptInstructionOutcomeContinue;
+	} else if (attrib == "childmod" && _modifiers.size() > 0) {
+		DynamicValueWriteObjectHelper::create(_modifiers[0].get(), result);
 		return kMiniscriptInstructionOutcomeContinue;
 	} else if (attrib == "this") {
 		// Yes, "this" is an attribute
@@ -3586,18 +3781,14 @@ MiniscriptInstructionOutcome Structural::writeRefAttribute(MiniscriptThread *thr
 
 	// Attempt to resolve as a child object
 	// Modifiers are first, then structural
-	for (const Common::SharedPtr<Modifier> &modifier : _modifiers) {
-		if (caseInsensitiveEqual(modifier->getName(), attrib)) {
-			DynamicValueWriteObjectHelper::create(modifier.get(), result);
-			return kMiniscriptInstructionOutcomeContinue;
-		}
+	if (Modifier *modifier = findChildModifierForScript(attrib)) {
+		DynamicValueWriteObjectHelper::create(modifier, result);
+		return kMiniscriptInstructionOutcomeContinue;
 	}
 
-	for (const Common::SharedPtr<Structural> &child : _children) {
-		if (caseInsensitiveEqual(child->getName(), attrib)) {
-			DynamicValueWriteObjectHelper::create(child.get(), result);
-			return kMiniscriptInstructionOutcomeContinue;
-		}
+	if (Structural *child = findChildForScript(attrib)) {
+		DynamicValueWriteObjectHelper::create(child, result);
+		return kMiniscriptInstructionOutcomeContinue;
 	}
 
 	return RuntimeObject::writeRefAttribute(thread, result, attrib);
@@ -3627,11 +3818,62 @@ bool Structural::readAttributeIndexed(MiniscriptThread *thread, DynamicValue &re
 
 		result.setObject(_children[indexInt - 1]->getSelfReference());
 		return true;
+	} else if (attrib == "childelem" || attrib == "childobject") {
+		size_t childIndex = 0;
+		if (!childIndexFromScript(thread, index, _children.size(), attrib.c_str(), childIndex))
+			return false;
+
+		result.setObject(_children[childIndex]->getSelfReference());
+		return true;
+	} else if (attrib == "childmod") {
+		size_t childIndex = 0;
+		if (!childIndexFromScript(thread, index, _modifiers.size(), "childmod", childIndex))
+			return false;
+
+		result.setObject(_modifiers[childIndex]->getSelfReference());
+		return true;
 	}
+
+	// Indexing a variable by name indexes its value
+	if (Modifier *modifier = findChildModifierForScript(attrib))
+		return modifier->readAttributeIndexed(thread, result, "value", index);
 
 	return RuntimeObject::readAttributeIndexed(thread, result, attrib, index);
 }
 
+MiniscriptInstructionOutcome Structural::writeRefAttributeIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &writeProxy, const Common::String &attrib, const DynamicValue &index) {
+	// Writes through a child, such as childelem[i].position.y
+	if (attrib == "childelem" || attrib == "childobject") {
+		size_t childIndex = 0;
+		if (!childIndexFromScript(thread, index, _children.size(), attrib.c_str(), childIndex))
+			return kMiniscriptInstructionOutcomeFailed;
+
+		DynamicValueWriteObjectHelper::create(_children[childIndex].get(), writeProxy);
+		return kMiniscriptInstructionOutcomeContinue;
+	} else if (attrib == "childmod") {
+		size_t childIndex = 0;
+		if (!childIndexFromScript(thread, index, _modifiers.size(), "childmod", childIndex))
+			return kMiniscriptInstructionOutcomeFailed;
+
+		DynamicValueWriteObjectHelper::create(_modifiers[childIndex].get(), writeProxy);
+		return kMiniscriptInstructionOutcomeContinue;
+	}
+
+	if (Modifier *modifier = findChildModifierForScript(attrib))
+		return modifier->writeRefAttributeIndexed(thread, writeProxy, "value", index);
+
+	return RuntimeObject::writeRefAttributeIndexed(thread, writeProxy, attrib, index);
+}
+
+
+// Notifications cascade from the object they are about, so they come from it or an ancestor
+bool Structural::isSelfOrAncestor(const RuntimeObject *obj) const {
+	for (const Structural *structural = this; structural; structural = structural->getParent()) {
+		if (structural == obj)
+			return true;
+	}
+	return false;
+}
 
 const Common::Array<Common::SharedPtr<Structural> > &Structural::getChildren() const {
 	return _children;
@@ -3898,6 +4140,18 @@ CORO_BEGIN_DEFINITION(Structural::StructuralConsumeCommandCoroutine)
 			CORO_RETURN;
 		CORO_END_IF
 
+		// Kill and Clone commands from scripts. The runtime also sends Kill and Clone to the
+		// object itself as notifications, which must not be taken as new commands.
+		CORO_IF((Event(EventIDs::kKill, 0).respondsTo(params->msg->getEvent()) || Event(EventIDs::kClone, 0).respondsTo(params->msg->getEvent()))
+			&& !params->self->isSelfOrAncestor(params->msg->getSource().lock().get()))
+			if (params->msg->getEvent().eventType == EventIDs::kKill)
+				params->runtime->queueKillObject(params->self->getSelfReference());
+			else
+				params->runtime->queueCloneObject(params->self->getSelfReference());
+
+			CORO_RETURN;
+		CORO_END_IF
+
 		locals->quietlyDiscard = false;
 
 		// Just ignore these
@@ -4033,7 +4287,19 @@ MiniscriptInstructionOutcome Structural::scriptSetUnload(MiniscriptThread *threa
 VolumeState::VolumeState() : volumeID(0), isMounted(false) {
 }
 
-ObjectLinkingScope::ObjectLinkingScope() : _parent(nullptr) {
+ObjectLinkingScope::ObjectLinkingScope() : _parent(nullptr), _preferNamesOverGUIDs(false) {
+}
+
+void ObjectLinkingScope::setPreferNamesOverGUIDs(bool preferNames) {
+	_preferNamesOverGUIDs = preferNames;
+}
+
+bool ObjectLinkingScope::getPreferNamesOverGUIDs() const {
+	for (const ObjectLinkingScope *scope = this; scope; scope = scope->_parent) {
+		if (scope->_preferNamesOverGUIDs)
+			return true;
+	}
+	return false;
 }
 
 ObjectLinkingScope::~ObjectLinkingScope() {
@@ -4108,6 +4374,7 @@ Common::WeakPtr<RuntimeObject> ObjectLinkingScope::resolve(uint32 staticGUID, co
 
 void ObjectLinkingScope::reset() {
 	_parent = nullptr;
+	_preferNamesOverGUIDs = false;
 	_guidToObject.clear(true);
 }
 
@@ -4717,6 +4984,7 @@ bool Runtime::runFrame() {
 			ensureMainWindowExists();
 
 			_rootLinkingScope.addObject(_project->getStaticGUID(), _project->getName(), _project);
+			_rootLinkingScope.setPreferNamesOverGUIDs(_project->getRuntimeVersion() >= kRuntimeVersion200);
 
 			// We have to materialize global variables because they are not cloned from aliases.
 			debug(1, "Materializing global variables...");
@@ -4743,8 +5011,9 @@ bool Runtime::runFrame() {
 				error("Project has no subsections");
 			}
 
+			// A subsection with only one scene has no shared scene (Magic School Bus Bugs mini-game titles)
 			Structural *firstSubsection = firstSection->getChildren()[0].get();
-			if (firstSubsection->getChildren().size() < 2) {
+			if (firstSubsection->getChildren().size() == 0) {
 				error("Project has no subsections");
 			}
 
@@ -4755,7 +5024,22 @@ bool Runtime::runFrame() {
 			for (const Common::SharedPtr<SceneTransitionHooks> &hook : _hacks.sceneTransitionHooks)
 				hook->onProjectStarted(this);
 
-			_pendingSceneTransitions.push_back(HighLevelSceneTransition(firstSubsection->getChildren()[1], HighLevelSceneTransition::kTypeChangeToScene, false, false));
+			const Common::SharedPtr<Structural> defaultStartScene = firstSubsection->getChildren()[firstSubsection->getChildren().size() > 1 ? 1 : 0];
+			Common::SharedPtr<Structural> startScene = defaultStartScene;
+			if (!_startSceneName.empty()) {
+				for (const Common::SharedPtr<Structural> &section : _project->getChildren()) {
+					for (const Common::SharedPtr<Structural> &subsection : section->getChildren()) {
+						// The first scene of each subsection is its shared scene
+						for (uint i = 1; i < subsection->getChildren().size(); i++) {
+							if (subsection->getChildren()[i]->getName().equalsIgnoreCase(_startSceneName) && startScene == defaultStartScene)
+								startScene = subsection->getChildren()[i];
+						}
+					}
+				}
+				_startSceneName.clear();
+			}
+
+			_pendingSceneTransitions.push_back(HighLevelSceneTransition(startScene, HighLevelSceneTransition::kTypeChangeToScene, false, false));
 			continue;
 		}
 
@@ -4841,6 +5125,22 @@ bool Runtime::runFrame() {
 		//
 		// If messages are discharged before low-level scene transitions, then the music plays in the lower level of the
 		// statue on disembarking because the nav node variable is set to the wrong value.
+		// User Timeout goes to the shared scene and the active scene when there has been no input
+		// for the project's user timeout, and again after each further timeout
+		if (_userTimeout > 0 && _project && _playTime - _lastUserActivityTime >= static_cast<uint64>(_userTimeout) * 1000u / 60u) {
+			_lastUserActivityTime = _playTime;
+
+			Structural *scenes[2] = {_activeSharedScene.get(), _activeMainScene.get()};
+			for (Structural *scene : scenes) {
+				if (!scene)
+					continue;
+
+				Common::SharedPtr<MessageProperties> msgProps(new MessageProperties(Event(EventIDs::kUserTimeout, 0), DynamicValue(), _project->getSelfReference()));
+				Common::SharedPtr<MessageDispatch> dispatch(new MessageDispatch(msgProps, scene, true, true, false));
+				queueMessage(dispatch);
+			}
+		}
+
 		if (_messageQueue.size() > 0) {
 			Common::SharedPtr<MessageDispatch> msg = _messageQueue[0];
 			_messageQueue.remove_at(0);
@@ -4924,8 +5224,10 @@ bool Runtime::runFrame() {
 			_sourceSceneTransitionEffect = SceneTransitionEffect();
 			_destinationSceneTransitionEffect = SceneTransitionEffect();
 
-			for (const SceneStackEntry &sceneStackEntry : _sceneStack)
-				recursiveAutoPlayMedia(sceneStackEntry.scene.get());
+			for (const SceneStackEntry &sceneStackEntry : _sceneStack) {
+				if (sceneStackEntry.scene)
+					recursiveAutoPlayMedia(sceneStackEntry.scene.get());
+			}
 
 			for (const Common::SharedPtr<SceneTransitionHooks> &hooks : _hacks.sceneTransitionHooks)
 				hooks->onSceneTransitionEnded(this, _activeMainScene);
@@ -5432,7 +5734,7 @@ void Runtime::executeCompleteTransitionToScene(const Common::SharedPtr<Structura
 	if (targetScene == targetSharedScene)
 		error("Transitioned into a default shared scene, this is not supported");
 
-	if (_activeMainScene == targetSharedScene)
+	if (targetSharedScene && _activeMainScene == targetSharedScene)
 		error("Transitioned into scene currently being used as a target scene, this is not supported");
 
 	for (size_t i = _sceneStack.size() - 1; i > 0; i--) {
@@ -5472,6 +5774,7 @@ void Runtime::executeCompleteTransitionToScene(const Common::SharedPtr<Structura
 	{
 		_pendingLowLevelTransitions.push_back(LowLevelSceneStateTransitionAction(targetScene, LowLevelSceneStateTransitionAction::kLoad));
 		queueEventAsLowLevelSceneStateTransitionAction(Event(EventIDs::kParentEnabled, 0), targetScene.get(), true, true);
+		queueAncestorColorTablesAsLowLevelSceneStateTransitionAction(Event(EventIDs::kSceneStarted, 0), targetScene.get());
 		queueEventAsLowLevelSceneStateTransitionAction(Event(EventIDs::kSceneStarted, 0), targetScene.get(), true, true);
 
 		SceneStackEntry sceneEntry;
@@ -5501,11 +5804,20 @@ void Runtime::executeHighLevelSceneReturn() {
 		_sceneStack.resize(1); // Reserve shared scene slot
 
 	if (_sceneReturnList.size() == 0) {
+		// A title opened with Open Title returns to the title that opened it
+		if (_canReturnToPreviousTitle) {
+			_returnToPreviousTitleRequested = true;
+			return;
+		}
+
 		warning("A scene return was requested, but no scenes are in the scene return list");
 		return;
 	}
 
-	const SceneReturnListEntry &sceneReturn = _sceneReturnList.back();
+	// The scene being returned to leaves the return list
+	const SceneReturnListEntry sceneReturn = _sceneReturnList.back();
+	_sceneReturnList.pop_back();
+	debug(2, "Returning to scene '%s'", sceneReturn.scene->getName().c_str());
 
 	if (sceneReturn.scene == _activeSharedScene)
 		error("Transitioned into the active shared scene as the main scene, this is not supported");
@@ -5572,7 +5884,7 @@ void Runtime::executeHighLevelSceneTransition(const HighLevelSceneTransition &tr
 					if (targetScene == targetSharedScene)
 						error("Transitioned into a default shared scene, this is not supported");
 
-					if (_activeMainScene == targetSharedScene)
+					if (targetSharedScene && _activeMainScene == targetSharedScene)
 						error("Transitioned into scene currently being used as a target scene, this is not supported");
 
 					queueEventAsLowLevelSceneStateTransitionAction(Event(EventIDs::kSceneDeactivated, 0), _activeMainScene.get(), true, true);
@@ -5609,6 +5921,7 @@ void Runtime::executeHighLevelSceneTransition(const HighLevelSceneTransition &tr
 					if (!sceneAlreadyInStack) {
 						_pendingLowLevelTransitions.push_back(LowLevelSceneStateTransitionAction(targetScene, LowLevelSceneStateTransitionAction::kLoad));
 						queueEventAsLowLevelSceneStateTransitionAction(Event(EventIDs::kParentEnabled, 0), targetScene.get(), true, true);
+						queueAncestorColorTablesAsLowLevelSceneStateTransitionAction(Event(EventIDs::kSceneStarted, 0), targetScene.get());
 						queueEventAsLowLevelSceneStateTransitionAction(Event(EventIDs::kSceneStarted, 0), targetScene.get(), true, true);
 
 						SceneStackEntry sceneEntry;
@@ -5679,12 +5992,15 @@ void Runtime::executeSharedScenePostSceneChangeActions() {
 
 	const Common::Array<Common::SharedPtr<Structural> > &subsectionScenes = subsection->getChildren();
 
-	queueEventAsLowLevelSceneStateTransitionAction(Event(EventIDs::kSharedSceneSceneChanged, 0), _activeSharedScene.get(), true, true);
-	if (subsectionScenes.size() > 1) {
-		if (_activeMainScene == subsectionScenes[subsectionScenes.size() - 1])
-			queueEventAsLowLevelSceneStateTransitionAction(Event(EventIDs::kSharedSceneNoNextScene, 0), _activeSharedScene.get(), true, true);
-		if (_activeMainScene == subsectionScenes[1])
-			queueEventAsLowLevelSceneStateTransitionAction(Event(EventIDs::kSharedSceneNoPrevScene, 0), _activeSharedScene.get(), true, true);
+	// A lone scene has no shared scene
+	if (_activeSharedScene) {
+		queueEventAsLowLevelSceneStateTransitionAction(Event(EventIDs::kSharedSceneSceneChanged, 0), _activeSharedScene.get(), true, true);
+		if (subsectionScenes.size() > 1) {
+			if (_activeMainScene == subsectionScenes[subsectionScenes.size() - 1])
+				queueEventAsLowLevelSceneStateTransitionAction(Event(EventIDs::kSharedSceneNoNextScene, 0), _activeSharedScene.get(), true, true);
+			if (_activeMainScene == subsectionScenes[1])
+				queueEventAsLowLevelSceneStateTransitionAction(Event(EventIDs::kSharedSceneNoPrevScene, 0), _activeSharedScene.get(), true, true);
+		}
 	}
 
 	_pendingLowLevelTransitions.push_back(LowLevelSceneStateTransitionAction(_activeMainScene, LowLevelSceneStateTransitionAction::kShowDefaultVisibleElements));
@@ -5791,13 +6107,17 @@ bool Runtime::isModifierMouseInteractive(Modifier *modifier, MouseInteractivityT
 	return false;
 }
 
-void Runtime::recursiveFindMouseCollision(Structural *&bestResult, int32 &bestLayer, int32 &bestStackHeight, bool &bestDirect, Structural *candidate, int32 stackHeight, int32 relativeX, int32 relativeY, MouseInteractivityTestType testType) {
+void Runtime::recursiveFindMouseCollision(Structural *&bestResult, int32 &bestLayer, int32 &bestStackHeight, bool &bestDirect, Structural *candidate, int32 stackHeight, int32 relativeX, int32 relativeY, MouseInteractivityTestType testType, const Structural *excluded) {
 	int32 childRelativeX = relativeX;
 	int32 childRelativeY = relativeY;
 	if (candidate->isElement()) {
 		Element *element = static_cast<Element *>(candidate);
 		if (element->isVisual()) {
 			VisualElement *visual = static_cast<VisualElement *>(candidate);
+
+			// The mouse reaches what's under an element used as the cursor
+			if (visual == excluded)
+				return;
 
 			if (visual->isVisible()) {
 				int layer = visual->getLayer();
@@ -5831,13 +6151,28 @@ void Runtime::recursiveFindMouseCollision(Structural *&bestResult, int32 &bestLa
 	}
 
 	for (const Common::SharedPtr<Structural> &child : candidate->getChildren())
-		recursiveFindMouseCollision(bestResult, bestLayer, bestStackHeight, bestDirect, child.get(), stackHeight, childRelativeX, childRelativeY, testType);
+		recursiveFindMouseCollision(bestResult, bestLayer, bestStackHeight, bestDirect, child.get(), stackHeight, childRelativeX, childRelativeY, testType, excluded);
 }
 
 void Runtime::queueEventAsLowLevelSceneStateTransitionAction(const Event &evt, Structural *root, bool cascade, bool relay) {
 	Common::SharedPtr<MessageProperties> props(new MessageProperties(evt, DynamicValue(), Common::WeakPtr<RuntimeObject>()));
 	Common::SharedPtr<MessageDispatch> msg(new MessageDispatch(props, root, cascade, relay, false));
 	_pendingLowLevelTransitions.push_back(LowLevelSceneStateTransitionAction(msg));
+}
+
+// Scene messages only cascade down from the scene, but a color table on the scene's subsection,
+// section or project still applies when the scene starts (Magic School Bus Bugs' Build a Bug keeps
+// its only color table on the subsection)
+void Runtime::queueAncestorColorTablesAsLowLevelSceneStateTransitionAction(const Event &evt, Structural *scene) {
+	for (Structural *ancestor = scene->getParent(); ancestor != nullptr; ancestor = ancestor->getParent()) {
+		for (const Common::SharedPtr<Modifier> &modifier : ancestor->getModifiers()) {
+			if (modifier->isColorTable() && modifier->respondsToEvent(evt)) {
+				Common::SharedPtr<MessageProperties> props(new MessageProperties(evt, DynamicValue(), Common::WeakPtr<RuntimeObject>()));
+				Common::SharedPtr<MessageDispatch> msg(new MessageDispatch(props, modifier.get(), false, true, false));
+				_pendingLowLevelTransitions.push_back(LowLevelSceneStateTransitionAction(msg));
+			}
+		}
+	}
 }
 
 void Runtime::loadScene(const Common::SharedPtr<Structural> &scene) {
@@ -6344,7 +6679,9 @@ VThreadState Runtime::updateMouseStateTask(const UpdateMouseStateTaskData &data)
 
 		for (size_t ri = 0; ri < _sceneStack.size(); ri++) {
 			const SceneStackEntry &sceneStackEntry = _sceneStack[_sceneStack.size() - 1 - ri];
-			recursiveFindMouseCollision(tracked, bestSceneStack, bestLayer, bestDirect, sceneStackEntry.scene.get(), _sceneStack.size() - 1 - ri, _cachedMousePosition.x, _cachedMousePosition.y, kMouseInteractivityTestMouseClick);
+			if (!sceneStackEntry.scene)
+				continue;
+			recursiveFindMouseCollision(tracked, bestSceneStack, bestLayer, bestDirect, sceneStackEntry.scene.get(), _sceneStack.size() - 1 - ri, _cachedMousePosition.x, _cachedMousePosition.y, kMouseInteractivityTestMouseClick, _elementTrackedToCursor.lock().get());
 		}
 
 		if (tracked) {
@@ -6420,7 +6757,9 @@ VThreadState Runtime::updateMousePositionTask(const UpdateMousePositionTaskData 
 	if (_numMouseBlockers == 0) {
 		for (size_t ri = 0; ri < _sceneStack.size(); ri++) {
 			const SceneStackEntry &sceneStackEntry = _sceneStack[_sceneStack.size() - 1 - ri];
-			recursiveFindMouseCollision(collisionItem, bestSceneStack, bestLayer, bestDirect, sceneStackEntry.scene.get(), _sceneStack.size() - 1 - ri, data.x, data.y, kMouseInteractivityTestAnything);
+			if (!sceneStackEntry.scene)
+				continue;
+			recursiveFindMouseCollision(collisionItem, bestSceneStack, bestLayer, bestDirect, sceneStackEntry.scene.get(), _sceneStack.size() - 1 - ri, data.x, data.y, kMouseInteractivityTestAnything, _elementTrackedToCursor.lock().get());
 		}
 	}
 
@@ -6584,6 +6923,24 @@ void Runtime::queueMessage(const Common::SharedPtr<MessageDispatch>& dispatch) {
 
 void Runtime::queueOSEvent(const Common::SharedPtr<OSEvent> &osEvent) {
 	_osEventQueue.push_back(osEvent);
+	_lastUserActivityTime = _playTime;
+}
+
+bool Runtime::isSceneOnStack(const Structural *scene) const {
+	for (const SceneStackEntry &entry : _sceneStack) {
+		if (entry.scene.get() == scene)
+			return true;
+	}
+	return false;
+}
+
+int32 Runtime::getUserTimeout() const {
+	return _userTimeout;
+}
+
+void Runtime::setUserTimeout(int32 timeout) {
+	_userTimeout = timeout;
+	_lastUserActivityTime = _playTime;
 }
 
 Scheduler &Runtime::getScheduler() {
@@ -6592,7 +6949,8 @@ Scheduler &Runtime::getScheduler() {
 
 void Runtime::getScenesInRenderOrder(Common::Array<Structural*> &scenes) const {
 	for (Common::Array<SceneStackEntry>::const_iterator it = _sceneStack.begin(), itEnd = _sceneStack.end(); it != itEnd; ++it) {
-		scenes.push_back(it->scene.get());
+		if (it->scene)
+			scenes.push_back(it->scene.get());
 	}
 }
 
@@ -6607,7 +6965,9 @@ void Runtime::instantiateIfAlias(Common::SharedPtr<Modifier> &modifier, const Co
 		clonedModifier->setSelfReference(clonedModifier);
 		clonedModifier->setRuntimeGUID(allocateRuntimeGUID());
 
-		clonedModifier->setName(modifier->getName());
+		// Rev 4 alias data has no name, the instance uses the template's
+		if (!modifier->getName().empty())
+			clonedModifier->setName(modifier->getName());
 
 		modifier = clonedModifier;
 		clonedModifier->setParent(relinkParent);
@@ -6823,8 +7183,10 @@ void Runtime::checkCollisions(ICollider *optRestrictToCollider) {
 		return;
 
 	Common::Array<ColliderInfo> collisionObjects;
-	for (size_t i = 0; i < _sceneStack.size(); i++)
-		recursiveFindColliders(_sceneStack[i].scene.get(), i, collisionObjects, 0, 0, true);
+	for (size_t i = 0; i < _sceneStack.size(); i++) {
+		if (_sceneStack[i].scene)
+			recursiveFindColliders(_sceneStack[i].scene.get(), i, collisionObjects, 0, 0, true);
+	}
 
 	Common::sort(collisionObjects.begin(), collisionObjects.end(), sortColliderPredicate);
 
@@ -6957,6 +7319,12 @@ void Runtime::setCursorElement(const Common::WeakPtr<VisualElement> &element) {
 	_haveCursorElement = !element.expired();
 
 	updateMainWindowCursor();
+	updateCursorElementPosition();
+}
+
+void Runtime::setCursorElementHotspot(const Common::Point &hotspot) {
+	_cursorElementHotspot = hotspot;
+	updateCursorElementPosition();
 }
 
 void Runtime::updateCursorElementPosition() {
@@ -6965,10 +7333,11 @@ void Runtime::updateCursorElementPosition() {
 		return;
 
 	Common::Point elementPos = element->getGlobalPosition();
-	if (elementPos != _cachedMousePosition) {
+	Common::Point targetPos = _cachedMousePosition - _cursorElementHotspot;
+	if (elementPos != targetPos) {
 		VisualElement::OffsetTranslateTaskData *taskData = _vthread->pushTask("VisualElement::offsetTranslateTask", element.get(), &VisualElement::offsetTranslateTask);
-		taskData->dx = _cachedMousePosition.x - elementPos.x;
-		taskData->dy = _cachedMousePosition.y - elementPos.y;
+		taskData->dx = targetPos.x - elementPos.x;
+		taskData->dy = targetPos.y - elementPos.y;
 	}
 }
 
@@ -7307,10 +7676,81 @@ void Runtime::queueProject(const Common::SharedPtr<ProjectDescription> &desc) {
 	_queuedProjectDesc = desc;
 }
 
+// The next project starts at this scene instead of its first one
+void Runtime::setStartSceneName(const Common::String &sceneName) {
+	_startSceneName = sceneName;
+}
+
+const Graphics::Font *Runtime::getWindowsFont(const Common::String &familyName, uint pointSize, bool bold, bool italic) {
+#ifdef USE_FREETYPE2
+	Common::String family = "Sans";
+	if (familyName.equalsIgnoreCase("Times New Roman") || familyName.equalsIgnoreCase("Times"))
+		family = "Serif";
+	else if (familyName.equalsIgnoreCase("Courier New") || familyName.equalsIgnoreCase("Courier"))
+		family = "Mono";
+	else if (!familyName.equalsIgnoreCase("Arial") && !familyName.equalsIgnoreCase("Helvetica") && !familyName.equalsIgnoreCase("MS Sans Serif")
+			 && !familyName.equalsIgnoreCase("Tahoma") && !familyName.equalsIgnoreCase("Verdana"))
+		return nullptr;
+
+	Common::String style = "Regular";
+	if (bold && italic)
+		style = "BoldItalic";
+	else if (bold)
+		style = "Bold";
+	else if (italic)
+		style = "Italic";
+
+	Common::String fileName = Common::String::format("Liberation%s-%s.ttf", family.c_str(), style.c_str());
+	Common::String key = Common::String::format("%s/%u", fileName.c_str(), pointSize);
+
+	Common::HashMap<Common::String, Common::SharedPtr<Graphics::Font> >::const_iterator it = _windowsFonts.find(key);
+	if (it != _windowsFonts.end())
+		return it->_value.get();
+
+	// Windows titles size fonts in points at 96 DPI
+	Common::SharedPtr<Graphics::Font> font(Graphics::loadTTFFontFromArchive(fileName, pointSize, Graphics::kTTFSizeModeCharacter, 96, 96, Graphics::kTTFRenderModeMonochrome));
+	_windowsFonts[key] = font;
+	return font.get();
+#else
+	return nullptr;
+#endif
+}
+
+void Runtime::requestOpenTitle(const Common::String &path, bool addToReturnList) {
+	_openTitleRequest = path;
+	_openTitleAddToReturnList = addToReturnList;
+}
+
+void Runtime::setCanReturnToPreviousTitle(bool canReturn) {
+	_canReturnToPreviousTitle = canReturn;
+}
+
+bool Runtime::takeReturnToPreviousTitleRequest() {
+	bool requested = _returnToPreviousTitleRequested;
+	_returnToPreviousTitleRequested = false;
+	return requested;
+}
+
+bool Runtime::takeOpenTitleRequest(Common::String &outPath, bool &outAddToReturnList) {
+	if (_openTitleRequest.empty())
+		return false;
+
+	outPath = _openTitleRequest;
+	outAddToReturnList = _openTitleAddToReturnList;
+	_openTitleRequest.clear();
+	return true;
+}
+
 void Runtime::closeProject() {
 	// TODO: There are actually some elaborate cases here involving opening projects, project return list,
 	// Project Ended message, etc. and Obsidian actually attempts to stop MIDI playback on project end.
-	// For now we just quit.
+
+	// A title opened with "add to return list" closes back to the title that opened it
+	if (_canReturnToPreviousTitle) {
+		_returnToPreviousTitleRequested = true;
+		return;
+	}
+
 	_isQuitting = true;
 }
 
@@ -7449,8 +7889,10 @@ const Common::SharedPtr<Structural> &Runtime::getActiveSharedScene() const {
 
 void Runtime::getSceneStack(Common::Array<Common::SharedPtr<Structural> >& sceneStack) const {
 	sceneStack.clear();
-	for (const SceneStackEntry &stackEntry : _sceneStack)
-		sceneStack.push_back(stackEntry.scene);
+	for (const SceneStackEntry &stackEntry : _sceneStack) {
+		if (stackEntry.scene)
+			sceneStack.push_back(stackEntry.scene);
+	}
 }
 
 bool Runtime::mustDraw() const {
@@ -7725,9 +8167,32 @@ VThreadState Project::asyncConsumeCommand(Runtime *runtime, const Common::Shared
 	return Structural::asyncConsumeCommand(runtime, msg);
 }
 
+bool Project::readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) {
+	if (attrib == "usertimeout") {
+		result.setInt(getRuntime()->getUserTimeout());
+		return true;
+	}
+
+	return Structural::readAttribute(thread, result, attrib);
+}
+
+MiniscriptInstructionOutcome Project::scriptSetUserTimeout(MiniscriptThread *thread, const DynamicValue &value) {
+	int32 timeout = 0;
+	if (!value.roundToInt(timeout))
+		return kMiniscriptInstructionOutcomeFailed;
+
+	getRuntime()->setUserTimeout(timeout);
+	return kMiniscriptInstructionOutcomeContinue;
+}
+
 MiniscriptInstructionOutcome Project::writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) {
 	if (attrib == "allowquit" || attrib == "allowquitkey") {
 		DynamicValueWriteDiscardHelper::create(result);
+		return kMiniscriptInstructionOutcomeContinue;
+	}
+
+	if (attrib == "usertimeout") {
+		DynamicValueWriteFuncHelper<Project, &Project::scriptSetUserTimeout, true>::create(this, result);
 		return kMiniscriptInstructionOutcomeContinue;
 	}
 
@@ -7994,7 +8459,12 @@ Common::WeakPtr<Asset> Project::getAssetByID(uint32 assetID) const {
 }
 
 void Project::forceLoadAsset(uint32 assetID, Common::Array<Common::SharedPtr<Asset> > &outHoldAssets) {
-	AssetDesc *assetDesc = _assetsByID[assetID];
+	AssetDesc *assetDesc = (assetID < _assetsByID.size()) ? _assetsByID[assetID] : nullptr;
+	if (!assetDesc || assetDesc->streamID == 0 || assetDesc->streamID > _streams.size()) {
+		warning("Asset %u '%s' isn't stored in this project and couldn't be loaded", assetID, assetDesc ? assetDesc->name.c_str() : "");
+		return;
+	}
+
 	uint32 streamID = assetDesc->streamID;
 
 	size_t streamIndex = streamID - 1;
@@ -8032,6 +8502,15 @@ void Project::forceLoadAsset(uint32 assetID, Common::Array<Common::SharedPtr<Ass
 	outHoldAssets = Common::move(assetDefLoader.assets);
 }
 
+bool Project::isAssetStored(const Common::String &assetName) const {
+	uint32 assetID = 0;
+	if (!getAssetIDByName(assetName, assetID))
+		return false;
+
+	const AssetDesc *assetDesc = _assetsByID[assetID];
+	return assetDesc->streamID != 0 && assetDesc->streamID <= _streams.size();
+}
+
 bool Project::getAssetIDByName(const Common::String &assetName, uint32 &outAssetID) const {
 	for (uint32 assetID = 0; assetID < _assetsByID.size(); assetID++) {
 		const AssetDesc *assetDesc = _assetsByID[assetID];
@@ -8049,6 +8528,31 @@ bool Project::getAssetIDByName(const Common::String &assetName, uint32 &outAsset
 
 size_t Project::getSegmentForStreamIndex(size_t streamIndex) const {
 	return _streams[streamIndex].segmentIndex;
+}
+
+Common::SeekableReadStream *Project::createReadStreamForProjectPath(const Common::String &path) const {
+	static const char *const kStartupSegmentFolder = "<Startup Segment Folder>";
+
+	Common::String relPath = path;
+	if (relPath.hasPrefixIgnoreCase(kStartupSegmentFolder)) {
+		relPath = relPath.substr(strlen(kStartupSegmentFolder));
+		while (relPath.hasPrefix(":") || relPath.hasPrefix("\\") || relPath.hasPrefix("/"))
+			relPath.deleteChar(0);
+	}
+
+	Common::Path fullPath = _projectRootDir;
+	Common::String component;
+	for (uint i = 0; i <= relPath.size(); i++) {
+		char c = (i < relPath.size()) ? relPath[i] : ':';
+		if (c == ':' || c == '\\' || c == '/') {
+			if (!component.empty())
+				fullPath = fullPath.appendComponent(component);
+			component.clear();
+		} else
+			component += c;
+	}
+
+	return _rootArchive->createReadStreamForMember(fullPath);
 }
 
 void Project::openSegmentStream(int segmentIndex) {
@@ -8163,6 +8667,23 @@ void Project::onKeyboardEvent(Runtime *runtime, const KeyboardInputEvent &keyEvt
 Common::SharedPtr<KeyboardEventSignaller> Project::notifyOnKeyboardEvent(IKeyboardEventReceiver *receiver) {
 	_keyboardEventSignaller->addReceiver(receiver);
 	return _keyboardEventSignaller;
+}
+
+bool Project::findAuthorMessageID(const Common::String &name, uint32 &outID) const {
+	for (const LabelSuperGroup &sg : _labelSuperGroups) {
+		if (sg.name == "Author Messages") {
+			for (size_t j = 0; j < sg.numTotalNodes; j++) {
+				const LabelTree &treeNode = _labelTree[j + sg.firstRootNodeIndex];
+				if (caseInsensitiveEqual(treeNode.name, name)) {
+					outID = treeNode.id;
+					return true;
+				}
+			}
+			break;
+		}
+	}
+
+	return false;
 }
 
 const char *Project::findAuthorMessageName(uint32 id) const {
@@ -8341,7 +8862,8 @@ void Project::loadAssetCatalog(const Data::AssetCatalog &assetCatalog) {
 			else
 				assetDesc.typeCode = 0;
 
-			assetDesc.streamID = assetInfo.streamID;
+			// Some mTropolis 2.0 titles set flags in the high bits, like element stream locators
+			assetDesc.streamID = assetInfo.streamID & 0xffff;
 			assetDesc.filePosition = assetInfo.filePosition;
 
 			_assetsByID[assetDesc.id] = &assetDesc;
@@ -8391,8 +8913,11 @@ Common::SharedPtr<Modifier> Project::loadModifierObject(ModifierLoaderContext &l
 
 		modifier = factory->createModifier(loaderContext, dataObject);
 	}
-	if (!modifier)
-		error("Modifier object failed to load");
+	if (!modifier) {
+		if (dataObject.getType() == Data::DataObjectTypes::kPlugInModifier)
+			error("Plug-in modifier object '%s' failed to load", static_cast<const Data::PlugInModifier &>(dataObject).modifierName);
+		error("Modifier object type 0x%x failed to load", static_cast<uint>(dataObject.getType()));
+	}
 	assert(modifier->getModifierFlags().flagsWereLoaded);
 
 	uint32 guid = modifier->getStaticGUID();
@@ -9275,6 +9800,9 @@ MiniscriptInstructionOutcome VisualElement::writeRefAttribute(MiniscriptThread *
 	} else if (attrib == "position") {
 		DynamicValueWriteOrRefAttribFuncHelper<VisualElement, &VisualElement::scriptSetPosition, &VisualElement::scriptWriteRefPositionAttribute>::create(this, writeProxy);
 		return kMiniscriptInstructionOutcomeContinue;
+	} else if (attrib == "globalposition") {
+		DynamicValueWriteOrRefAttribFuncHelper<VisualElement, &VisualElement::scriptSetGlobalPosition, &VisualElement::scriptWriteRefGlobalPositionAttribute>::create(this, writeProxy);
+		return kMiniscriptInstructionOutcomeContinue;
 	} else if (attrib == "size") {
 		DynamicValueWriteOrRefAttribFuncHelper<VisualElement, &VisualElement::scriptSetSize, &VisualElement::scriptWriteRefSizeAttribute>::create(this, writeProxy);
 		return kMiniscriptInstructionOutcomeContinue;
@@ -9383,12 +9911,13 @@ void VisualElement::handleDragMotion(Runtime *runtime, const Common::Point &init
 
 		if (targetPoint.y > maxY)
 			targetPoint.y = maxY;
-
-		if (_hooks)
-			_hooks->onSetPosition(runtime, this, Common::Point(_rect.left, _rect.top), targetPoint);
-
-		offsetTranslate(targetPoint.x - _rect.left, targetPoint.y - _rect.top, false);
 	}
+
+	// Unconstrained elements move too
+	if (_hooks)
+		_hooks->onSetPosition(runtime, this, Common::Point(_rect.left, _rect.top), targetPoint);
+
+	offsetTranslate(targetPoint.x - _rect.left, targetPoint.y - _rect.top, false);
 }
 
 VThreadState VisualElement::offsetTranslateTask(const OffsetTranslateTaskData &data) {
@@ -9441,6 +9970,28 @@ void VisualElement::finalizeRender() {
 	_contentsDirty = false;
 }
 
+void VisualElement::addPostRenderHook(IElementPostRenderHook *hook) {
+	for (IElementPostRenderHook *existing : _postRenderHooks)
+		if (existing == hook)
+			return;
+
+	_postRenderHooks.push_back(hook);
+}
+
+void VisualElement::removePostRenderHook(IElementPostRenderHook *hook) {
+	for (uint i = 0; i < _postRenderHooks.size(); i++) {
+		if (_postRenderHooks[i] == hook) {
+			_postRenderHooks.remove_at(i);
+			return;
+		}
+	}
+}
+
+void VisualElement::renderPostRenderHooks(Window *window) {
+	for (IElementPostRenderHook *hook : _postRenderHooks)
+		hook->renderElementPostEffect(this, window);
+}
+
 void VisualElement::setPalette(const Common::SharedPtr<Palette> &palette) {
 	_palette = palette;
 	_contentsDirty = true;
@@ -9473,7 +10024,7 @@ void VisualElement::debugInspect(IDebugInspectionReport *report) const {
 #endif
 
 MiniscriptInstructionOutcome VisualElement::scriptSetVisibility(MiniscriptThread *thread, const DynamicValue &result) {
-	// FIXME: Need to make this fire Show/Hide events??
+	// FIXME: Need to make this fire Show/Hide events?? (done for mTropolis 2.0 projects)
 	if (result.getType() == DynamicValueTypes::kBoolean) {
 		const bool targetValue = result.getBool();
 
@@ -9483,8 +10034,18 @@ MiniscriptInstructionOutcome VisualElement::scriptSetVisibility(MiniscriptThread
 		_visibleByDefault = targetValue;
 
 		if (_visible != targetValue) {
-			_visible = targetValue;
-			thread->getRuntime()->setSceneGraphDirty();
+			Runtime *runtime = thread->getRuntime();
+			if (runtime->getProject()->getRuntimeVersion() >= kRuntimeVersion200) {
+				// Setting visible is the same as a Show or Hide command, which fire Shown/Hidden
+				setVisible(runtime, targetValue);
+
+				Common::SharedPtr<MessageProperties> msgProps(new MessageProperties(Event(targetValue ? EventIDs::kElementShow : EventIDs::kElementHide, 0), DynamicValue(), getSelfReference()));
+				Common::SharedPtr<MessageDispatch> dispatch(new MessageDispatch(msgProps, this, false, true, false));
+				runtime->queueMessage(dispatch);
+			} else {
+				_visible = targetValue;
+				runtime->setSceneGraphDirty();
+			}
 		}
 		return kMiniscriptInstructionOutcomeContinue;
 	}
@@ -9689,6 +10250,51 @@ MiniscriptInstructionOutcome VisualElement::scriptWriteRefPositionAttribute(Mini
 		return kMiniscriptInstructionOutcomeContinue;
 	} else if (attrib == "y") {
 		DynamicValueWriteFuncHelper<VisualElement, &VisualElement::scriptSetPositionY, true>::create(this, writeProxy);
+		return kMiniscriptInstructionOutcomeContinue;
+	}
+
+	return kMiniscriptInstructionOutcomeFailed;
+}
+
+// Global positions are set by converting them to the parent's coordinates
+MiniscriptInstructionOutcome VisualElement::scriptSetGlobalPosition(MiniscriptThread *thread, const DynamicValue &dest) {
+	if (dest.getType() != DynamicValueTypes::kPoint)
+		return scriptSetPosition(thread, dest);
+
+	Common::Point globalPos = getGlobalPosition();
+	Common::Point destPoint = dest.getPoint();
+
+	DynamicValue localDest;
+	localDest.setPoint(Common::Point(destPoint.x - globalPos.x + _rect.left, destPoint.y - globalPos.y + _rect.top));
+	return scriptSetPosition(thread, localDest);
+}
+
+MiniscriptInstructionOutcome VisualElement::scriptSetGlobalPositionX(MiniscriptThread *thread, const DynamicValue &dest) {
+	int32 asInteger = 0;
+	if (!dest.roundToInt(asInteger))
+		return kMiniscriptInstructionOutcomeFailed;
+
+	DynamicValue localDest;
+	localDest.setInt(asInteger - getGlobalPosition().x + _rect.left);
+	return scriptSetPositionX(thread, localDest);
+}
+
+MiniscriptInstructionOutcome VisualElement::scriptSetGlobalPositionY(MiniscriptThread *thread, const DynamicValue &dest) {
+	int32 asInteger = 0;
+	if (!dest.roundToInt(asInteger))
+		return kMiniscriptInstructionOutcomeFailed;
+
+	DynamicValue localDest;
+	localDest.setInt(asInteger - getGlobalPosition().y + _rect.top);
+	return scriptSetPositionY(thread, localDest);
+}
+
+MiniscriptInstructionOutcome VisualElement::scriptWriteRefGlobalPositionAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &writeProxy, const Common::String &attrib) {
+	if (attrib == "x") {
+		DynamicValueWriteFuncHelper<VisualElement, &VisualElement::scriptSetGlobalPositionX, true>::create(this, writeProxy);
+		return kMiniscriptInstructionOutcomeContinue;
+	} else if (attrib == "y") {
+		DynamicValueWriteFuncHelper<VisualElement, &VisualElement::scriptSetGlobalPositionY, true>::create(this, writeProxy);
 		return kMiniscriptInstructionOutcomeContinue;
 	}
 
@@ -10038,7 +10644,9 @@ bool ModifierSaveLoad::load(Modifier *modifier, Common::ReadStream *stream, uint
 			return false;
 	}
 
-	if (modifier->getStaticGUID() != checkGUID)
+	// Titles of the same game share saves, but each title has its own GUIDs,
+	// so a named modifier is matched by name
+	if (modifier->getStaticGUID() != checkGUID && nameLen == 0)
 		return false;
 
 	return loadInternal(stream, saveFileVersion);
@@ -10057,7 +10665,11 @@ Modifier::~Modifier() {
 }
 
 bool Modifier::readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) {
-	if (attrib == "parent") {
+	if (attrib == "childmodcount") {
+		IModifierContainer *container = getChildContainer();
+		result.setInt(container ? container->getModifiers().size() : 0);
+		return true;
+	} else if (attrib == "parent") {
 		result.setObject(_parent);
 		return true;
 	} else if (attrib == "subsection") {
@@ -10080,6 +10692,9 @@ bool Modifier::readAttribute(MiniscriptThread *thread, DynamicValue &result, con
 	} else if (attrib == "name") {
 		result.setString(_name);
 		return true;
+	} else if (attrib == "path") {
+		result.setString(objectPathForScript(this));
+		return true;
 	} else if (attrib == "element") {
 		Structural *owner = findStructuralOwner();
 		result.setObject(owner ? owner->getSelfReference() : Common::WeakPtr<RuntimeObject>());
@@ -10100,7 +10715,56 @@ bool Modifier::readAttribute(MiniscriptThread *thread, DynamicValue &result, con
 		return true;
 	}
 
+	// Child modifiers of behaviors can be referenced by name
+	if (Modifier *child = findChildModifierByName(attrib)) {
+		result.setObject(child->getSelfReference());
+		return true;
+	}
+
 	return false;
+}
+
+bool Modifier::readAttributeIndexed(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib, const DynamicValue &index) {
+	if (attrib == "childmod") {
+		IModifierContainer *container = getChildContainer();
+		size_t count = container ? container->getModifiers().size() : 0;
+		size_t childIndex = 0;
+		if (!childIndexFromScript(thread, index, count, "childmod", childIndex))
+			return false;
+
+		result.setObject(container->getModifiers()[childIndex]->getSelfReference());
+		return true;
+	}
+
+	if (Modifier *child = findChildModifierByName(attrib))
+		return child->readAttributeIndexed(thread, result, "value", index);
+
+	return RuntimeObject::readAttributeIndexed(thread, result, attrib, index);
+}
+
+MiniscriptInstructionOutcome Modifier::writeRefAttributeIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &writeProxy, const Common::String &attrib, const DynamicValue &index) {
+	if (Modifier *child = findChildModifierByName(attrib))
+		return child->writeRefAttributeIndexed(thread, writeProxy, "value", index);
+
+	return RuntimeObject::writeRefAttributeIndexed(thread, writeProxy, attrib, index);
+}
+
+Modifier *Modifier::findChildModifierByName(const Common::String &name) {
+	IModifierContainer *container = getChildContainer();
+	if (!container)
+		return nullptr;
+
+	for (const Common::SharedPtr<Modifier> &child : container->getModifiers()) {
+		if (caseInsensitiveEqual(child->getName(), name))
+			return child.get();
+	}
+
+	for (const Common::SharedPtr<Modifier> &child : container->getModifiers()) {
+		if (scriptNameKeyEqual(child->getName(), name))
+			return child.get();
+	}
+
+	return nullptr;
 }
 
 MiniscriptInstructionOutcome Modifier::writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &writeProxy, const Common::String &attrib) {
@@ -10109,6 +10773,14 @@ MiniscriptInstructionOutcome Modifier::writeRefAttribute(MiniscriptThread *threa
 		return kMiniscriptInstructionOutcomeContinue;
 	} else if (attrib == "name") {
 		DynamicValueWriteStringHelper::create(&_name, writeProxy);
+		return kMiniscriptInstructionOutcomeContinue;
+	}
+
+	if (Modifier *child = findChildModifierByName(attrib)) {
+		if (child->isVariable())
+			writeProxy = static_cast<VariableModifier *>(child)->createWriteProxy();
+		else
+			DynamicValueWriteObjectHelper::create(child, writeProxy);
 		return kMiniscriptInstructionOutcomeContinue;
 	}
 
@@ -10145,7 +10817,15 @@ bool Modifier::isCompoundVariable() const {
 	return false;
 }
 
+bool Modifier::runWithIncomingData(Runtime *runtime, const DynamicValue &value) {
+	return false;
+}
+
 bool Modifier::isKeyboardMessenger() const {
+	return false;
+}
+
+bool Modifier::isColorTable() const {
 	return false;
 }
 
@@ -10347,6 +11027,16 @@ bool VariableModifier::readAttribute(MiniscriptThread *thread, DynamicValue &res
 	}
 
 	return Modifier::readAttribute(thread, result, attrib);
+}
+
+// Writing "value" is the same as writing the variable, as Magic School Bus Bugs scripts do
+MiniscriptInstructionOutcome VariableModifier::writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) {
+	if (attrib == "value") {
+		result = createWriteProxy();
+		return kMiniscriptInstructionOutcomeContinue;
+	}
+
+	return Modifier::writeRefAttribute(thread, result, attrib);
 }
 
 void VariableModifier::disable(Runtime *runtime) {

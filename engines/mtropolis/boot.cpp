@@ -1168,6 +1168,7 @@ public:
 	const VirtualFileSystemLayout &getVFSLayout() const;
 	const ManifestSubtitlesDef &getSubtitlesDef() const;
 	const Common::String &getMainSegmentFileOverride() const;
+	void overrideMainSegmentFile(const Common::String &mainSegmentFilePath);
 
 	BitDepth getBitDepth() const;
 	BitDepth getEnhancedBitDepth() const;
@@ -1342,6 +1343,10 @@ void BootScriptContext::setEnhancedBitDepth(BitDepth bitDepth) {
 
 void BootScriptContext::setRuntimeVersion(RuntimeVersion version) {
 	_runtimeVersion = version;
+}
+
+void BootScriptContext::overrideMainSegmentFile(const Common::String &mainSegmentFilePath) {
+	setMainSegmentFile(mainSegmentFilePath);
 }
 
 void BootScriptContext::setMainSegmentFile(const Common::String &mainSegmentFilePath) {
@@ -1585,42 +1590,49 @@ void BootScriptContext::bootNotebookWin() {
 void BootScriptContext::bootMsbAnimalWin() {
 	addPlugIn(kPlugInStandard);
 	addPlugIn(kPlugInKnowWonder);
+	addPlugIn(kPlugInHoologic);
 	setMainSegmentFile("workspace/MSB/Startup.mfw");
 }
 
 void BootScriptContext::bootMsbBugsWin() {
 	addPlugIn(kPlugInStandard);
 	addPlugIn(kPlugInKnowWonder);
+	addPlugIn(kPlugInHoologic);
 	setMainSegmentFile("workspace/MSB/SignIn.mfx");
 }
 
 void BootScriptContext::bootMsbConcertWin() {
 	addPlugIn(kPlugInStandard);
 	addPlugIn(kPlugInKnowWonder);
+	addPlugIn(kPlugInHoologic);
 	setMainSegmentFile("workspace/MSB/SignInC.mfx");
 }
 
 void BootScriptContext::bootMsbFlightWin() {
 	addPlugIn(kPlugInStandard);
 	addPlugIn(kPlugInKnowWonder);
+	addPlugIn(kPlugInHoologic);
 	setMainSegmentFile("workspace/MSB/SignInF.mfx");
 }
 
 void BootScriptContext::bootMsbMarsWin() {
 	addPlugIn(kPlugInStandard);
 	addPlugIn(kPlugInKnowWonder);
+	addPlugIn(kPlugInHoologic);
 	setMainSegmentFile("workspace/MSB/SignInM.mfx");
 }
 
 void BootScriptContext::bootMsbVolcanoWin() {
 	addPlugIn(kPlugInStandard);
 	addPlugIn(kPlugInKnowWonder);
+	addPlugIn(kPlugInHoologic);
 	setMainSegmentFile("workspace/MSB/SignInV.mfx");
 }
 
 void BootScriptContext::bootMsbWhalesWin() {
 	addPlugIn(kPlugInStandard);
 	addPlugIn(kPlugInKnowWonder);
+	addPlugIn(kPlugInHoologic);
 	setMainSegmentFile("workspace/MSB/SignInW.mfx");
 }
 
@@ -3111,7 +3123,7 @@ StablePathInArchiveSorter::StablePathInArchiveSorter(char pathSeparator) : _path
 }
 
 
-BootConfiguration bootProject(const MTropolisGameDescription &gameDesc) {
+BootConfiguration bootProject(const MTropolisGameDescription &gameDesc, const Common::String &mainSegmentOverride) {
 	BootConfiguration bootConfig;
 
 	Common::SharedPtr<ProjectDescription> &desc = bootConfig._projectDesc;
@@ -3147,6 +3159,9 @@ BootConfiguration bootProject(const MTropolisGameDescription &gameDesc) {
 
 	void (Boot::BootScriptContext::*bootFunc)() = bootGame->bootFunction;
 	(bootScriptContext.*bootFunc)();
+
+	if (!mainSegmentOverride.empty())
+		bootScriptContext.overrideMainSegmentFile(mainSegmentOverride);
 
 	for (const Common::SharedPtr<Common::Archive> &arc : bootScriptContext.getPersistentArchives())
 		persistentResources.push_back(Boot::PersistentResource<Common::Archive>::wrap(arc));
@@ -3236,6 +3251,8 @@ BootConfiguration bootProject(const MTropolisGameDescription &gameDesc) {
 	} else if (gameDesc.desc.platform == Common::kPlatformWindows) {
 		Boot::findWindowsPlayer(*vfs, playerLocation, playerType);
 		Boot::findWindowsMainSegment(*vfs, bootScriptContext,  mainSegmentLocation, isV2Project);
+
+	bootConfig._mainSegmentPath = mainSegmentLocation.toString('/');
 	}
 
 	if (bootScriptContext.getRuntimeVersion() != Boot::BootScriptContext::kRuntimeVersionAuto)

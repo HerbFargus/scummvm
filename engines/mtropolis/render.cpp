@@ -263,6 +263,7 @@ static bool renderItemLess(const RenderItem &a, const RenderItem &b) {
 
 static void renderNormalElement(const RenderItem &item, Window *mainWindow) {
 	item.element->render(mainWindow);
+	item.element->renderPostRenderHooks(mainWindow);
 	item.element->finalizeRender();
 }
 

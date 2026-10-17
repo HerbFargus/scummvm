@@ -295,7 +295,15 @@ public:
 #endif
 
 private:
+	// insert[n] = value inserts a value before entry n
+	struct InsertProxyInterface {
+		static MiniscriptInstructionOutcome write(MiniscriptThread *thread, const DynamicValue &dest, void *objectRef, uintptr ptrOrOffset);
+		static MiniscriptInstructionOutcome refAttrib(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib);
+		static MiniscriptInstructionOutcome refAttribIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib, const DynamicValue &index);
+	};
+
 	MiniscriptInstructionOutcome scriptSetCount(MiniscriptThread *thread, const DynamicValue &value);
+	MiniscriptInstructionOutcome scriptForAllDo(MiniscriptThread *thread, const DynamicValue &value);
 
 	Common::SharedPtr<Modifier> shallowClone() const override;
 	const char *getDefaultName() const override;
@@ -439,7 +447,7 @@ private:
 
 	Event _executeWhen;
 	Common::String _pathOrUrl;
-	//bool _addToReturnList;
+	bool _addToReturnList;
 };
 
 class OpenAppModifier : public Modifier {
@@ -468,6 +476,160 @@ private:
 	//bool _addToReturnList;
 };
 
+class FileModifier : public Modifier {
+public:
+	FileModifier();
+
+	bool load(const PlugInModifierLoaderContext &context, const Data::Standard::FileModifier &data);
+
+	bool respondsToEvent(const Event &evt) const override;
+	VThreadState consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) override;
+
+	void disable(Runtime *runtime) override;
+
+	bool readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) override;
+	bool readAttributeIndexed(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib, const DynamicValue &index) override;
+	MiniscriptInstructionOutcome writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) override;
+
+#ifdef MTROPOLIS_DEBUG_ENABLE
+	const char *debugGetTypeName() const override { return "File Modifier"; }
+	SupportStatus debugGetSupportStatus() const override { return kSupportStatusPartial; }
+	void debugInspect(IDebugInspectionReport *report) const override;
+#endif
+
+private:
+	enum OpenMode {
+		kOpenModeRead = 0,
+		kOpenModeOverwrite = 1,
+		kOpenModeReadWrite = 2,
+	};
+
+	enum ErrorCode {
+		kErrorNone = 0,
+		kErrorInvalidPath = 1,
+		kErrorNotWritable = 2,
+		kErrorNotOpen = 3,
+		kErrorOpenFailed = 4,
+		kErrorEndOfFile = 6,
+	};
+
+	enum WritableAttribute {
+		kAttribOpenMode,
+		kAttribClose,
+		kAttribWrite,
+		kAttribAppend,
+		kAttribIndex,
+		kAttribIndex0,
+		kAttribLength,
+		kAttribFilePath,
+		kAttribChunkDelimiters,
+		kAttribMacType,
+		kAttribMacCreator,
+	};
+
+	struct WriteProxy {
+		static MiniscriptInstructionOutcome write(MiniscriptThread *thread, const DynamicValue &value, void *objectRef, uintptr ptrOrOffset);
+		static MiniscriptInstructionOutcome refAttrib(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib);
+		static MiniscriptInstructionOutcome refAttribIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, void *objectRef, uintptr ptrOrOffset, const Common::String &attrib, const DynamicValue &index);
+	};
+
+	Common::SharedPtr<Modifier> shallowClone() const override;
+	const char *getDefaultName() const override;
+
+	ErrorCode writeAttribute(Runtime *runtime, WritableAttribute attrib, const DynamicValue &value);
+	ErrorCode openFile(Runtime *runtime, int mode);
+	void closeFile();
+	void flush();
+	ErrorCode readCharacters(uint count, Common::String &outStr);
+	ErrorCode readChunk(Common::String &outStr);
+	Common::String getSaveFileName() const;
+
+	Event _openWhen;
+	Event _closeWhen;
+	Common::String _filePath;
+	Common::String _chunkDelimiters;
+	Common::String _macType;
+	Common::String _macCreator;
+	int _defaultOpenMode;
+
+	// Open file state, buffered in memory
+	bool _isOpen;
+	bool _isWritable;
+	bool _isDirty;
+	Common::Array<char> _contents;
+	uint _position;
+	char _lastDelimiter;
+	ErrorCode _error;
+};
+
+// Moves its element to a point, at a speed or over a duration, with optional easing
+class PointMotionModifier : public Modifier {
+public:
+	PointMotionModifier();
+	~PointMotionModifier();
+
+	bool load(const PlugInModifierLoaderContext &context, const Data::Standard::PointMotionModifier &data);
+
+	bool respondsToEvent(const Event &evt) const override;
+	VThreadState consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) override;
+
+	void disable(Runtime *runtime) override;
+
+	bool readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) override;
+	MiniscriptInstructionOutcome writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &writeProxy, const Common::String &attrib) override;
+
+#ifdef MTROPOLIS_DEBUG_ENABLE
+	const char *debugGetTypeName() const override { return "Point Motion Modifier"; }
+	SupportStatus debugGetSupportStatus() const override { return kSupportStatusPartial; }
+#endif
+
+private:
+	enum EaseFlags {
+		kEaseOut = 1,
+		kEaseIn = 2,
+	};
+
+	Common::SharedPtr<Modifier> shallowClone() const override;
+	const char *getDefaultName() const override;
+	void linkInternalReferences(ObjectLinkingScope *scope) override;
+	void visitInternalReferences(IStructuralReferenceVisitor *visitor) override;
+
+	void start(Runtime *runtime);
+	void stop(Runtime *runtime, bool completed);
+	void trigger(Runtime *runtime);
+	void scheduleTick(Runtime *runtime);
+	bool speedStep(double now);
+	bool durationStep(double now);
+	double durationRemainingArea(double t) const;
+	void sendToOwner(Runtime *runtime, EventIDs::EventID eventID);
+
+	MiniscriptInstructionOutcome scriptSetDestination(MiniscriptThread *thread, const DynamicValue &value);
+	MiniscriptInstructionOutcome scriptWriteRefDestinationAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &proxy, const Common::String &attrib);
+	MiniscriptInstructionOutcome scriptSetSpeed(MiniscriptThread *thread, const DynamicValue &value);
+	MiniscriptInstructionOutcome scriptSetDuration(MiniscriptThread *thread, const DynamicValue &value);
+	MiniscriptInstructionOutcome scriptSetUpdateRate(MiniscriptThread *thread, const DynamicValue &value);
+
+	Event _startWhen;
+	Event _stopWhen;
+	Common::Point _destination;
+	uint16 _easeFlags;
+	bool _durationMode;
+	double _speed;		// Pixels per second
+	double _duration;	// Seconds
+	int32 _updateRate;	// Ticks per second
+	bool _fixedStep;	// Speed mode moves the same distance every tick
+	bool _hasDoneSend;
+	MessengerSendSpec _doneSend;
+
+	bool _running;
+	double _curX;
+	double _curY;
+	double _progress;
+	double _startTime;
+	double _lastTime;
+	Common::SharedPtr<ScheduledEvent> _scheduledEvent;
+};
+
 class StandardPlugIn : public MTropolis::PlugIn {
 public:
 	StandardPlugIn();
@@ -491,6 +653,8 @@ private:
 	PlugInModifierFactory<NavigateModifier, Data::Standard::NavigateModifier> _navigateModifierFactory;
 	PlugInModifierFactory<OpenTitleModifier, Data::Standard::OpenTitleModifier> _openTitleModifierFactory;
 	PlugInModifierFactory<OpenAppModifier, Data::Standard::OpenAppModifier> _openAppModifierFactory;
+	PlugInModifierFactory<FileModifier, Data::Standard::FileModifier> _fileModifierFactory;
+	PlugInModifierFactory<PointMotionModifier, Data::Standard::PointMotionModifier> _pointMotionModifierFactory;
 
 	StandardPlugInHacks _hacks;
 };

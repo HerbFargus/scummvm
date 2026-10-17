@@ -63,6 +63,7 @@ namespace Graphics {
 struct WinCursorGroup;
 class MacCursor;
 class MacFontManager;
+class Font;
 class ManagedSurface;
 class Cursor;
 struct PixelFormat;
@@ -103,6 +104,7 @@ struct IMessageConsumer;
 struct IModifierContainer;
 struct IPlugInModifierFactory;
 struct IPlugInModifierFactoryAndDataFactory;
+struct IElementPostRenderHook;
 struct IPostEffect;
 struct ISaveUIProvider;
 struct ISaveWriter;
@@ -120,6 +122,7 @@ class DebugPrimaryTaskList;
 char invariantToLower(char c);
 Common::String toCaseInsensitive(const Common::String &str);
 bool caseInsensitiveEqual(const Common::String &str1, const Common::String &str2);
+bool scriptNameKeyEqual(const Common::String &name, const Common::String &scriptName);
 size_t caseInsensitiveFind(const Common::String &stringToSearch, const Common::String &stringToFind);
 
 enum ColorDepthMode {
@@ -1315,12 +1318,18 @@ public:
 	Common::WeakPtr<RuntimeObject> resolve(const Common::String &name, bool isNameAlreadyInsensitive) const;
 	Common::WeakPtr<RuntimeObject> resolve(uint32 staticGUID, const Common::String &name, bool isNameAlreadyInsensitive) const;
 
+	// Whether script references go by name when their GUID belongs to a differently named object,
+	// set on the root scope for mTropolis 2.0 projects
+	void setPreferNamesOverGUIDs(bool preferNames);
+	bool getPreferNamesOverGUIDs() const;
+
 	void reset();
 
 private:
 	Common::HashMap<uint32, Common::WeakPtr<RuntimeObject> > _guidToObject;
 	Common::HashMap<Common::String, Common::WeakPtr<RuntimeObject> > _nameToObject;
 	ObjectLinkingScope *_parent;
+	bool _preferNamesOverGUIDs;
 };
 
 struct LowLevelSceneStateTransitionAction {
@@ -1581,6 +1590,19 @@ public:
 	void drawFrame();
 
 	void queueProject(const Common::SharedPtr<ProjectDescription> &desc);
+	int32 getUserTimeout() const;
+	bool isSceneOnStack(const Structural *scene) const;
+	void setUserTimeout(int32 timeout);
+	void setStartSceneName(const Common::String &sceneName);
+
+	// Open Title: requests that the engine boots another title file
+	void requestOpenTitle(const Common::String &path, bool addToReturnList);
+
+	// TrueType stand-in for a Windows font, or null if none is available
+	const Graphics::Font *getWindowsFont(const Common::String &familyName, uint pointSize, bool bold, bool italic);
+	bool takeOpenTitleRequest(Common::String &outPath, bool &outAddToReturnList);
+	void setCanReturnToPreviousTitle(bool canReturn);
+	bool takeReturnToPreviousTitleRequest();
 	void closeProject();
 
 	void addVolume(int volumeID, const char *name, bool isMounted);
@@ -1691,6 +1713,7 @@ public:
 	void checkCollisions(ICollider *optRestrictToCollider);
 
 	void setCursorElement(const Common::WeakPtr<VisualElement> &element);
+	void setCursorElementHotspot(const Common::Point &hotspot);
 	void updateCursorElementPosition();
 
 	void addBoundaryDetector(IBoundaryDetector *boundaryDetector);
@@ -1851,9 +1874,10 @@ private:
 
 	static bool isStructuralMouseInteractive(Structural *structural, MouseInteractivityTestType testType);
 	static bool isModifierMouseInteractive(Modifier *modifier, MouseInteractivityTestType testType);
-	static void recursiveFindMouseCollision(Structural *&bestResult, int32 &bestLayer, int32 &bestStackHeight, bool &bestDirect, Structural *candidate, int32 stackHeight, int32 relativeX, int32 relativeY, MouseInteractivityTestType testType);
+	static void recursiveFindMouseCollision(Structural *&bestResult, int32 &bestLayer, int32 &bestStackHeight, bool &bestDirect, Structural *candidate, int32 stackHeight, int32 relativeX, int32 relativeY, MouseInteractivityTestType testType, const Structural *excluded);
 
 	void queueEventAsLowLevelSceneStateTransitionAction(const Event &evt, Structural *root, bool cascade, bool relay);
+	void queueAncestorColorTablesAsLowLevelSceneStateTransitionAction(const Event &evt, Structural *scene);
 
 	void loadScene(const Common::SharedPtr<Structural> &scene);
 
@@ -1899,6 +1923,14 @@ private:
 
 	Common::Array<VolumeState> _volumes;
 	Common::SharedPtr<ProjectDescription> _queuedProjectDesc;
+	Common::String _openTitleRequest;
+	bool _openTitleAddToReturnList = false;
+	Common::HashMap<Common::String, Common::SharedPtr<Graphics::Font> > _windowsFonts;
+	bool _canReturnToPreviousTitle = false;
+	int32 _userTimeout = 0;	// In 1/60 seconds, 0 for none
+	uint64 _lastUserActivityTime = 0;
+	bool _returnToPreviousTitleRequested = false;
+	Common::String _startSceneName;
 	Common::SharedPtr<Project> _project;
 	Common::ScopedPtr<VThread> _vthread;
 	Common::Array<Common::SharedPtr<MessageDispatch> > _messageQueue;
@@ -2014,6 +2046,7 @@ private:
 	uint32 _collisionCheckTime;
 
 	Common::WeakPtr<VisualElement> _elementTrackedToCursor;
+	Common::Point _cursorElementHotspot;	// Point of the cursor element that follows the mouse
 	//uint32 _elementCursorUpdateTime;
 
 	Common::Array<IPostEffect *> _postEffects;
@@ -2141,6 +2174,7 @@ private:
 	MiniscriptInstructionOutcome setAutoResetCursor(MiniscriptThread *thread, const DynamicValue &value);
 	MiniscriptInstructionOutcome setWinSndBufferSize(MiniscriptThread *thread, const DynamicValue &value);
 	MiniscriptInstructionOutcome setCursor(MiniscriptThread *thread, const DynamicValue &value);
+	MiniscriptInstructionOutcome setCursorHotspot(MiniscriptThread *thread, const DynamicValue &value);
 
 	int32 _opInt;
 	bool _gameMode;
@@ -2211,8 +2245,10 @@ public:
 	bool readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) override;
 	bool readAttributeIndexed(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib, const DynamicValue &index) override;
 	MiniscriptInstructionOutcome writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) override;
+	MiniscriptInstructionOutcome writeRefAttributeIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &writeProxy, const Common::String &attrib, const DynamicValue &index) override;
 
 	const Common::Array<Common::SharedPtr<Structural> > &getChildren() const;
+	bool isSelfOrAncestor(const RuntimeObject *obj) const;
 	void addChild(const Common::SharedPtr<Structural> &child);
 	void removeAllChildren();
 	void removeAllModifiers();
@@ -2224,6 +2260,11 @@ public:
 	Structural *getParent() const;
 	Structural *findNextSibling() const;
 	Structural *findPrevSibling() const;
+
+	// Child lookups by the names in scripts
+	Modifier *findChildModifierForScript(const Common::String &name) const;
+	Structural *findChildForScript(const Common::String &name) const;
+
 	void setParent(Structural *parent);
 
 	// Helper that finds the scene containing the structural object, or itself if it is the scene
@@ -2445,6 +2486,12 @@ struct IPostEffect : public IInterfaceBase {
 	virtual void renderPostEffect(Graphics::ManagedSurface &surface) const = 0;
 };
 
+// Draws into the window right after one element renders, before higher layers
+// (plug-in post-draw funks such as KnowWonder's FillMod)
+struct IElementPostRenderHook : public IInterfaceBase {
+	virtual void renderElementPostEffect(VisualElement *element, Window *window) = 0;
+};
+
 struct IMediaCueModifier : public IInterfaceBase {
 	virtual Modifier *getMediaCueModifier() = 0;
 	virtual Common::WeakPtr<Modifier> getMediaCueTriggerSource() const = 0;
@@ -2474,6 +2521,9 @@ public:
 	explicit Project(Runtime *runtime);
 	~Project();
 
+	bool readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) override;
+	MiniscriptInstructionOutcome scriptSetUserTimeout(MiniscriptThread *thread, const DynamicValue &value);
+
 	VThreadState asyncConsumeCommand(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) override;
 
 	MiniscriptInstructionOutcome writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) override;
@@ -2492,10 +2542,14 @@ public:
 	Common::String getAssetNameByID(uint32 assetID) const;
 	Common::WeakPtr<Asset> getAssetByID(uint32 assetID) const;
 	bool getAssetIDByName(const Common::String &assetName, uint32 &outAssetID) const;
+	bool isAssetStored(const Common::String &assetName) const;	// The asset exists and has data in this project
 	void forceLoadAsset(uint32 assetID, Common::Array<Common::SharedPtr<Asset> > &outHoldAssets);
 
 	size_t getSegmentForStreamIndex(size_t streamIndex) const;
 	void openSegmentStream(int segmentIndex);
+
+	// Opens a file by an authoring-time path such as "<Startup Segment Folder>:Movies:Intro.smk"
+	Common::SeekableReadStream *createReadStreamForProjectPath(const Common::String &path) const;
 	void closeSegmentStream(int segmentIndex);
 	Common::SeekableReadStream *getStreamForSegment(int segmentIndex);
 
@@ -2509,6 +2563,7 @@ public:
 	Common::SharedPtr<PlayMediaSignaller> notifyOnPlayMedia(IPlayMediaSignalReceiver *receiver);
 
 	const char *findAuthorMessageName(uint32 id) const;
+	bool findAuthorMessageID(const Common::String &name, uint32 &outID) const;
 
 	const Common::SharedPtr<CursorGraphicCollection> &getCursorGraphics() const;
 
@@ -2898,6 +2953,10 @@ public:
 	virtual void render(Window *window) = 0;
 	void finalizeRender();
 
+	void addPostRenderHook(IElementPostRenderHook *hook);
+	void removePostRenderHook(IElementPostRenderHook *hook);
+	void renderPostRenderHooks(Window *window);
+
 	void setPalette(const Common::SharedPtr<Palette> &palette);
 	const Common::SharedPtr<Palette> &getPalette() const;
 
@@ -2928,6 +2987,10 @@ protected:
 	MiniscriptInstructionOutcome scriptSetLayer(MiniscriptThread *thread, const DynamicValue &dest);
 
 	MiniscriptInstructionOutcome scriptWriteRefPositionAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &writeProxy, const Common::String &attrib);
+	MiniscriptInstructionOutcome scriptSetGlobalPosition(MiniscriptThread *thread, const DynamicValue &dest);
+	MiniscriptInstructionOutcome scriptSetGlobalPositionX(MiniscriptThread *thread, const DynamicValue &dest);
+	MiniscriptInstructionOutcome scriptSetGlobalPositionY(MiniscriptThread *thread, const DynamicValue &dest);
+	MiniscriptInstructionOutcome scriptWriteRefGlobalPositionAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &writeProxy, const Common::String &attrib);
 	MiniscriptInstructionOutcome scriptWriteRefSizeAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &writeProxy, const Common::String &attrib);
 	MiniscriptInstructionOutcome scriptWriteRefCenterPositionAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &writeProxy, const Common::String &attrib);
 
@@ -2989,6 +3052,9 @@ protected:
 
 	Common::Rect _prevRect;
 	bool _contentsDirty;
+
+	// Not copied: hooks belong to the modifier that added them
+	Common::Array<IElementPostRenderHook *> _postRenderHooks;
 };
 
 class NonVisualElement : public Element {
@@ -3047,6 +3113,10 @@ public:
 	virtual bool isBehavior() const;
 	virtual bool isCompoundVariable() const;
 	virtual bool isKeyboardMessenger() const;
+	virtual bool isColorTable() const;
+
+	// Runs a script modifier with a value as its incoming data, for list forAllDo
+	virtual bool runWithIncomingData(Runtime *runtime, const DynamicValue &value);
 	virtual Common::SharedPtr<ModifierSaveLoad> getSaveLoad(Runtime *runtime);
 
 	bool isModifier() const override;
@@ -3054,6 +3124,9 @@ public:
 	// This should only return a propagation container if messages should actually be propagated (i.e. NOT switched-off behaviors!)
 	virtual IModifierContainer *getMessagePropagationContainer();
 	virtual IModifierContainer *getChildContainer();
+	Modifier *findChildModifierByName(const Common::String &name);
+	bool readAttributeIndexed(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib, const DynamicValue &index) override;
+	MiniscriptInstructionOutcome writeRefAttributeIndexed(MiniscriptThread *thread, DynamicValueWriteProxy &writeProxy, const Common::String &attrib, const DynamicValue &index) override;
 
 	const Common::WeakPtr<RuntimeObject> &getParent() const;
 	void setParent(const Common::WeakPtr<RuntimeObject> &parent);
@@ -3138,6 +3211,7 @@ public:
 	virtual void varGetValue(DynamicValue &dest) const = 0;
 
 	bool readAttribute(MiniscriptThread *thread, DynamicValue &result, const Common::String &attrib) override;
+	MiniscriptInstructionOutcome writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) override;
 
 	void disable(Runtime *runtime) override;
 

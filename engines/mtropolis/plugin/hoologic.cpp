@@ -254,6 +254,16 @@ VThreadState PrintBitmapModifier::consumeMessage(Runtime *runtime, const Common:
 	return kVThreadReturn;
 }
 
+// Printing isn't supported, so print settings such as Magic School Bus Bugs's margin are ignored
+MiniscriptInstructionOutcome PrintBitmapModifier::writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &result, const Common::String &attrib) {
+	if (attrib == "margin") {
+		DynamicValueWriteDiscardHelper::create(result);
+		return kMiniscriptInstructionOutcomeContinue;
+	}
+
+	return Modifier::writeRefAttribute(thread, result, attrib);
+}
+
 void PrintBitmapModifier::disable(Runtime *runtime) {
 }
 

@@ -205,6 +205,7 @@ public:
 	void tryAutoSetName(Runtime *runtime, Project *project) override;
 
 	void render(Window *window) override;
+	bool isMouseCollisionAtPoint(int32 relativeX, int32 relativeY) const override;
 
 	Common::SharedPtr<Structural> shallowClone() const override;
 	void visitInternalReferences(IStructuralReferenceVisitor *visitor) override;
@@ -217,6 +218,7 @@ public:
 
 private:
 	MiniscriptInstructionOutcome scriptSetFlushPriority(MiniscriptThread *thread, const DynamicValue &value);
+	MiniscriptInstructionOutcome scriptSetAsset(MiniscriptThread *thread, const DynamicValue &value);
 
 	bool _cacheBitmap;
 	uint32 _assetID;
@@ -294,6 +296,8 @@ private:
 	MiniscriptInstructionOutcome scriptSetRangeTyped(MiniscriptThread *thread, const IntRange &value);
 	MiniscriptInstructionOutcome scriptSetRangeTyped(MiniscriptThread *thread, const Common::Point &value);
 	MiniscriptInstructionOutcome scriptSetRangeTyped(MiniscriptThread *thread, const Label &value);
+	MiniscriptInstructionOutcome scriptSetRangeByName(MiniscriptThread *thread, const Common::String &name);
+	MiniscriptInstructionOutcome scriptSetAsset(MiniscriptThread *thread, const DynamicValue &value);
 
 	void onPauseStateChanged() override;
 
@@ -318,6 +322,7 @@ private:
 	bool _isStopped;
 
 	Common::SharedPtr<Graphics::ManagedSurface> _renderSurface;
+	Common::SharedPtr<Graphics::ManagedSurface> _paletteSurface;	// _renderSurface mapped to the palette, for 8-bit displays
 	uint32 _renderedFrame;
 
 	Common::SharedPtr<MToonMetadata> _metadata;
@@ -329,6 +334,7 @@ private:
 	int32 _cel;
 
 	bool _hasIssuedRenderWarning;
+	bool _playThroughOnce;	// Play was given a range that doesn't exist, so it plays once without looping
 };
 
 class TextLabelElement : public VisualElement {
@@ -337,6 +343,7 @@ public:
 	~TextLabelElement();
 
 	bool isTextLabel() const override;
+	const Common::String &getText() const { return _text; }
 
 	bool load(ElementLoaderContext &context, const Data::TextLabelElement &data);
 
