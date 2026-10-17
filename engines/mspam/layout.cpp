@@ -70,8 +70,12 @@ Common::String ActionParam::toString() const {
 	if (type == kTypeString)
 		return Common::String::format("\"%s\"", str.c_str());
 	if (type >= kTypeBlob) {
-		if (blob.size() >= 16 && !memcmp(&blob[1], kClassIdTail, 15))
-			return Common::String::format("{class %02X, %d bytes}", blob[0], blob.size() - 16);
+		if (blob.size() >= 16 && !memcmp(&blob[1], kClassIdTail, 15)) {
+			Common::String desc = Common::String::format("{class %02X:", blob[0]);
+			for (uint i = 16; i + 3 < blob.size(); i += 4)
+				desc += Common::String::format(" %d", (int32)READ_LE_UINT32(&blob[i]));
+			return desc + "}";
+		}
 		return Common::String::format("{%d bytes}", blob.size());
 	}
 	if (type == 5)
