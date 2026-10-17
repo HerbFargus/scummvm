@@ -61,6 +61,9 @@ enum ActOp {
 	kActMusicLoop = 0xFFCF    // music, looping
 };
 
+/** Runs one frame's ACT cues (sounds, music, voice); sets stop on the end opcode */
+void runActCues(DreamForgeEngine *vm, const Common::Array<ActScript::Cue> &cues, bool &stop);
+
 class Cutscene {
 public:
 	Cutscene(DreamForgeEngine *vm);
@@ -77,8 +80,6 @@ public:
 	Common::String _shotDir;
 
 private:
-	void runCues(const Common::Array<ActScript::Cue> &cues, bool &stop);
-
 	DreamForgeEngine *_vm;
 };
 

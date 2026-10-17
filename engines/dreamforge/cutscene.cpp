@@ -72,8 +72,8 @@ bool ActScript::load(const Common::String &name) {
 Cutscene::Cutscene(DreamForgeEngine *vm) : _vm(vm), _fast(false) {
 }
 
-void Cutscene::runCues(const Common::Array<ActScript::Cue> &cues, bool &stop) {
-	Sound *sound = _vm->getSound();
+void runActCues(DreamForgeEngine *vm, const Common::Array<ActScript::Cue> &cues, bool &stop) {
+	Sound *sound = vm->getSound();
 	for (auto &c : cues) {
 		debugC(2, kDebugVideo, "  cue %04x %u", c.op, c.arg);
 		if (c.op == kActEnd) {
@@ -127,7 +127,7 @@ bool Cutscene::play(int number) {
 	for (int frame = 0; frame < dfa.getFrameCount() && !stop && !_vm->shouldQuit(); frame++) {
 		// The original runs the frame's cues, decodes it, waits, then shows it (0x528c8)
 		if ((uint)frame < act.frames.size())
-			runCues(act.frames[frame], stop);
+			runActCues(_vm, act.frames[frame], stop);
 		const Graphics::Surface *surf = dfa.decodeNextFrame();
 		if (!surf)
 			break;

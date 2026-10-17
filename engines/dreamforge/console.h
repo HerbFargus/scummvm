@@ -47,11 +47,14 @@ private:
 	bool cmdVoice(int argc, const char **argv);
 	bool cmdMusic(int argc, const char **argv);
 	bool cmdSay(int argc, const char **argv);
+	bool cmdUse(int argc, const char **argv);
+	bool cmdFlag(int argc, const char **argv);
 
 	void postEnter() override;
 
 	DreamForgeEngine *_vm;
 	int _cine;  // cutscene to play once the console closes
+	int _use;  // hotspot to click once the console closes
 	int _say[4];  // lip sync demo to run once the console closes (voice, actor, slot, view)
 };
 

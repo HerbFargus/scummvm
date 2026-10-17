@@ -31,6 +31,7 @@ enum DreamForgeDebugChannels {
 	kDebugScene,
 	kDebugVideo,
 	kDebugSound,
+	kDebugScript,
 };
 
 extern const PlainGameDescriptor dreamForgeGames[];

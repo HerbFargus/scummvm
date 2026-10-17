@@ -37,6 +37,21 @@ static Common::String readName(const byte *rec, uint size) {
 	return s;
 }
 
+void Record::parse(uint idOffset) {
+	const byte *d = data.data();
+	int32 top = (int32)READ_LE_UINT32(d), left = (int32)READ_LE_UINT32(d + 4);
+	int32 height = (int32)READ_LE_UINT32(d + 8), width = (int32)READ_LE_UINT32(d + 12);
+	rect = Common::Rect(left, top, left + width, top + height);
+	for (uint i = 0; i < 2; i++) {
+		walkX[i] = (int32)READ_LE_UINT32(d + 0x14 + i * 12);
+		walkY[i] = (int32)READ_LE_UINT32(d + 0x18 + i * 12);
+		walkPose[i] = (int32)READ_LE_UINT32(d + 0x1C + i * 12);
+	}
+	who = (int32)READ_LE_UINT32(d + kWho);
+	id = (int32)READ_LE_UINT32(d + idOffset);
+	name = readName(d, data.size());
+}
+
 static void readBytes(Common::SeekableReadStream &in, Common::Array<byte> &out, uint size) {
 	out.resize(size);
 	if (size)
@@ -104,7 +119,8 @@ bool Scene::load(int act, int area, int room) {
 	_hotspots.resize(nHotspots);
 	for (uint i = 0; i < nHotspots; i++) {
 		readBytes(in, _hotspots[i].data, kHotspotSize);
-		_hotspots[i].name = readName(_hotspots[i].data.data(), kHotspotSize);
+		_hotspots[i].parse(0x4AC);
+		_hotspots[i].mask = READ_LE_UINT16(_hotspots[i].data.data() + 0x494);
 	}
 
 	readImageBlock(in, _background, _width, _height);
@@ -113,6 +129,7 @@ bool Scene::load(int act, int area, int room) {
 	for (uint i = 0; i < nObjects; i++) {
 		SceneObject &obj = _objects[i];
 		readBytes(in, obj.data, kObjectSize);
+		obj.parse(0x298);
 		obj.unk = in.readUint32LE();
 		char anim[9] = {};
 		in.read(anim, 8);
@@ -130,13 +147,10 @@ bool Scene::load(int act, int area, int room) {
 	for (uint i = 0; i < nLayers; i++) {
 		Layer *layer = new Layer();
 		readBytes(in, layer->data, kLayerSize);
-		const byte *rec = layer->data.data();
-		layer->y = (int32)READ_LE_UINT32(rec);
-		layer->x = (int32)READ_LE_UINT32(rec + 4);
-		uint16 h = READ_LE_UINT32(rec + 8);
-		uint16 w = READ_LE_UINT32(rec + 12);
-		layer->name = readName(rec, kLayerSize);
-		readImageBlock(in, layer->surface, w, h);
+		layer->parse(0x284);
+		layer->x = layer->rect.left;
+		layer->y = layer->rect.top;
+		readImageBlock(in, layer->surface, layer->rect.width(), layer->rect.height());
 		_layers.push_back(layer);
 	}
 

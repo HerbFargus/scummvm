@@ -36,22 +36,41 @@ enum {
 	kRecordNameOffset = 0x258
 };
 
-struct Hotspot {
+enum {
+	kRecordScriptOffset = 0x34,
+	kRecordScriptSize = 0x224,
+	kWho = 0x2C
+};
+
+/**
+ * The header hotspots, objects and layers share: a rect stored as top, left,
+ * height, width; where each puppy walks to before acting (x, y, pose; -1 and
+ * pose 8 mean none); which puppy acts; the action script; a debug name.
+ */
+struct Record {
 	Common::Array<byte> data;
+	Common::Rect rect;
+	int32 walkX[2], walkY[2], walkPose[2];
+	int32 who;  // 0 nobody, 1 or 2 that puppy, 3 both, 4 the current one
+	int32 id;   // global id, the index of its saved state
 	Common::String name;
+
+	void parse(uint idOffset);
+	const byte *script() const { return data.data() + kRecordScriptOffset; }
+};
+
+struct Hotspot : Record {
+	uint16 mask;  // 0x494; the click and hover tests ask for a bit of it
 };
 
 /** An animated object: a record plus the CINE animation it plays */
-struct SceneObject {
-	Common::Array<byte> data;
+struct SceneObject : Record {
 	uint32 unk;
 	Common::String anim;
 };
 
 /** A state overlay or occlusion piece; drawn over the background when its flags say so */
-struct Layer {
-	Common::Array<byte> data;
-	Common::String name;
+struct Layer : Record {
 	int32 x, y;
 	Graphics::Surface surface;
 };

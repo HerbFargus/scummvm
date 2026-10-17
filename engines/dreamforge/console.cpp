@@ -28,7 +28,7 @@
 
 namespace DreamForge {
 
-Console::Console(DreamForgeEngine *vm) : GUI::Debugger(), _vm(vm), _cine(-1) {
+Console::Console(DreamForgeEngine *vm) : GUI::Debugger(), _vm(vm), _cine(-1), _use(-1) {
 	_say[0] = -1;
 	registerCmd("scene", WRAP_METHOD(Console, cmdScene));
 	registerCmd("scenes", WRAP_METHOD(Console, cmdScenes));
@@ -43,6 +43,8 @@ Console::Console(DreamForgeEngine *vm) : GUI::Debugger(), _vm(vm), _cine(-1) {
 	registerCmd("voice", WRAP_METHOD(Console, cmdVoice));
 	registerCmd("music", WRAP_METHOD(Console, cmdMusic));
 	registerCmd("say", WRAP_METHOD(Console, cmdSay));
+	registerCmd("use", WRAP_METHOD(Console, cmdUse));
+	registerCmd("flag", WRAP_METHOD(Console, cmdFlag));
 }
 
 bool Console::cmdScene(int argc, const char **argv) {
@@ -194,10 +196,37 @@ bool Console::cmdSay(int argc, const char **argv) {
 	return cmdExit(0, nullptr);
 }
 
+bool Console::cmdUse(int argc, const char **argv) {
+	if (argc < 2) {
+		debugPrintf("Usage: %s <hotspot id>  (see hotspots)\n", argv[0]);
+		return true;
+	}
+	_use = atoi(argv[1]);
+	return cmdExit(0, nullptr);
+}
+
+bool Console::cmdFlag(int argc, const char **argv) {
+	if (argc < 2) {
+		debugPrintf("Usage: %s <n> [0|1]\n", argv[0]);
+		return true;
+	}
+	uint n = atoi(argv[1]);
+	if (argc > 2)
+		_vm->setFlag(n, atoi(argv[2]) != 0);
+	debugPrintf("flag %u is %s\n", n, _vm->isFlagSet(n) ? "set" : "clear");
+	return true;
+}
+
 void Console::postEnter() {
 	if (_cine >= 0) {
 		_vm->playCutscene(_cine);
 		_cine = -1;
+	}
+	if (_use >= 0) {
+		const Record *h = _vm->findHotspot(_use);
+		if (h)
+			_vm->useHotspot(*h);
+		_use = -1;
 	}
 	if (_say[0] >= 0) {
 		_vm->sayDemo(_say[0], _say[1], _say[2], _say[3]);

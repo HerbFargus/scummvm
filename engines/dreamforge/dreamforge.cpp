@@ -37,16 +37,25 @@
 #include "dreamforge/console.h"
 #include "dreamforge/cutscene.h"
 #include "dreamforge/detection.h"
+#include "dreamforge/dfa.h"
 #include "dreamforge/dreamforge.h"
 #include "dreamforge/lipsync.h"
 #include "dreamforge/resource.h"
 #include "dreamforge/scene.h"
+#include "dreamforge/script.h"
 #include "dreamforge/sound.h"
 
 namespace DreamForge {
 
 DreamForgeEngine::DreamForgeEngine(OSystem *syst, const ADGameDescription *gameDesc) : Engine(syst),
-	_gameDescription(gameDesc), _sound(nullptr), _scene(nullptr), _cursors(nullptr), _scrollX(0), _showLayers(false), _dirty(true) {
+	_gameDescription(gameDesc), _sound(nullptr), _scene(nullptr), _cursors(nullptr), _scrollX(0), _showLayers(false), _dirty(true), _rnd("dreamforge") {
+	memset(_flags, 0, sizeof(_flags));
+	memset(_hotspotState, 0, sizeof(_hotspotState));
+	memset(_layerState, 0, sizeof(_layerState));
+	memset(_objectState, 0, sizeof(_objectState));
+	_heldItem = 0;
+	_currentActor = 1;
+	_counter3D = 0;
 	for (uint i = 0; i < kArchiveCount; i++)
 		_archives[i] = nullptr;
 }
@@ -152,7 +161,7 @@ void DreamForgeEngine::setScroll(int x) {
 	_dirty = true;
 }
 
-void DreamForgeEngine::redraw() {
+void DreamForgeEngine::redraw(bool present) {
 	_screen.fillRect(Common::Rect(kScreenWidth, kScreenHeight), 0);
 	if (_scene && _scene->_background.getPixels()) {
 		Common::Rect src(_scrollX, 0, MIN<int>(_scrollX + kScreenWidth, _scene->_width),
@@ -175,8 +184,10 @@ void DreamForgeEngine::redraw() {
 			}
 		}
 	}
-	g_system->copyRectToScreen(_screen.getPixels(), _screen.pitch, 0, 0, kScreenWidth, kScreenHeight);
-	g_system->updateScreen();
+	if (present) {
+		g_system->copyRectToScreen(_screen.getPixels(), _screen.pitch, 0, 0, kScreenWidth, kScreenHeight);
+		g_system->updateScreen();
+	}
 	_dirty = false;
 }
 
@@ -280,6 +291,103 @@ bool DreamForgeEngine::sayDemo(int voiceId, int actor, int slot, int view, const
 	return true;
 }
 
+bool DreamForgeEngine::isFlagSet(uint flag) const {
+	return flag < kFlagCount && (_flags[flag >> 3] & (1 << (flag & 7)));
+}
+
+void DreamForgeEngine::setFlag(uint flag, bool on) {
+	if (flag >= kFlagCount)
+		return;
+	debugC(1, kDebugScript, "flag %u %s", flag, on ? "set" : "cleared");
+	if (on)
+		_flags[flag >> 3] |= 1 << (flag & 7);
+	else
+		_flags[flag >> 3] &= ~(1 << (flag & 7));
+}
+
+const Record *DreamForgeEngine::hotspotAt(const Common::Point &p) const {
+	if (!_scene)
+		return nullptr;
+	for (auto &h : _scene->_hotspots)
+		if (h.rect.contains(p))
+			return &h;
+	return nullptr;
+}
+
+const Record *DreamForgeEngine::findHotspot(int id) const {
+	if (_scene)
+		for (auto &h : _scene->_hotspots)
+			if (h.id == id)
+				return &h;
+	return nullptr;
+}
+
+void DreamForgeEngine::useHotspot(const Record &hotspot) {
+	int visits = 0;
+	if (hotspot.id >= 0 && hotspot.id < kStateCount)
+		visits = ++_hotspotState[hotspot.id];
+	debugC(1, kDebugScript, "hotspot %d \"%s\", visit %d", hotspot.id, hotspot.name.c_str(), visits);
+	ScriptRunner runner(this);
+	runner.run(hotspot.script(), visits, Common::Point((hotspot.rect.left + hotspot.rect.right) / 2,
+		(hotspot.rect.top + hotspot.rect.bottom) / 2));
+	_dirty = true;
+}
+
+bool DreamForgeEngine::playSceneAnim(int cine, int top, int left, bool flip, int delay, int depth, bool noWait) {
+	Common::String base = Common::String::format("CINE/%04d", cine);
+	DFADecoder dfa;
+	if (!dfa.load(SearchMan.createReadStreamForMember(Common::Path(base + ".DFA", '/')))) {
+		warning("playSceneAnim: no %s.DFA", base.c_str());
+		return false;
+	}
+	ActScript act;
+	act.load(base + ".ACT");
+	debugC(1, kDebugScript, "scene anim %d at (%d, %d), %d frames%s%s", cine, left, top, dfa.getFrameCount(),
+		flip ? ", flipped" : "", noWait ? ", no wait" : "");
+	// TODO: depth against the puppies, flipping, the start delay, and running on
+	// while the script carries on (noWait)
+	(void)depth;
+	(void)delay;
+	uint32 start = g_system->getMillis();
+	bool stop = false;
+	for (int frame = 0; frame < dfa.getFrameCount() && !stop && !shouldQuit(); frame++) {
+		if ((uint)frame < act.frames.size())
+			runActCues(this, act.frames[frame], stop);
+		const Graphics::Surface *surf = dfa.decodeNextFrame();
+		if (!surf)
+			break;
+		redraw(false);
+		Common::Rect dst(left - _scrollX, top, left - _scrollX + surf->w, top + surf->h);
+		Common::Rect clipped = dst.findIntersectingRect(Common::Rect(kScreenWidth, kScreenHeight));
+		if (!clipped.isEmpty())
+			_screen.copyRectToSurface(*surf, clipped.left, clipped.top, Common::Rect(clipped.left - dst.left,
+				clipped.top - dst.top, clipped.right - dst.left, clipped.bottom - dst.top));
+		g_system->copyRectToScreen(_screen.getPixels(), _screen.pitch, 0, 0, kScreenWidth, kScreenHeight);
+		g_system->updateScreen();
+		uint32 due = start + (frame + 1) * dfa.getFrameTime();
+		while (g_system->getMillis() < due && !shouldQuit()) {
+			Common::Event event;
+			while (g_system->getEventManager()->pollEvent(event)) {
+			}
+			g_system->delayMillis(5);
+		}
+	}
+	_dirty = true;
+	return true;
+}
+
+void DreamForgeEngine::waitForVoice() {
+	while (_sound->isVoicePlaying() && !shouldQuit()) {
+		Common::Event event;
+		while (g_system->getEventManager()->pollEvent(event)) {
+		}
+		if (_dirty)
+			redraw();
+		g_system->updateScreen();
+		g_system->delayMillis(10);
+	}
+}
+
 void DreamForgeEngine::handleEvents() {
 	Common::Event event;
 	while (g_system->getEventManager()->pollEvent(event)) {
@@ -287,6 +395,12 @@ void DreamForgeEngine::handleEvents() {
 		case Common::EVENT_MOUSEMOVE:
 			_mousePos = event.mouse;
 			break;
+		case Common::EVENT_LBUTTONUP: {
+			const Record *h = hotspotAt(Common::Point(event.mouse.x + _scrollX, event.mouse.y));
+			if (h)
+				useHotspot(*h);
+			break;
+		}
 		case Common::EVENT_KEYDOWN:
 			if (event.kbd.keycode == Common::KEYCODE_LEFT)
 				setScroll(_scrollX - 32);
@@ -359,6 +473,14 @@ Common::Error DreamForgeEngine::run() {
 	if (ConfMan.hasKey("dreamforge_scroll"))
 		setScroll(ConfMan.getInt("dreamforge_scroll"));
 	_showLayers = ConfMan.getBool("dreamforge_layers");
+
+	// Test hook: dreamforge_use=<hotspot id,...> clicks hotspots by id, in order
+	Common::StringTokenizer uses(ConfMan.get("dreamforge_use"), ",");
+	while (!uses.empty() && !shouldQuit()) {
+		const Record *h = findHotspot(atoi(uses.nextToken().c_str()));
+		if (h)
+			useHotspot(*h);
+	}
 
 	Common::String shot = ConfMan.get("dreamforge_shot");
 	if (!shot.empty()) {

@@ -28,6 +28,7 @@ const DebugChannelDef DreamForgeMetaEngineDetection::debugFlagList[] = {
 	{ DreamForge::kDebugScene, "Scene", "Scene loading and drawing" },
 	{ DreamForge::kDebugVideo, "Video", "DFA animations and cutscenes" },
 	{ DreamForge::kDebugSound, "Sound", "Sound effects, voices and music" },
+	{ DreamForge::kDebugScript, "Script", "Action scripts" },
 	DEBUG_CHANNEL_END
 };
 

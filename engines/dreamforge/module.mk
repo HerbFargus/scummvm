@@ -9,6 +9,7 @@ MODULE_OBJS = \
 	metaengine.o \
 	resource.o \
 	scene.o \
+	script.o \
 	sound.o
 
 # This module can be built as a plugin
