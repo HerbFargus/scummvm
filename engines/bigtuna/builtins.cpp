@@ -53,7 +53,7 @@ enum Builtin {
 	kBParam = 0x15,
 	kBParamCount = 0x16,
 	kBSoundBusy = 0x17,
-	kBCursorReset = 0x18,
+	kBQuit = 0x18,
 	kBSoundLevel = 0x19,
 	kBTimer = 0x1A,
 	kBStartTimer = 0x1B,
@@ -225,8 +225,11 @@ Value Script::callBuiltin(uint32 id) {
 		return (int32)(_base >= 4 ? _stack[_base - 4].toInt() : 0);
 	case kBSoundBusy:
 		return (int32)_vm->_sound->isBusy(CLIP<int32>(popInt(), 1, 2));
-	case kBCursorReset:
+	case kBQuit:
+		// FUN_00402230: arrow cursor, then the C runtime's exit(0)
 		_vm->setCursor(-1);
+		_vm->quitGame();
+		stop();
 		return Value();
 	case kBSoundLevel:
 		return (int32)((_vm->_sound->getVolume(1) | 0x10) >> 4);
