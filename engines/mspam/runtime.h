@@ -102,6 +102,46 @@ struct LayoutState {
 };
 
 /**
+ * A moon of the title's flight path (MSBSOLAR.DLL CMOON): a sprite that a time
+ * event moves around an ellipse about the gravity point, carrying its shadow
+ * sprites and running expressions as it passes given angles.
+ */
+struct FlightMoon {
+	struct RadiansExpr {
+		double radians;
+		Common::String expr;
+	};
+	struct Shadow {
+		Common::String name;
+		int32 dx, dy, dz;
+	};
+
+	Common::String name;
+	int32 centerX, centerY; ///< the gravity point when the moon was made
+	double radiusX, radiusY; ///< 'o'; a zero Y radius means a circle
+	double angle;           ///< 'i', radians
+	double step;            ///< radians per tick: 2 pi / 'p'
+	bool forward;           ///< 'p' isn't negative
+	double skipFrom, skipTo; ///< 's' and 'r': angles that are jumped over
+	uint32 delay;           ///< 'd': ms per tick
+	Common::Array<RadiansExpr> radiansExprs;
+	Common::Array<Shadow> shadows;
+	bool ticking;
+	uint32 lastTick;
+};
+
+/** The title's flight path object (MSBSOLAR.DLL, FP: Open to FP: Close) */
+struct Flight {
+	Common::String layout;  ///< where it was opened: its moons are that layout's sprites
+	int32 gravityX, gravityY;
+	Common::Array<FlightMoon> moons; ///< newest first, as the original's list
+	int current;            ///< the moon that Set Moon picked, -1 for none
+	bool started;           ///< toggled by FP: Start/Stop
+
+	Flight() : gravityX(0), gravityY(0), current(-1), started(false) {}
+};
+
+/**
  * The action runtime: the current layout and its elements, the action list
  * queue (lists run from the queue, like the original's PROCESSACTIONLIST from
  * the idle loop), sprite path playback, the title's actions and expressions,
@@ -205,6 +245,16 @@ private:
 	void skitEnd();
 	int findElementState(const Common::String &name) const;
 
+	// Flight paths (MSBSOLAR.DLL, SE-Mercury's orbits)
+	void flightAction(const Action &a);
+	void flightParam(const Action &a);
+	void setMoon(const Common::String &name);
+	void startStopFlight();
+	void updateFlight();
+	void moonTick(FlightMoon &moon);
+	void getSpritePosition(int el, int32 &x, int32 &y, int32 &z) const;
+	void setSpritePosition(int el, int32 x, int32 y, int32 z);
+
 	// Palette
 	void changePalette(uint32 id, const ActionParam *transition, bool block);
 	void updatePalette(uint32 now);
@@ -240,6 +290,8 @@ private:
 	Common::Array<SkitEntry> _skitEntries;
 	int _skitPos;              ///< the next entry of the playing skit, -1 when none plays
 	uint _skitExprs;
+
+	Flight *_flight;           ///< FP: Open to FP: Close
 
 	uint32 _lastDownTime;
 	Common::Point _lastDownPos;

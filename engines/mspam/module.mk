@@ -2,6 +2,7 @@ MODULE := engines/mspam
 
 MODULE_OBJS = \
 	compound.o \
+	flight.o \
 	layout.o \
 	media.o \
 	metaengine.o \

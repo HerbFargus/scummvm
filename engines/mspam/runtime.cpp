@@ -80,7 +80,7 @@ int LayoutState::find(const Common::String &name) const {
 Runtime::Runtime(MediaManager *media, const CompoundFile &tdf, const Title *title, Audio::Mixer *mixer) :
 	_media(media), _tdf(tdf), _title(title), _layout(nullptr), _nextSerial(1), _reenter(false), _quit(false),
 	_now(0), _lastUpdate(0), _blockedUntil(0), _leaving(false), _fadeFrom(kFadeFull), _fadeTo(kFadeFull),
-	_fadeLevel(kFadeFull), _fadeStart(0), _fadeDuration(0), _skitElement(-1), _skitPos(-1), _skitExprs(0),
+	_fadeLevel(kFadeFull), _fadeStart(0), _fadeDuration(0), _skitElement(-1), _skitPos(-1), _skitExprs(0), _flight(nullptr),
 	_lastDownTime(0), _random("mspam") {
 	_skipVideos = ConfMan.hasKey("mspam_skip_videos") && ConfMan.getBool("mspam_skip_videos");
 	_sound = new SoundManager(mixer, media);
@@ -91,6 +91,7 @@ Runtime::Runtime(MediaManager *media, const CompoundFile &tdf, const Title *titl
 }
 
 Runtime::~Runtime() {
+	delete _flight;
 	delete _sound;
 	delete _eval;
 	for (auto &it : _cache)
@@ -475,7 +476,7 @@ void Runtime::titleAction(const Action &a) {
 		break;
 	case 0x03: case 0x04: case 0x05: case 0x06: case 0x07: case 0x08: case 0x09: case 0x0a:
 	case 0x10: case 0x11: case 0x14: case 0x15:
-		unimplemented(a, "bus flight");
+		flightAction(a);
 		break;
 	case 0x0b:
 		_eval->execute(_eval->test(paramString(a, 0)) ? paramString(a, 1) : paramString(a, 2));
@@ -1445,8 +1446,10 @@ void Runtime::update(uint32 now) {
 		}
 		processQueue();
 	}
-	if (_layout)
+	if (_layout) {
+		updateFlight();
 		updateVideos();
+	}
 	if (!_pendingLayout.empty() && _queue.empty())
 		switchLayout();
 	_sound->update();
