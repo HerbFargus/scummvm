@@ -1,0 +1,96 @@
+/* ScummVM - Graphic Adventure Engine
+ *
+ * ScummVM is the legal property of its developers, whose names
+ * are too numerous to list here. Please refer to the COPYRIGHT
+ * file distributed with this source distribution.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ */
+
+#include "common/debug.h"
+#include "common/file.h"
+#include "common/system.h"
+#include "engines/util.h"
+#include "graphics/blit.h"
+#include "image/png.h"
+
+#include "yaga/display.h"
+
+namespace Yaga {
+
+Display *g_display = nullptr;
+
+void Display::open(int width, int height) {
+	if (_open && _surface.w == width && _surface.h == height)
+		return;
+	// Any true-colour mode will do; the game itself draws 16-bit
+	Common::List<Graphics::PixelFormat> formats = g_system->getSupportedFormats();
+	for (Common::List<Graphics::PixelFormat>::iterator f = formats.begin(); f != formats.end(); ) {
+		if (f->bytesPerPixel < 2)
+			f = formats.erase(f);
+		else
+			++f;
+	}
+	initGraphics(width, height, formats);
+	// Drawn in the format the alpha blitter works in, converted when shown
+	_surface.create(width, height, Graphics::BlendBlit::getSupportedPixelFormat());
+	_converted.create(width, height, g_system->getScreenFormat());
+	_open = true;
+	debug(1, "yaga: display %dx%d, %d bits", width, height, _converted.format.bytesPerPixel * 8);
+}
+
+void Display::clear() {
+	if (_open)
+		_surface.clear();
+}
+
+void Display::present() {
+	if (!_open)
+		return;
+	Graphics::crossBlit((byte *)_converted.getPixels(), (const byte *)_surface.getPixels(), _converted.pitch, _surface.pitch,
+		_surface.w, _surface.h, _converted.format, _surface.format);
+	g_system->copyRectToScreen(_converted.getPixels(), _converted.pitch, 0, 0, _converted.w, _converted.h);
+	g_system->updateScreen();
+}
+
+void blendClipped(Graphics::ManagedSurface &dst, const Graphics::Surface &src, Common::Rect srcRect, Common::Rect dstRect, uint alpha) {
+	srcRect.clip(Common::Rect(0, 0, src.w, src.h));
+	if (srcRect.isEmpty() || dstRect.isEmpty())
+		return;
+	Common::Rect clipped = dstRect;
+	clipped.clip(Common::Rect(0, 0, dst.w, dst.h));
+	if (clipped.isEmpty())
+		return;
+	// The part of the source that lands inside, in proportion when scaled
+	int sw = srcRect.width(), sh = srcRect.height(), dw = dstRect.width(), dh = dstRect.height();
+	Common::Rect s(srcRect.left + (clipped.left - dstRect.left) * sw / dw,
+		srcRect.top + (clipped.top - dstRect.top) * sh / dh,
+		srcRect.left + (clipped.right - dstRect.left) * sw / dw,
+		srcRect.top + (clipped.bottom - dstRect.top) * sh / dh);
+	if (s.isEmpty())
+		return;
+	dst.blendBlitFrom(src, s, clipped, Graphics::FLIP_NONE, MS_ARGB(alpha, 255, 255, 255));
+}
+
+bool Display::saveScreenshot(const Common::Path &path) {
+	if (!_open)
+		return false;
+	Common::DumpFile out;
+	if (!out.open(path, true))
+		return false;
+	return Image::writePNG(out, _converted);
+}
+
+} // End of namespace Yaga
