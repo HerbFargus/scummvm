@@ -485,83 +485,152 @@ const char *getEventName(uint16 event, uint16 kind) {
 	return "mystery trigger";
 }
 
-// Action names from the ENUMACTIONDEFS tables of MSPAM.DLL and MSBSOLAR.DLL
-static const char *const kTitleActions[] = {
-	"Show View", "Hide View", "Quit Title", "FP: Open", "FP: Close", "FP: Set Gravity",
-	"FP: Set Moon", "FP: Start/Stop", "FP: General params", "FP: Set Bus", "FP: Bus Thruster",
-	"Eval: If Then Else", "Eval: Expr", "Eval: Start Sprite Expr", "Set Path Seg Mid", "Set View",
-	"FP: Set Bonk Sprite", "FP: Set Shadow Sprite", "Eval: Rand number", "Eval: Free State Vars",
-	"FP: Set Radians Sprite", "FP: Bus Settings", "Exec: Start Game", "Debug: Comment",
-	"Debug: Level", "Eval: Case statement", "Eval: Enum Sprites", "Eval: Add Expr Action",
-	"Idle Mode", "Start idle/transition", "Stop idle/transition", "Title GotoLayout",
-	"Start transition layout", "End transition layout", "AVI Init", "AVI Skit Start",
-	"AVI Add Bit", "AVI Add Stop", "AVI Close"
+
+// Action definitions from the ENUMACTIONDEFS/ENUMAPRMDEFS tables of MSPAM.DLL
+// (data segment 0xd16-0x1140) and MSBSOLAR.DLL (data segment 0x400-0x5d4)
+struct ActionDef {
+	uint16 id;
+	const char *name;
+	const char *params[7];
 };
 
-static const char *const kSoundActions[] = {
-	"Play Sound", "Add Sound", "Play Group", "Stop Group", nullptr, "Pause Group",
-	"Resume Group", "Kill Group", "Kill All"
+static const ActionDef kTitleActions[] = {
+	{ 0x00, "Show View", { "View Name" } },
+	{ 0x01, "Hide View", { "View Name" } },
+	{ 0x02, "Quit Title", {} },
+	{ 0x03, "FP: Open", { "View Name", "Layout Name" } },
+	{ 0x04, "FP: Close", {} },
+	{ 0x05, "FP: Set Gravity", { "Gravity X coordinate", "Gravity Y coordinate", "Gravitational constant", "Gravity frequency" } },
+	{ 0x06, "FP: Set Moon", { "Name of Moon sprite" } },
+	{ 0x07, "FP: Start/Stop", {} },
+	{ 0x08, "FP: General params", { "OrDrPtClsInSpRsTh", "1st param", "2nd param" } },
+	{ 0x09, "FP: Set Bus", { "Name of Bus sprite" } },
+	{ 0x0A, "FP: Bus Thruster", { "Dir: 0-up 1-right" } },
+	{ 0x0B, "Eval: If Then Else", { "If", "Then", "Else" } },
+	{ 0x0C, "Eval: Expr", { "Expression" } },
+	{ 0x0D, "Eval: Start Sprite Expr", { "Expression" } },
+	{ 0x0E, "Set Path Seg Mid", { "Sprite name", "PathSeg", "Mid" } },
+	{ 0x0F, "Set View", { "View Name" } },
+	{ 0x10, "FP: Set Bonk Sprite", { "Sprite name", "Mid" } },
+	{ 0x11, "FP: Set Shadow Sprite", { "Shadow Sprite name", "X offset", "Y offset", "Z offset" } },
+	{ 0x12, "Eval: Rand number", { "Target variable", "0-based max", "uniqueness variable" } },
+	{ 0x13, "Eval: Free State Vars", { "State vars prefix" } },
+	{ 0x14, "FP: Set Radians Sprite", { "Radians*10000", "Expr to exec" } },
+	{ 0x15, "FP: Bus Settings", { "Moves/Bonk", "WarpDrive", "Bus duration" } },
+	{ 0x16, "Exec: Start Game", { "Planet" } },
+	{ 0x17, "Debug: Comment", { "Comment", "Eval: Expr1", "Eval: Expr2" } },
+	{ 0x18, "Debug: Level", { "1-trace 2-show comments 4-SingleStep" } },
+	{ 0x19, "Eval: Case statement", { "Switch value", "case expr", "case expr", "case expr", "case expr", "case expr", "case expr" } },
+	{ 0x1A, "Eval: Enum Sprites", { "uservar", "Sprite prefix", "Expr to eval" } },
+	{ 0x1B, "Eval: Add Expr Action", { "Sprite name", "Event ID", "Expr to add" } },
+	{ 0x1C, "Idle Mode", { "Idle Mode (0-normal,1-suspend,2-idlemode)" } },
+	{ 0x1D, "Start idle/transition", { "Layout to go to" } },
+	{ 0x1E, "Stop idle/transition", {} },
+	{ 0x1F, "Title GotoLayout", { "Layout to go to" } },
+	{ 0x20, "Start transition layout", {} },
+	{ 0x21, "End transition layout", { "Layout to go to" } },
+	{ 0x22, "AVI Init", {} },
+	{ 0x23, "AVI Skit Start", { "Start AVI skit (0-based)" } },
+	{ 0x24, "AVI Add Bit", { "Loc-X", "Loc-Y", "Size-X", "Size-Y", "Clip-Start", "Clip-Stop", "Optional Expr" } },
+	{ 0x25, "AVI Add Stop", { "Optional Expr" } },
+	{ 0x26, "AVI Close", {} }
 };
 
-static const char *const kViewActions[] = {
-	"Goto Layout", "Goto Layout Relative", "Set Layout Priority", "Reset Layout", "Reset Layout Relative"
+// The SND parameter names aren't in the tables; these follow the enum items
+// ("Mix Audio", "Don't Mix Audio", "Auto Kill", "Auto Loop") and the usage
+static const ActionDef kSoundActions[] = {
+	{ 0x200, "Play Sound", { "Sound", "Group", "Mix", "Kill/Loop" } },
+	{ 0x201, "Add Sound", { "Sound", "Group", "Mix" } },
+	{ 0x202, "Play Group", { "Group", "Mix" } },
+	{ 0x203, "Stop Group", { "Group" } },
+	{ 0x205, "Pause Group", { "Group" } },
+	{ 0x206, "Resume Group", { "Group" } },
+	{ 0x207, "Kill Group", { "Group" } },
+	{ 0x208, "Kill All", {} }
 };
 
-static const char *const kLayoutActions[] = {
-	"Change Palette", "Set Palette Transition", "Set Bitwise Transition"
+static const ActionDef kViewActions[] = {
+	{ 0, "Goto Layout", { "Layout Name" } },
+	{ 1, "Goto Layout Relative", { "Layout Offset (+/-)" } },
+	{ 2, "Set Layout Priority", { "Layout Name (* for ALL)", "Priority" } },
+	{ 3, "Reset Layout", { "Layout Name" } },
+	{ 4, "Reset Layout Relative", { "Layout Offset (+/-)" } }
 };
 
-static const char *spriteAction(uint16 id) {
-	static const char *const names[] = {
-		"Show", "Hide", "Start", "Stop", "Set Speed", "Set Iterations", "Set Path Segment"
-	};
-	return id >= 7 && id <= 13 ? names[id - 7] : nullptr;
+static const ActionDef kLayoutActions[] = {
+	{ 0, "Change Palette", { "Palette", "Transition Description" } },
+	{ 1, "Set Palette Transition", { "Palette", "Transition Description" } },
+	{ 2, "Set Bitwise Transition", { "Transition Description" } }
+};
+
+static const ActionDef kSpriteActions[] = {
+	{ 7, "Show", {} },
+	{ 8, "Hide", {} },
+	{ 9, "Start", {} },
+	{ 10, "Stop", {} },
+	{ 11, "Set Speed", { "Speed Percentage" } },
+	{ 12, "Set Iterations", { "Number of Iterations" } },
+	{ 13, "Set Path Segment", { "Path Segment Number" } }
+};
+
+static const ActionDef kVideoActions[] = {
+	{ 7, "Show", {} },
+	{ 8, "Hide", {} },
+	{ 16, "Play", {} },
+	{ 17, "Stop", {} },
+	{ 18, "Pause", {} },
+	{ 19, "Resume", {} },
+	{ 20, "Play Clip", { "Clip Begin Time", "Clip End Time" } },
+	{ 21, "Seek", { "Seek to Time" } }
+};
+
+template<size_t N>
+static const ActionDef *findDef(const ActionDef (&table)[N], uint16 id) {
+	for (size_t i = 0; i < N; i++) {
+		if (table[i].id == id)
+			return &table[i];
+	}
+	return nullptr;
 }
 
-static const char *videoAction(uint16 id) {
-	static const char *const names[] = {
-		"Play", "Stop", "Pause", "Resume", "Play Clip", "Seek"
-	};
-	if (id == 7)
-		return "Show";
-	if (id == 8)
-		return "Hide";
-	return id >= 16 && id <= 21 ? names[id - 16] : nullptr;
+// Targets resolve like AL::FINDTARGET: 0x80 is the title, 0x81 the sound manager,
+// otherwise walk up targetKind parents from the list's owner and take the child
+// with the target name (0 = the owner's own children)
+static const ActionDef *getActionDef(const Action &a, const Layout *layout) {
+	if (a.targetKind == kTargetTitle)
+		return findDef(kTitleActions, a.id);
+	if (a.targetKind == kTargetSound)
+		return findDef(kSoundActions, a.id);
+	int el = layout ? layout->findElement(a.target) : -1;
+	if (el >= 0)
+		return layout->_elements[el].isVideo() ? findDef(kVideoActions, a.id) : findDef(kSpriteActions, a.id);
+	if (layout && a.target.equalsIgnoreCase(layout->_name))
+		return findDef(kLayoutActions, a.id);
+	if (a.targetKind >= 2)
+		return findDef(kViewActions, a.id);
+	// An element of another layout
+	const ActionDef *def = findDef(kSpriteActions, a.id);
+	return def ? def : findDef(kVideoActions, a.id);
 }
 
 Common::String getActionName(const Action &a, const Layout *layout) {
-	const char *name = nullptr;
-	if (a.targetKind == kTargetTitle) {
-		if (a.id < ARRAYSIZE(kTitleActions))
-			name = kTitleActions[a.id];
-	} else if (a.targetKind == kTargetSound) {
-		if (a.id >= 0x200 && a.id - 0x200 < (int)ARRAYSIZE(kSoundActions))
-			name = kSoundActions[a.id - 0x200];
-	} else {
-		int el = layout ? layout->findElement(a.target) : -1;
-		if (el >= 0) {
-			name = layout->_elements[el].isVideo() ? videoAction(a.id) : spriteAction(a.id);
-		} else if (layout && a.target.equalsIgnoreCase(layout->_name) && a.id < ARRAYSIZE(kLayoutActions)) {
-			name = kLayoutActions[a.id];
-		} else if (a.id < ARRAYSIZE(kViewActions) && a.targetKind >= 2) {
-			name = kViewActions[a.id];
-		} else {
-			name = spriteAction(a.id);
-			if (!name)
-				name = videoAction(a.id);
-		}
-	}
-	return name ? Common::String(name) : Common::String::format("action %d", a.id);
+	const ActionDef *def = getActionDef(a, layout);
+	return def ? Common::String(def->name) : Common::String::format("action %d", a.id);
 }
 
 Common::String describeAction(const Action &a, const Layout *layout) {
-	Common::String str = getActionName(a, layout);
+	const ActionDef *def = getActionDef(a, layout);
+	Common::String str = def ? def->name : Common::String::format("action %d", a.id);
 	if (!a.target.empty())
 		str += Common::String::format(" [%s]", a.target.c_str());
 	if (a.targetKind < kTargetTitle)
 		str += Common::String::format(" ^%d", a.targetKind);
-	for (uint i = 0; i < a.params.size(); i++)
-		str += (i ? ", " : " ") + a.params[i].toString();
+	for (uint i = 0; i < a.params.size(); i++) {
+		str += i ? ", " : " ";
+		if (def && i < ARRAYSIZE(def->params) && def->params[i])
+			str += Common::String(def->params[i]) + "=";
+		str += a.params[i].toString();
+	}
 	return str;
 }
 
