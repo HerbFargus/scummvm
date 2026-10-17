@@ -29,13 +29,17 @@
 #include "engines/engine.h"
 #include "graphics/surface.h"
 
+#include "nightmarened/resources.h"
+
 namespace Common {
 class InstallShieldV3;
 }
 
 namespace NightmareNed {
 
+class Display;
 class NafArchive;
+class Resources;
 struct Background;
 struct SpriteFrame;
 
@@ -65,9 +69,14 @@ public:
 	/** DI, CAPERS, WINDP and INTRO, as NITENED.EXE 0x445990 */
 	void playIntro();
 
+	const ExeImage &getExe() const { return _exe; }
+
 private:
 	bool mountData();
 	void viewer();
+	void runDemo();
+	/** The game's input bitmask from the keys held now (0x446700) */
+	uint32 readInput();
 	bool showBackground(int index);
 	void showNaf(int nafIndex);
 	void redraw();
@@ -77,6 +86,10 @@ private:
 
 	const ADGameDescription *_gameDescription;
 	Common::InstallShieldV3 *_data32;
+	ExeImage _exe;
+	Resources *_res;
+	Display *_display;
+	Common::Array<bool> _keysDown;
 	Graphics::Surface _screen;
 	byte _palette[256 * 3];
 

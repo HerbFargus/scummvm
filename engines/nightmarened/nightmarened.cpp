@@ -36,16 +36,19 @@
 #include "image/png.h"
 #include "video/smk_decoder.h"
 
+#include "nightmarened/demo.h"
 #include "nightmarened/detection.h"
+#include "nightmarened/display.h"
 #include "nightmarened/naf.h"
 #include "nightmarened/nightmarened.h"
+#include "nightmarened/rdx.h"
 
 namespace NightmareNed {
 
 const int kNafNumbers[12] = { 0, 1000, 86000, 90000, 92000, 93000, 94000, 95000, 96000, 97000, 98000, 99000 };
 
 NightmareNedEngine::NightmareNedEngine(OSystem *syst, const ADGameDescription *gameDesc) : Engine(syst),
-	_gameDescription(gameDesc), _data32(nullptr), _naf(nullptr), _nafIndex(-1), _bgIndex(0),
+	_gameDescription(gameDesc), _data32(nullptr), _res(nullptr), _display(nullptr), _naf(nullptr), _nafIndex(-1), _bgIndex(0),
 	_scrollX(0), _scrollY(0), _spriteIndex(0), _frameIndex(0), _showSprite(false) {
 	memset(_palette, 0, sizeof(_palette));
 }
@@ -54,6 +57,8 @@ NightmareNedEngine::~NightmareNedEngine() {
 	for (SpriteFrame *f : _frames)
 		delete f;
 	delete _naf;
+	delete _display;
+	delete _res;
 	delete _data32;
 	_view.free();
 	_screen.free();
@@ -78,6 +83,10 @@ bool NightmareNedEngine::mountData() {
 		return false;
 	}
 	debugC(1, kDebugLoading, "Mounted DATA32.Z");
+	if (!_exe.load(openFile("NITENED.EXE"))) {
+		GUIErrorMessage("Can't read NITENED.EXE from DATA32.Z");
+		return false;
+	}
 	return true;
 }
 
@@ -437,6 +446,84 @@ void NightmareNedEngine::viewer() {
 	}
 }
 
+uint32 NightmareNedEngine::readInput() {
+	// Directions, then one button replaces them (Shift > Space > Ctrl), then raw keys
+	static const struct {
+		Common::KeyCode key;
+		uint32 bit;
+	} directions[] = {
+		{ Common::KEYCODE_LEFT, kInputLeft }, { Common::KEYCODE_RIGHT, kInputRight },
+		{ Common::KEYCODE_UP, kInputUp }, { Common::KEYCODE_DOWN, kInputDown }
+	}, buttons[] = {
+		{ Common::KEYCODE_LSHIFT, kInputButton1 }, { Common::KEYCODE_RSHIFT, kInputButton1 },
+		{ Common::KEYCODE_SPACE, kInputButton2 },
+		{ Common::KEYCODE_LCTRL, kInputButton3 }, { Common::KEYCODE_RCTRL, kInputButton3 }
+	}, raw[] = {
+		{ Common::KEYCODE_z, kInputZ }, { Common::KEYCODE_c, kInputC }, { Common::KEYCODE_s, kInputS },
+		{ Common::KEYCODE_a, kInputA }, { Common::KEYCODE_w, kInputW }, { Common::KEYCODE_o, kInputOptions },
+		{ Common::KEYCODE_ESCAPE, kInputOptions }, { Common::KEYCODE_q, kInputQuit }
+	};
+	uint32 input = 0;
+	for (const auto &d : directions) {
+		if (_keysDown[d.key])
+			input |= d.bit;
+	}
+	for (const auto &b : buttons) {
+		if (_keysDown[b.key]) {
+			input = b.bit;
+			break;
+		}
+	}
+	for (const auto &r : raw) {
+		if (_keysDown[r.key])
+			input = r.bit;
+	}
+	return input;
+}
+
+// Until the scene code exists: the attic built from its own data, on the game's tick.
+// F9 toggles the collision overlay (ned.ini ShowCollisionRects).
+void NightmareNedEngine::runDemo() {
+	_res = new Resources();
+	_display = new Display(_res);
+	_keysDown.resize(Common::KEYCODE_LAST);
+	_display->_showCollision = ConfMan.hasKey("nightmarened_collision") && ConfMan.getBool("nightmarened_collision");
+
+	PlacementDemo demo(this, _res, _display);
+	if (!demo.loadAttic())
+		return;
+	Common::Point scroll(-2900, -2454);
+	if (ConfMan.hasKey("nightmarened_scroll"))
+		sscanf(ConfMan.get("nightmarened_scroll").c_str(), "%hd,%hd", &scroll.x, &scroll.y);
+	demo.setScroll(scroll);
+
+	// Test hooks: nightmarened_ticks=<n> runs n drawn ticks, then nightmarened_shot=<png>
+	int ticksLeft = ConfMan.hasKey("nightmarened_ticks") ? ConfMan.getInt("nightmarened_ticks") : -1;
+	while (!shouldQuit()) {
+		Common::Event event;
+		while (g_system->getEventManager()->pollEvent(event)) {
+			if (event.type == Common::EVENT_KEYDOWN && event.kbd.keycode < Common::KEYCODE_LAST) {
+				if (event.kbd.keycode == Common::KEYCODE_F9)
+					_display->_showCollision = !_display->_showCollision;
+				_keysDown[event.kbd.keycode] = true;
+			} else if (event.type == Common::EVENT_KEYUP && event.kbd.keycode < Common::KEYCODE_LAST) {
+				_keysDown[event.kbd.keycode] = false;
+			}
+		}
+		if (demo.tick(readInput(), g_system->getMillis()) && ticksLeft > 0 && --ticksLeft == 0) {
+			if (ConfMan.hasKey("nightmarened_shot")) {
+				Common::DumpFile out;
+				byte pal[256 * 3];
+				g_system->getPaletteManager()->grabPalette(pal, 0, 256);
+				if (out.open(Common::Path(ConfMan.get("nightmarened_shot"), '/'), true))
+					Image::writePNG(out, _display->getPrimary()->getBuffer(), pal);
+			}
+			break;
+		}
+		g_system->delayMillis(5);
+	}
+}
+
 Common::Error NightmareNedEngine::run() {
 	initGraphics(kScreenWidth, kScreenHeight);
 	_screen.create(kScreenWidth, kScreenHeight, Graphics::PixelFormat::createFormatCLUT8());
@@ -449,8 +536,12 @@ Common::Error NightmareNedEngine::run() {
 	}
 	if (!(ConfMan.hasKey("nightmarened_skipintro") && ConfMan.getBool("nightmarened_skipintro")))
 		playIntro();
-	if (!shouldQuit())
+	if (shouldQuit())
+		return Common::kNoError;
+	if (ConfMan.hasKey("nightmarened_viewer") && ConfMan.getBool("nightmarened_viewer"))
 		viewer();
+	else
+		runDemo();
 	return Common::kNoError;
 }
 

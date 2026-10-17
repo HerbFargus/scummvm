@@ -1,9 +1,14 @@
 MODULE := engines/nightmarened
 
 MODULE_OBJS = \
+	data.o \
+	demo.o \
+	display.o \
 	metaengine.o \
 	naf.o \
-	nightmarened.o
+	nightmarened.o \
+	rdx.o \
+	resources.o
 
 # This module can be built as a plugin
 ifeq ($(ENABLE_NIGHTMARENED), DYNAMIC_PLUGIN)

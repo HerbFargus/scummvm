@@ -110,13 +110,14 @@ bool NafArchive::readIndex(ResType type, uint32 size) {
 		index.offsets[i] = _stream->readUint32LE();
 		index.sizes[i] = _stream->readUint32LE();
 	}
+	// Every listed scene has a table, even an empty one (first = last = -1)
 	for (uint i = 0; i < _scenes.size(); i++) {
 		int s = _scenes[i] - _firstScene;
-		if (s < 0 || s >= sceneCount || first[s] < 0)
+		if (s < 0 || s >= sceneCount)
 			continue;
 		for (int id = first[s]; id <= last[s]; id++) {
 			uint16 slot = _stream->readUint16LE();
-			if (slot != 0xFFFF && slot < slots)
+			if (first[s] >= 0 && slot != 0xFFFF && slot < slots)
 				index.slots[resKey(_scenes[i], id)] = slot;
 		}
 	}
