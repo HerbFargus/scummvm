@@ -26,7 +26,7 @@ resource N + 7.
 - Score: a delta stream of film operations (sprite member/loc, sprite and
   frame scripts, sound, tempo, palette, volume, film-loop origin), each frame
   ended by `0x11` or `0x0D n`. A sprite whose member is a score is a film loop.
-- Scripts: a stack-machine bytecode compiled from Lingo (not run yet).
+- Scripts: a stack-machine bytecode compiled from Lingo.
 
 ## Status
 
