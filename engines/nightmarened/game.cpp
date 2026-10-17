@@ -29,6 +29,7 @@
 
 #include "nightmarened/detection.h"
 #include "nightmarened/game.h"
+#include "nightmarened/media.h"
 #include "nightmarened/naf.h"
 #include "nightmarened/ned.h"
 #include "nightmarened/nightmarened.h"
@@ -50,14 +51,22 @@ Game::Game(NightmareNedEngine *vm) : _vm(vm), _display(&_res), _ned(nullptr), _c
 	for (int i = 0; i < 12; i++)
 		_nafs[i] = nullptr;
 	_startMillis = g_system->getMillis();
+	_randomSeed = 1; // the CRT default until a scene calls srand (0x48c5d0)
+	_media = new Media(this);
 }
 
 Game::~Game() {
 	for (Scene *s : _scenes)
 		delete s;
+	delete _media;
 	delete _ned;
 	for (int i = 0; i < 12; i++)
 		delete _nafs[i];
+}
+
+uint32 Game::crtRandom() {
+	_randomSeed = _randomSeed * 0x343fd + 0x269ec3;
+	return (_randomSeed >> 16) & 0x7fff;
 }
 
 const ExeImage &Game::exe() const {
@@ -118,7 +127,7 @@ int Game::getCurrentSceneId() const {
 
 // The old scene's leave, the new one's load, the old one's unload, the new one's enter.
 // The new scene is told where it came from as (scene, sub) or (scene, -1).
-void Game::switchScene(int scene, int sub) {
+void Game::switchScene(int scene, int sub, int originScene, int originSub) {
 	Scene *target = findScene(scene, sub);
 	if (!target) {
 		warning("No scene %d:%d", scene, sub);
@@ -130,7 +139,9 @@ void Game::switchScene(int scene, int sub) {
 
 	int fromScene = -1, fromSub = -1;
 	if (!_current) {
-		target->load(-1, -1);
+		fromScene = originScene;
+		fromSub = originSub;
+		target->load(fromScene, fromSub);
 		if (_ned)
 			_ned->markTime();
 	} else {

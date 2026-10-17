@@ -40,6 +40,7 @@ namespace NightmareNed {
 class Display;
 class Game;
 class NafArchive;
+class PlacementDemo;
 struct Background;
 struct SpriteFrame;
 
@@ -75,6 +76,8 @@ private:
 	bool mountData();
 	void viewer();
 	void runDemo();
+	void runGame();
+	void mainLoop(PlacementDemo *demo);
 	/** The game's input bitmask from the keys held now (0x446700) */
 	uint32 readInput();
 	bool showBackground(int index);

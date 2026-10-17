@@ -36,6 +36,7 @@
 #include "image/png.h"
 #include "video/smk_decoder.h"
 
+#include "nightmarened/attic.h"
 #include "nightmarened/demo.h"
 #include "nightmarened/ned.h"
 #include "nightmarened/detection.h"
@@ -482,15 +483,13 @@ uint32 NightmareNedEngine::readInput() {
 	return input;
 }
 
-// Until the scene code exists: the attic built from its own data, on the game's tick.
-// F9 toggles the collision overlay (ned.ini ShowCollisionRects).
+// The demo that stood in for the scene code (nightmarened_demo=true): the attic built
+// from its data with every sprite looping and a simple camera band.
 void NightmareNedEngine::runDemo() {
 	_game = new Game(this);
 	_display = &_game->display();
 	_keysDown.resize(Common::KEYCODE_LAST);
 	_display->_showCollision = ConfMan.hasKey("nightmarened_collision") && ConfMan.getBool("nightmarened_collision");
-
-	// WinMain start-up: NED00000 and Ned (0x44f710, 0x44fbc0)
 	_game->setNed(new Ned(_game));
 	if (!_game->ned()->init())
 		warning("Ned did not load");
@@ -503,9 +502,34 @@ void NightmareNedEngine::runDemo() {
 		sscanf(ConfMan.get("nightmarened_scroll").c_str(), "%hd,%hd", &scroll.x, &scroll.y);
 		demo.setScroll(scroll);
 	}
+	mainLoop(&demo);
+}
 
-	// Test hooks: nightmarened_ticks=<n> runs n drawn ticks, then nightmarened_shot=<png>;
-	// nightmarened_inputs=<bits>:<ticks>,... replaces the keyboard for that many drawn ticks each
+// WinMain 0x445f70 after the intro: the scenes are registered (0x403a40 ...), started
+// (0x4598b0), Ned is loaded (0x44f710, 0x44fbc0), and scene 0 is entered. Until the menus
+// exist the game starts in the attic; nightmarened_from=<scene> sets the origin it sees
+// (0 = from the menus: the TV clip 8702 plays).
+void NightmareNedEngine::runGame() {
+	_game = new Game(this);
+	_display = &_game->display();
+	_keysDown.resize(Common::KEYCODE_LAST);
+	_display->_showCollision = ConfMan.hasKey("nightmarened_collision") && ConfMan.getBool("nightmarened_collision");
+	_game->addScene(new AtticScene(_game));
+	_game->initScenes();
+	_game->setNed(new Ned(_game));
+	if (!_game->ned()->init())
+		warning("Ned did not load");
+	int from = ConfMan.hasKey("nightmarened_from") ? ConfMan.getInt("nightmarened_from") : -1;
+	_game->switchScene(4, -1, from, -1);
+	mainLoop(nullptr);
+}
+
+// One WinMain loop iteration at a time: events, the input bitmask (0x446700), then
+// options (0x10000), quit to the menus (0x20000) or the scene tick (0x45a310).
+// Test hooks: nightmarened_ticks=<n> runs n drawn frames, then nightmarened_shot=<png>;
+// nightmarened_inputs=<bits>:<frames>,... replaces the keyboard for that many drawn frames each.
+// F9 toggles the collision overlay (ned.ini ShowCollisionRects).
+void NightmareNedEngine::mainLoop(PlacementDemo *demo) {
 	int ticksLeft = ConfMan.hasKey("nightmarened_ticks") ? ConfMan.getInt("nightmarened_ticks") : -1;
 	struct ScriptedInput {
 		uint32 bits;
@@ -534,6 +558,7 @@ void NightmareNedEngine::runDemo() {
 	}
 	uint scriptIndex = 0;
 	int scriptTicks = 0;
+	uint32 lastOptions = 0, lastQuit = 0;
 	while (!shouldQuit()) {
 		Common::Event event;
 		while (g_system->getEventManager()->pollEvent(event)) {
@@ -548,7 +573,25 @@ void NightmareNedEngine::runDemo() {
 		uint32 input = readInput();
 		if (scriptIndex < script.size())
 			input = script[scriptIndex].bits;
-		bool drew = demo.tick(input, _game->now());
+		uint32 draws = _display->_drawCount;
+		if (demo) {
+			demo->tick(input, _game->now());
+		} else if (_game->_optionsAllowed && (input & kInputOptions)) {
+			// 0x45db30, the options screen, is not ported
+			if (!lastOptions)
+				debugC(1, kDebugLoading, "Options screen requested (not ported)");
+			g_system->delayMillis(10);
+		} else if (input & kInputQuit) {
+			int scene = _game->getCurrentSceneId();
+			if (!lastQuit && scene != 0 && scene != -1)
+				debugC(1, kDebugLoading, "Quit to scene 0 requested (the menus are not ported)");
+			g_system->delayMillis(10);
+		} else {
+			_game->tick(input, _game->now());
+		}
+		lastOptions = input & kInputOptions;
+		lastQuit = input & kInputQuit;
+		bool drew = _display->_drawCount != draws;
 		if (drew && scriptIndex < script.size() && ++scriptTicks >= script[scriptIndex].ticks) {
 			scriptIndex++;
 			scriptTicks = 0;
@@ -563,7 +606,8 @@ void NightmareNedEngine::runDemo() {
 			}
 			break;
 		}
-		g_system->delayMillis(5);
+		if (demo)
+			g_system->delayMillis(5);
 	}
 }
 
@@ -583,8 +627,10 @@ Common::Error NightmareNedEngine::run() {
 		return Common::kNoError;
 	if (ConfMan.hasKey("nightmarened_viewer") && ConfMan.getBool("nightmarened_viewer"))
 		viewer();
-	else
+	else if (ConfMan.hasKey("nightmarened_demo") && ConfMan.getBool("nightmarened_demo"))
 		runDemo();
+	else
+		runGame();
 	return Common::kNoError;
 }
 

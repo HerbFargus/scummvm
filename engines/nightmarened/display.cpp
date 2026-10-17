@@ -42,7 +42,7 @@ enum {
 	kOverlaySolid = 250   // static green
 };
 
-Display::Display(Resources *res) : _res(res), _showCollision(false), _paletteDirty(true) {
+Display::Display(Resources *res) : _res(res), _showCollision(false), _drawCount(0), _paletteDirty(true) {
 	_primary = new RdxSurface(640, 480);
 	_primary->setRenderCallback(drawOverlay, this);
 	memset(_palette, 0, sizeof(_palette));
@@ -87,6 +87,7 @@ void Display::draw() {
 	Graphics::Surface &buf = _primary->getBuffer();
 	g_system->copyRectToScreen(buf.getPixels(), buf.pitch, 0, 0, buf.w, buf.h);
 	g_system->updateScreen();
+	_drawCount++;
 }
 
 bool Display::slotPlace(int area, int slot, int ref, int *outFrame, int *outDuration, bool noMirror,

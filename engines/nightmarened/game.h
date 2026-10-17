@@ -32,6 +32,7 @@
 namespace NightmareNed {
 
 class Game;
+class Media;
 class Ned;
 class NightmareNedEngine;
 
@@ -81,6 +82,10 @@ public:
 	Display &display() { return _display; }
 	const ExeImage &exe() const;
 	Ned *ned() { return _ned; }
+	/** The area music and the TV clip player (0x455960, 0x479ff0, 0x47a3e0) */
+	Media &media() { return *_media; }
+	/** 0x48c5e0: the MSVC rand() */
+	uint32 crtRandom();
 	void setNed(Ned *ned) { _ned = ned; }
 
 	/** 0x445ed0: milliseconds since start-up (the clock the main loop passes in) */
@@ -99,9 +104,14 @@ public:
 	void addScene(Scene *scene) { _scenes.push_back(scene); }
 	/** 0x4598b0: m0 on every scene and sub-scene */
 	void initScenes();
-	/** 0x45a0f0: switches to (scene, sub); sub -1 = the top-level scene itself */
-	void switchScene(int scene, int sub);
+	/**
+	 * 0x45a0f0: switches to (scene, sub); sub -1 = the top-level scene itself. fromScene and
+	 * fromSub are the origin reported to the first scene, when no scene is current yet.
+	 */
+	void switchScene(int scene, int sub, int fromScene = -1, int fromSub = -1);
 	Scene *getCurrentScene() const { return _current; }
+	/** Whether (scene, sub) is registered (ported) */
+	bool hasScene(int scene, int sub) const { return findScene(scene, sub) != nullptr; }
 	/** 0x45a2e0: the current top-level scene id, or -1 */
 	int getCurrentSceneId() const;
 
@@ -133,6 +143,8 @@ private:
 	Resources _res;
 	Display _display;
 	Ned *_ned;
+	Media *_media;
+	uint32 _randomSeed;
 	NafArchive *_nafs[12];
 	Common::Array<Scene *> _scenes;
 	Scene *_current;

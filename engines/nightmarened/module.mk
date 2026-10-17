@@ -1,10 +1,13 @@
 MODULE := engines/nightmarened
 
 MODULE_OBJS = \
+	attic.o \
+	attic_rooms.o \
 	data.o \
 	demo.o \
 	display.o \
 	game.o \
+	media.o \
 	metaengine.o \
 	naf.o \
 	ned.o \

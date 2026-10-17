@@ -86,6 +86,8 @@ public:
 	/** Debug overlay (ned.ini ShowCollisionRects): collision regions and solid masks */
 	void setCollisionOverlay(const Common::Array<CollisionMap *> &maps, const Common::Point &scroll);
 	bool _showCollision;
+	/** Frames presented so far (test hooks count them) */
+	uint32 _drawCount;
 
 private:
 	static void drawOverlay(Graphics::Surface &dst, const Common::Rect &area, void *user);
