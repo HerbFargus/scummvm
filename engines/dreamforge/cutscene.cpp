@@ -101,12 +101,12 @@ void runActCues(DreamForgeEngine *vm, const Common::Array<ActScript::Cue> &cues,
 	}
 }
 
-bool Cutscene::play(int number) {
+int Cutscene::play(int number) {
 	Common::String base = Common::String::format("CINE/%04d", number);
 	DFADecoder dfa;
 	if (!dfa.load(SearchMan.createReadStreamForMember(Common::Path(base + ".DFA", '/')))) {
 		warning("Cutscene: can't load %s.DFA", base.c_str());
-		return false;
+		return -1;
 	}
 	ActScript act;
 	if (!act.load(base + ".ACT"))
@@ -123,7 +123,7 @@ bool Cutscene::play(int number) {
 		.findIntersectingRect(Common::Rect(kScreenWidth, kScreenHeight));
 
 	uint32 start = g_system->getMillis();
-	bool stop = false;
+	bool stop = false, skipped = false;
 	for (int frame = 0; frame < dfa.getFrameCount() && !stop && !_vm->shouldQuit(); frame++) {
 		// The original runs the frame's cues, decodes it, waits, then shows it (0x528c8)
 		if ((uint)frame < act.frames.size())
@@ -142,7 +142,7 @@ bool Cutscene::play(int number) {
 				Common::Event event;
 				while (g_system->getEventManager()->pollEvent(event)) {
 					if (event.type == Common::EVENT_KEYDOWN && event.kbd.keycode == Common::KEYCODE_ESCAPE)
-						stop = true;
+						stop = skipped = true;
 				}
 				g_system->delayMillis(5);
 			}
@@ -163,7 +163,7 @@ bool Cutscene::play(int number) {
 	_vm->getSound()->stopVoice();
 	for (uint i = 0; i < kSfxChannels; i++)
 		_vm->getSound()->stopSfx(i);
-	return true;
+	return skipped ? 1 : 0;
 }
 
 } // End of namespace DreamForge

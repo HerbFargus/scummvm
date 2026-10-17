@@ -70,9 +70,9 @@ public:
 
 	/**
 	 * Plays CINE\<number>.DFA with its .ACT cues, centred on the screen.
-	 * Returns false if it couldn't be loaded. Escape skips.
+	 * Returns 0 when it ran to the end, 1 if Escape skipped it, -1 if it couldn't be loaded.
 	 */
-	bool play(int number);
+	int play(int number);
 
 	// Test hooks
 	bool _fast;                         // don't wait between frames

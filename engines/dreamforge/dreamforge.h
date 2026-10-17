@@ -71,8 +71,27 @@ public:
 
 	Scene *getScene() const { return _scene; }
 	Sound *getSound() const { return _sound; }
-	/** Plays CINE\<number>.DFA with its sound cues, then restores the scene */
-	bool playCutscene(int number);
+	/** Plays CINE\<number>.DFA with its sound cues, then restores the scene; 1 if skipped */
+	int playCutscene(int number);
+
+	// The start of the game (game.cpp)
+	void playIntro();
+	int titleMenu();
+	void newGame();
+	void randomizeFlags();
+	bool loadMenuPalette(int n, byte *pal) const;
+	void drawSprite(uint archive, uint index, int x, int y);
+	bool _newGame;     // 0xe0fec: set while a new game's first scene loads
+	int _roomsSeen;    // 0x6d260
+
+	// Act 1 room logic (act1.cpp)
+	void act1Enter(int room, int area);
+	void act1AfterLoad(int room, int area);
+	void roomEventDone();
+	void hideActors(int which);
+	void showActors(int which);
+	void setActorPos(int actor, int y, int x);
+
 	/**
 	 * Lip sync demo until actors exist: plays a voice line with a puppy's talking
 	 * animation (PIG2, on black with its own palette) driven by its visemes.

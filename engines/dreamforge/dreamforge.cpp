@@ -55,6 +55,8 @@ DreamForgeEngine::DreamForgeEngine(OSystem *syst, const ADGameDescription *gameD
 	memset(_layerState, 0, sizeof(_layerState));
 	memset(_objectState, 0, sizeof(_objectState));
 	_heldItem = -1;
+	_newGame = false;
+	_roomsSeen = 0;
 	_cursorId = -1;
 	_cursorFrame = 0;
 	_currentActor = 1;
@@ -149,6 +151,10 @@ Common::Array<Common::String> DreamForgeEngine::listScenes() const {
 }
 
 bool DreamForgeEngine::loadScene(int act, int area, int room) {
+	// 0x1e430
+	setFlag(0x11, false);
+	setFlag(0x13, false);
+	setFlag(0xF, false);
 	Scene *scene = new Scene();
 	if (!scene->load(act, area, room)) {
 		delete scene;
@@ -169,6 +175,17 @@ bool DreamForgeEngine::loadScene(int act, int area, int room) {
 	if (_sound)
 		_sound->playMusic(_scene->_music, true);  // C.PRG 0x1db00: -666 keeps the current track
 	setScroll(0);
+	if (!_newGame)
+		showActors(3);
+	if (act == 1)
+		act1Enter(room, area);
+	redraw();
+	if (act == 1 && !isFlagSet(9) && !isFlagSet(3)) {
+		bool wasInScript = _inScript;
+		_inScript = true;
+		act1AfterLoad(room, area);
+		_inScript = wasInScript;
+	}
 	_dirty = true;
 	return true;
 }
@@ -227,9 +244,12 @@ void DreamForgeEngine::dumpAllScenes(const Common::String &dir) {
 	debug("dumped %u scenes to %s", scenes.size(), dir.c_str());
 }
 
-bool DreamForgeEngine::playCutscene(int number) {
+int DreamForgeEngine::playCutscene(int number) {
+	// Test hook: dreamforge_skip_cutscenes=true treats every cutscene as watched
+	if (ConfMan.getBool("dreamforge_skip_cutscenes"))
+		return 0;
 	Cutscene cutscene(this);
-	bool ok = cutscene.play(number);
+	int ok = cutscene.play(number);
 	if (_scene)
 		g_system->getPaletteManager()->setPalette(_scene->_palette, 0, 256);
 	_dirty = true;
@@ -971,22 +991,37 @@ Common::Error DreamForgeEngine::run() {
 		return Common::kNoError;
 	}
 
-	// Until the game flow exists, start in the first room (or dreamforge_scene=1X01X06)
-	Common::String start = ConfMan.hasKey("dreamforge_scene") ? ConfMan.get("dreamforge_scene") : "1X01X01";
-	int act, area, room;
-	if (!parseSceneName(start, act, area, room) || !loadScene(act, area, room))
-		return Common::kNoGameDataFoundError;
-	placeActorsDefault();
 	setupCursor();
-	if (ConfMan.hasKey("dreamforge_scroll"))
-		setScroll(ConfMan.getInt("dreamforge_scroll"));
-	_showLayers = ConfMan.getBool("dreamforge_layers");
-
 	// Test hook: dreamforge_shot_every=<ms> saves the screen into dreamforge_shot_dir as it changes
 	if (ConfMan.hasKey("dreamforge_shot_every")) {
 		_shotEvery = ConfMan.getInt("dreamforge_shot_every");
 		_shotDir = ConfMan.get("dreamforge_shot_dir");
 	}
+
+	if (!ConfMan.hasKey("dreamforge_scene")) {
+		// 0x11cc0: the intro, the title menu, then the game
+		if (!ConfMan.getBool("dreamforge_skip_intro"))
+			playIntro();
+		while (!shouldQuit()) {
+			int choice = ConfMan.hasKey("dreamforge_title") ? ConfMan.getInt("dreamforge_title") : titleMenu();
+			if (choice == 2) {
+				newGame();
+				break;
+			}
+			// TODO: the saved games and options screens
+			if (choice == 1 || choice == 3)
+				openMainMenuDialog();
+		}
+	} else {
+		// Test hook: dreamforge_scene=1X01X06 starts in a room, puppies placed by its spots
+		int act, area, room;
+		if (!parseSceneName(ConfMan.get("dreamforge_scene"), act, area, room) || !loadScene(act, area, room))
+			return Common::kNoGameDataFoundError;
+		placeActorsDefault();
+	}
+	if (ConfMan.hasKey("dreamforge_scroll"))
+		setScroll(ConfMan.getInt("dreamforge_scroll"));
+	_showLayers = ConfMan.getBool("dreamforge_layers");
 
 	// Test hook: dreamforge_use=<hotspot id,...> clicks hotspots by id, in order
 	Common::StringTokenizer uses(ConfMan.get("dreamforge_use"), ",");

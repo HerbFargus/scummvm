@@ -1,11 +1,13 @@
 MODULE := engines/dreamforge
 
 MODULE_OBJS = \
+	act1.o \
 	actor.o \
 	console.o \
 	cutscene.o \
 	dfa.o \
 	dreamforge.o \
+	game.o \
 	lipsync.o \
 	metaengine.o \
 	resource.o \
