@@ -102,7 +102,7 @@ struct Action {
  */
 struct ActionList {
 	uint16 flags;
-	uint16 flags2;
+	uint16 flags2;          ///< bit 0: run one action at random (the AL's "action list params")
 	Common::Array<Action> actions;
 
 	bool load(Common::SeekableReadStream &s);

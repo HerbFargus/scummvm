@@ -218,7 +218,6 @@ private:
 
 	Common::HashMap<Common::String, LayoutState *, Common::IgnoreCase_Hash, Common::IgnoreCase_EqualTo> _cache;
 	LayoutState *_layout;
-	const ActionList *_running;
 	uint _nextSerial;
 	Common::String _pendingLayout;
 	bool _reenter;
