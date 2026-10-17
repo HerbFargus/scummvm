@@ -36,13 +36,16 @@
 #include "graphics/paletteman.h"
 #include "image/png.h"
 
+#include "dreamforge/act1_hooks.h"
 #include "dreamforge/actor.h"
+#include "dreamforge/banter.h"
 #include "dreamforge/console.h"
 #include "dreamforge/cutscene.h"
 #include "dreamforge/detection.h"
 #include "dreamforge/dfa.h"
 #include "dreamforge/dreamforge.h"
 #include "dreamforge/lipsync.h"
+#include "dreamforge/logic.h"
 #include "dreamforge/resource.h"
 #include "dreamforge/scene.h"
 #include "dreamforge/script.h"
@@ -64,6 +67,8 @@ DreamForgeEngine::DreamForgeEngine(OSystem *syst, const ADGameDescription *gameD
 	_cursorFrame = 0;
 	_currentActor = 1;
 	_counter3D = 0;
+	_logic = new Logic(this);
+	initLogicVars();
 	_actors[0] = new Actor(this, 1);
 	_actors[1] = new Actor(this, 2);
 	_nextStep = 0;
@@ -77,6 +82,7 @@ DreamForgeEngine::DreamForgeEngine(OSystem *syst, const ADGameDescription *gameD
 
 DreamForgeEngine::~DreamForgeEngine() {
 	delete _sound;
+	delete _logic;
 	delete _actors[0];
 	delete _actors[1];
 	for (auto &f : _actorFrames)
@@ -167,6 +173,10 @@ bool DreamForgeEngine::loadScene(int act, int area, int room) {
 	_scene = scene;
 	_walkMap.load(_scene->_walkMap);
 	_currentRegion = -1;
+	_input.clear();
+	for (int n = 0; n < 2; n++)
+		_actors[n]->_arrivalCode = -1;
+	_logic->var(0x6DE34) = ticks() + 200;  // 0x107e0: the idle hook's timer
 	for (auto *o : _scene->_objects)
 		startObject(*o);
 	updateObjects(true);
@@ -700,6 +710,7 @@ void DreamForgeEngine::updateObjects(bool force) {
 		// TODO: objects that follow a path (+0x32 & 4)
 		advanceObject(o);
 		o.nextTick = now + o.delay;
+		int hookId = o.id, hookFrame = o.frame, hookFlags = o.flags;
 		if (o.frame != -1)
 			o.flags &= ~4;
 		if (o.temporary && (o.flags & 0x10)) {
@@ -710,6 +721,13 @@ void DreamForgeEngine::updateObjects(bool force) {
 			deleteObject(&o);
 			_scene->_objects.remove_at(i);
 			i--;
+		}
+		// The act's hook after each frame (0xdf05c); it may change the scene
+		if (!force && _scene->_act == 1) {
+			Scene *scene = _scene;
+			act1_3db10(*_logic, hookId, hookFrame, hookFlags);
+			if (_scene != scene)
+				return;
 		}
 	}
 }
@@ -739,44 +757,70 @@ int DreamForgeEngine::cursorFor(const Common::Point &screen) const {
 	if (!_scene)
 		return kCursorPaw;
 	Common::Point p(screen.x + _scrollX, screen.y);
-	const Hotspot *hot = nullptr;
-	for (auto &h : _scene->_hotspots)
-		if (h.rect.contains(p)) {
-			hot = &h;
-			break;
+	// 0x24120: a named layer, a puppy in front of it, a hotspot or puppy, a named object, a hotspot
+	int id = -1;
+	int l = layerIndexAt(p.y, p.x, 0xFFFF);
+	if (l != -1 && !layerCursorAllowed(_scene->_layers[l]->id))
+		l = -1;
+	if (l != -1 && !_scene->_layers[l]->name.empty()) {
+		const Layer *layer = _scene->_layers[l];
+		id = maskCursor(READ_LE_UINT16(layer->data.data() + 0x270), screen, p);
+		int h = hotspotIndexAt(p.y, p.x, 0xFFFF);
+		if ((h == -2 || h == -3) && (int32)READ_LE_UINT32(layer->data.data() + 0x10) <= _actors[h == -2 ? 0 : 1]->_y)
+			id = puppyCursor();
+	} else {
+		int h = hotspotIndexAt(p.y, p.x, 0xFFFF);
+		if (h == -2 || h == -3) {
+			id = puppyCursor();
+		} else {
+			int o = objectIndexAt(p.y, p.x, true, 0xFFFF);
+			if (o != -1 && !_scene->_objects[o]->name.empty()) {
+				id = maskCursor(READ_LE_UINT16(_scene->_objects[o]->data.data() + 0x270), screen, p);
+			} else if (h >= 0) {
+				const Hotspot &hot = _scene->_hotspots[h];
+				id = maskCursor(hot.mask, screen, p);
+				if ((id == kCursorPaw || id == kCursorScrollLeft || id == kCursorScrollRight) && hot.exitDir >= 0 && hot.exitDir < 8)
+					id = kExitArrows[hot.exitDir];
+			} else {
+				id = maskCursor(0, screen, p);
+			}
 		}
+	}
+	if (isFlagSet(10))
+		id = 1;
+	return id;
+}
+
+// 0x13c20: a mask picks the cursor; something held shows instead, lit over anything
+int DreamForgeEngine::maskCursor(uint16 mask, const Common::Point &screen, const Common::Point &p) const {
+	if (_heldItem != -1) {
+		int id = heldCursor();
+		return (mask & 0x7E) ? id + 1 : id;
+	}
+	static const struct {
+		uint16 bit;
+		int8 cursor;
+	} kMaskCursors[] = { { 8, 1 }, { 0x40, 6 }, { 2, 5 }, { 0x10, 3 }, { 0x20, 4 }, { 4, 2 } };
+	for (auto &m : kMaskCursors)
+		if (mask & m.bit)
+			return m.cursor;
 	// 0x13b40: the plain cursor turns into a scroll arrow near the edges of a wide room
-	int id = kCursorPaw;
 	if (_walkMap.isWalkable(this, p.y, p.x) && (int)_scene->_width > kScreenWidth) {
 		if (screen.x < 0x3D && _scrollX > 0)
-			id = kCursorScrollLeft;
-		else if (screen.x > 0x243 && _scrollX < (int)_scene->_width - kScreenWidth)
-			id = kCursorScrollRight;
+			return kCursorScrollLeft;
+		if (screen.x > 0x243 && _scrollX < (int)_scene->_width - kScreenWidth)
+			return kCursorScrollRight;
 	}
-	// 0x13c20: something held shows as the cursor (TODO: the variants over a puppy)
-	if (_heldItem >= 0) {
-		static const int8 kHeldCursors[6] = { 0x12, 0x14, 0x16, 0x16, 0x16, 0x18 };
-		return _heldItem < 6 ? (int)kHeldCursors[_heldItem] : (int)kCursorPaw;
-	}
-	if (hot) {
-		// 0x13c20: the hotspot's mask picks the cursor
-		uint16 m = hot->mask;
-		if (m & 8)
-			id = 1;
-		else if (m & 0x40)
-			id = 6;
-		else if (m & 2)
-			id = 5;
-		else if (m & 0x10)
-			id = 3;
-		else if (m & 0x20)
-			id = 4;
-		else if (m & 4)
-			id = 2;
-		if ((id == kCursorPaw || id == kCursorScrollLeft || id == kCursorScrollRight) && hot->exitDir >= 0 && hot->exitDir < 8)
-			id = kExitArrows[hot->exitDir];
-	}
-	return id;
+	return kCursorPaw;
+}
+
+int DreamForgeEngine::heldCursor() const {
+	static const int8 kHeldCursors[6] = { 0x12, 0x14, 0x16, 0x16, 0x16, 0x18 };
+	return _heldItem >= 0 && _heldItem < 6 ? (int)kHeldCursors[_heldItem] : (int)kCursorPaw;
+}
+
+int DreamForgeEngine::puppyCursor() const {
+	return _heldItem == -1 ? 5 : heldCursor() + 1;
 }
 
 void DreamForgeEngine::setCursor(int id) {
@@ -896,7 +940,7 @@ Common::Error DreamForgeEngine::loadGameStream(Common::SeekableReadStream *strea
 }
 
 void DreamForgeEngine::syncGame(Common::Serializer &s) {
-	const uint32 kSaveVersion = 1;
+	const uint32 kSaveVersion = 2;
 	uint32 version = kSaveVersion;
 	s.syncAsUint32LE(version);
 	int32 act = _scene ? _scene->_act : 1, area = _scene ? _scene->_area : 1, room = _scene ? _scene->_room : 1;
@@ -916,6 +960,8 @@ void DreamForgeEngine::syncGame(Common::Serializer &s) {
 	s.syncAsSint32LE(_currentActor);
 	s.syncAsSint32LE(_counter3D);
 	s.syncAsSint32LE(_roomsSeen);
+	if (version >= 2)
+		_logic->syncVars(s);
 	int32 ay[2], ax[2], adir[2], apost[2];
 	byte ahide[2];
 	for (int n = 0; n < 2; n++) {
@@ -1024,6 +1070,10 @@ void DreamForgeEngine::actorWalk(int actor, int y, int x, int dir) {
 			actorTurn(*getActor(n), dir);
 }
 
+void DreamForgeEngine::banter(int set) {
+	banter_1c720(*_logic, set);
+}
+
 void DreamForgeEngine::actorSay(int actor, int voiceId, bool quick) {
 	Actor *a = getActor(actor);
 	if (!a || a->_hidden) {
@@ -1067,15 +1117,10 @@ void DreamForgeEngine::handleEvents() {
 		case Common::EVENT_MOUSEMOVE:
 			_mousePos = event.mouse;
 			break;
-		case Common::EVENT_LBUTTONUP: {
-			Common::Point p(event.mouse.x + _scrollX, event.mouse.y);
-			const Record *h = hotspotAt(p);
-			if (h)
-				useHotspot(*h);
-			else if (_walkMap.isWalkable(this, p.y, p.x))
-				_actors[0]->walkTo(p.y, p.x);
+		case Common::EVENT_LBUTTONUP:
+			if (!_inScript)
+				postInput(event.mouse.y, event.mouse.x + _scrollX, cursorFor(event.mouse));
 			break;
-		}
 		case Common::EVENT_KEYDOWN:
 			if (event.kbd.keycode == Common::KEYCODE_LEFT)
 				setScroll(_scrollX - 32);
@@ -1120,9 +1165,18 @@ void DreamForgeEngine::mainLoop() {
 				_actors[n]->step();
 			updateObjects(false);
 			checkRegions();
+			checkArrivals();
 			animateCursor();
 			_dirty = true;
+			// 0x10890: the act's idle hook while nothing else is going on
+			if (!_inScript && !_newGame && !isFlagSet(0x1A) && !_actors[0]->_busy && !_actors[1]->_busy &&
+				_scene && _scene->_act == 1) {
+				_inScript = true;
+				act1_3f780(*_logic);
+				_inScript = false;
+			}
 		}
+		processInput();
 		if (_dirty)
 			redraw();
 		else
@@ -1193,12 +1247,19 @@ Common::Error DreamForgeEngine::run() {
 		setScroll(ConfMan.getInt("dreamforge_scroll"));
 	_showLayers = ConfMan.getBool("dreamforge_layers");
 
-	// Test hook: dreamforge_use=<hotspot id,...> clicks hotspots by id, in order
+	// Test hooks: dreamforge_use=<hotspot id,...> clicks the middle of hotspots by id;
+	// dreamforge_click=<x:y,...> clicks scene points; each click plays out before the next
 	Common::StringTokenizer uses(ConfMan.get("dreamforge_use"), ",");
 	while (!uses.empty() && !shouldQuit()) {
 		const Record *h = findHotspot(atoi(uses.nextToken().c_str()));
 		if (h)
-			useHotspot(*h);
+			clickAndWait(h->rect.top + h->rect.height() / 2, h->rect.left + h->rect.width() / 2);
+	}
+	Common::StringTokenizer clicks(ConfMan.get("dreamforge_click"), ",");
+	while (!clicks.empty() && !shouldQuit()) {
+		int cx = 0, cy = 0;
+		if (sscanf(clicks.nextToken().c_str(), "%d:%d", &cx, &cy) == 2)
+			clickAndWait(cy, cx);
 	}
 
 	// Test hook: dreamforge_cursor_probe=<x:y,x:y,...> logs the cursor at screen points

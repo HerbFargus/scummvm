@@ -78,6 +78,7 @@ public:
 	bool _hidden;
 	int _slot, _frame;
 	bool _busy;  // a one-shot animation is playing
+	int _arrivalCode, _arrivalY, _arrivalX;  // the click to post again on arrival (0x88304)
 
 	/** Set position and facing (0x1b8d0, 0x169d0); kDirKeep keeps the facing */
 	void place(int y, int x, int dir);

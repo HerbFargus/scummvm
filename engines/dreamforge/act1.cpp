@@ -21,7 +21,14 @@
 
 #include "common/debug.h"
 
+#include "dreamforge/act1_afterload.h"
+#include "dreamforge/act1_click.h"
+#include "dreamforge/act1_hooks.h"
+#include "dreamforge/act1_post.h"
+#include "dreamforge/act1_use.h"
 #include "dreamforge/actor.h"
+#include "dreamforge/banter.h"
+#include "dreamforge/logic.h"
 #include "dreamforge/detection.h"
 #include "dreamforge/dreamforge.h"
 #include "dreamforge/scene.h"
@@ -199,39 +206,62 @@ void DreamForgeEngine::act1Enter(int room, int area) {
 	}
 }
 
-// Act 1 after the scene is on screen (C.PRG 0x418b0, [0x88394 + act * 4](room, area)).
-// TODO: only the first room's opening is ported so far
+// Act 1 after the scene is on screen (C.PRG 0x418b0, [0x88394 + act * 4](room, area))
 void DreamForgeEngine::act1AfterLoad(int room, int area) {
-	if (area == 1 && room == 1) {
-		if (!isFlagSet(0x43)) {
-			// The opening: the puppies creep out of hiding and talk it over
-			setFlag(0x43, true);
-			setActorPos(1, 0x18A, 0xF6);
-			hideActors(3);
-			playSceneAnim(0x20, 0x13C, 0x69, false, 0, kScreenHeight - 1, false, 0);
-			showActors(1);
-			_currentActor = 1;
-			actorWalk(1, 0x193, 0x186, 0);
-			actorSay(1, kVoice10 + 0xEA, false);
-			actorSay(2, kVoice11 + 0xF5, false);
-			setActorPos(2, 0x18A, 0xF6);
-			playSceneAnim(0x21, 0x13C, 0x69, false, 0, kScreenHeight - 1, false, 0);
-			_currentActor = 2;
-			actorWalk(2, 0x1BB, 0x9D, 3);
-			_currentActor = 1;
-			actorWalk(1, getActor(1)->_y, getActor(1)->_x, 7);
-			for (int i = 0; i < 4; i++) {
-				actorSay(1, kVoice10 + 0xEB + i, false);
-				actorSay(2, kVoice11 + 0xF6 + i, false);
-			}
-			actorSay(1, kVoice10 + 0xEF, false);
-		} else if (isFlagSet(0x1C4)) {
-			setFlag(0x1C4, false);
-			actorWalk(2, 0x1BB, 0x9D, 3);
-			actorWalk(1, 0x191, 0x135, 6);
-		}
+	act1_418b0(*_logic, room, area);
+}
+
+void DreamForgeEngine::initLogicVars() {
+	_logic->clearVars();
+	act1_afterload_initVars(*_logic);
+	banter_initVars(*_logic);
+	act1_click_initVars(*_logic);
+	act1_hooks_initVars(*_logic);
+	act1_post_initVars(*_logic);
+	act1_use_initVars(*_logic);
+}
+
+// 0x477e0: in the tile puzzle room (1, 1, 4) a button shows no cursor while
+// the tiles it would move are all in place
+bool DreamForgeEngine::layerCursorAllowed(int layerId) const {
+	if (!_scene || _scene->_act != 1 || _scene->_area != 1 || _scene->_room != 4)
+		return true;
+	// The four layers of a button, and the flags that must all be clear
+	struct Button {
+		int16 ids[4];
+		int16 flags[11];  // -1 ends
+	};
+	static const Button kButtons[] = {
+		{ { 0x2B, 0x9D, 0xB3, 0xC7 }, { 0x132, 0x146, -1 } },
+		{ { 0x8A, 0x9E, 0xB4, 0xC8 }, { 0x131, 0x145, 0x133, 0x147, -1 } },
+		{ { 0x8B, 0x9F, 0xB5, 0xC9 }, { 0x132, 0x146, 0x134, 0x148, -1 } },
+		{ { 0x8C, 0xA0, 0xB6, 0xCA }, { 0x133, 0x147, 0x135, 0x149, -1 } },
+		{ { 0x8D, 0xA1, 0xB7, 0xCB }, { 0x134, 0x148, -1 } },
+		{ { 0x8E, 0xA2, 0xB8, 0xCC }, { 0x12D, 0x141, 0x137, 0x14B, -1 } },
+		{ { 0x8F, 0xA3, 0xB9, 0xCD }, { 300, 0x140, 0x12E, 0x142, 0x136, 0x14A, 0x138, 0x14C, -1 } },
+		{ { 0x90, 0xA4, 0xBA, 0xCE }, { 0x12D, 0x141, 0x12F, 0x143, 0x137, 0x14B, 0x139, 0x14D, -1 } },
+		{ { 0x91, 0xA5, 0xBB, 0xCF }, { 0x12E, 0x142, 0x130, 0x144, 0x138, 0x14C, 0x13A, 0x14E, -1 } },
+		{ { 0x92, 0xA6, 0xBC, 0xD0 }, { 0x12F, 0x143, 0x139, 0x14D, -1 } },
+		{ { 0x93, 0xA7, 0xBD, 0xD1 }, { 0x132, 0x146, 0x13C, 0x150, -1 } },
+		{ { 0x94, 0xA8, 0xBE, 0xD2 }, { 0x131, 0x145, 0x133, 0x147, 0x13B, 0x14F, 0x13D, 0x151, -1 } },
+		{ { 0x95, 0xA9, 0xBF, 0xD3 }, { 0x132, 0x146, 0x134, 0x148, 0x13C, 0x150, 0x13E, 0x152, -1 } },
+		{ { 0x96, 0xAA, 0xC0, 0xD4 }, { 0x133, 0x147, 0x135, 0x149, 0x13D, 0x151, 0x13F, 0x153, -1 } },
+		{ { 0x97, 0xAB, 0xC1, 0xD5 }, { 0x134, 0x148, 0x13E, 0x152, -1 } },
+		{ { 0x98, 0xAC, 0xC2, 0xD6 }, { 0x137, 0x14B, 0x16A, -1 } },
+		{ { 0x99, 0xAD, 0xC3, 0xD7 }, { 0x136, 0x14A, 0x138, 0x14C, 0x16A, -1 } },
+		{ { 0x9A, 0xAE, 0xC4, 0xD8 }, { 0x137, 0x14B, 0x139, 0x14D, 0x16A, -1 } },
+		{ { 0x9B, 0xAF, 0xC5, 0xD9 }, { 0x138, 0x14C, 0x13A, 0x14E, 0x16A, -1 } },
+		{ { 0x9C, 0xB0, 0xC6, 0xDA }, { 0x139, 0x14D, 0x16A, -1 } }
+	};
+	for (auto &b : kButtons) {
+		if (b.ids[0] != layerId && b.ids[1] != layerId && b.ids[2] != layerId && b.ids[3] != layerId)
+			continue;
+		for (int i = 0; b.flags[i] != -1; i++)
+			if (isFlagSet(b.flags[i]))
+				return true;
+		return false;
 	}
-	roomEventDone();
+	return true;
 }
 
 // 0x205c0: after a room's opening, mark the room seen

@@ -112,7 +112,7 @@ int directionFromDelta(int dy, int dx) {
 }
 
 Actor::Actor(DreamForgeEngine *vm, int index) : _vm(vm), _index(index), _y(0), _x(0), _dir(6),
-	_posture(kStanding), _hidden(false), _slot(kSlotStandIdle), _frame(0), _busy(false), _walking(false),
+	_posture(kStanding), _hidden(false), _slot(kSlotStandIdle), _frame(0), _busy(false), _arrivalCode(-1), _arrivalY(0), _arrivalX(0), _walking(false),
 	_targetY(0), _targetX(0), _yMajor(false), _slope(0), _minorAcc(0), _minorSign(1) {
 }
 

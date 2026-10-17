@@ -40,11 +40,18 @@ The game starts as the original does: the intro cutscenes, the title menu
 runs the first room's opening), and in game the bone menu (Escape, Enter or
 Space) with ScummVM's load, save and options dialogs; L, S and O are
 shortcuts. Saves keep the room, flags, record states, held item, the
-puppies and the music. Act 1's scene entry handler is ported in full;
-the after-load handler only for the first room so far.
+puppies and the music.
 
-Not yet: the rest of the act handlers written in C (after-load and
-click/hover logic), banter, puppy 2's wandering, start/stop/footstep
+Clicks go through the game's own dispatcher: the cursor id under the mouse
+picks the verb, each verb runs a pipeline per layer, hotspot or object
+(walk to the record's point, then its script, then the act's handler), and
+a puppy that has to walk first posts the click again when it arrives. All
+of act 1's room code written in C is ported (scene entry and after-load,
+the click pre-filter, the per-verb handlers, the idle, object-frame and
+fidget hooks, banter) behind a small `Logic` API in `logic.h`.
+
+Not yet: the other acts' room code, puppy 2's wandering and fidgets,
+pixel-accurate puppy hit tests, palette fades, start/stop/footstep
 details, the game's own options and quit screens.
 
 The reverse-engineering notes (formats, code map) live outside the fork, in

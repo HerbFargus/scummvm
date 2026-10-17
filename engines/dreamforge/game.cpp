@@ -165,6 +165,7 @@ void DreamForgeEngine::randomizeFlags() {
 // 0x33f60, "new game": the title door, the opening cutscenes, then the first room
 void DreamForgeEngine::newGame() {
 	playCutscene(0x142);
+	initLogicVars();
 	randomizeFlags();
 	if (playCutscene(0x10A) == 0)
 		playCutscene(0xF6);

@@ -24,6 +24,7 @@
 
 #include "common/array.h"
 #include "common/hashmap.h"
+#include "common/queue.h"
 #include "common/random.h"
 #include "common/serializer.h"
 #include "common/rect.h"
@@ -38,6 +39,8 @@
 namespace DreamForge {
 
 class Actor;
+struct Hotspot;
+class Logic;
 struct AnimFrames;
 struct Record;
 struct SceneObject;
@@ -55,7 +58,20 @@ enum {
 	kStepMs = 100       // one game step (0x10840: two timer ticks)
 };
 
+/** A click as the game queues it (C.PRG 0x13d50): where, and the cursor id there */
+struct InputEvent {
+	int y, x, code;
+};
+
+enum RecordKind {
+	kKindLayer = 0,
+	kKindHotspot = 1,
+	kKindObject = 2
+};
+
 class DreamForgeEngine : public Engine {
+	friend class Logic;
+
 public:
 	DreamForgeEngine(OSystem *syst, const ADGameDescription *gameDesc);
 	~DreamForgeEngine() override;
@@ -91,17 +107,20 @@ public:
 	void randomizeFlags();
 	bool loadMenuPalette(int n, byte *pal) const;
 	void drawSprite(uint archive, uint index, int x, int y);
-	bool _newGame;     // 0xe0fec: set while a new game's first scene loads
+	int32 _newGame;    // 0xe0fec: set while a new game's first scene loads
 	bool _restoring;   // loading a save: the scene comes back without its handlers
-	int _roomsSeen;    // 0x6d260
+	int32 _roomsSeen;  // 0x6d260
 
 	// Act 1 room logic (act1.cpp)
 	void act1Enter(int room, int area);
 	void act1AfterLoad(int room, int area);
+	/** Every act's room-code globals to their starting values */
+	void initLogicVars();
 	void roomEventDone();
 	void hideActors(int which);
 	void showActors(int which);
 	void setActorPos(int actor, int y, int x);
+	bool layerCursorAllowed(int layerId) const;
 
 	/**
 	 * Lip sync demo until actors exist: plays a voice line with a puppy's talking
@@ -126,7 +145,7 @@ public:
 	int32 _objectState[kStateCount];
 	int _heldItem;      // 0x647c4[0]
 	int _currentActor;  // 0x87320, the puppy being moved (1 or 2)
-	int _counter3D;     // 0x6d264, bumped by script op 0x3d
+	int32 _counter3D;   // 0x6d264, bumped by script op 0x3d
 	uint getRandom15() { return _rnd.getRandomNumber(0x7FFF); }
 
 	// Puppies
@@ -145,6 +164,10 @@ public:
 	void actorTurn(Actor &a, int dir);
 	void actorPlay(Actor &a, int slot);
 	void actorSay(int actor, int voiceId, bool quick);
+	/** The puppies' random banter (C.PRG 0x1c720) */
+	void banter(int set);
+	void markDirty() { _dirty = true; }
+	Logic *getLogic() const { return _logic; }
 
 	/** Hotspot under a scene point, or nullptr (C.PRG 0x1f590) */
 	const Record *hotspotAt(const Common::Point &p) const;
@@ -155,6 +178,9 @@ public:
 	void checkRegions();
 	/** The cursor for what's under the mouse (C.PRG 0x24120); kCursorWait while busy */
 	int cursorFor(const Common::Point &screen) const;
+	int maskCursor(uint16 mask, const Common::Point &screen, const Common::Point &p) const;
+	int heldCursor() const;
+	int puppyCursor() const;
 	void setCursor(int id);
 	void animateCursor();
 	int _cursorId, _cursorFrame;
@@ -170,6 +196,21 @@ public:
 	/** Keeps the screen and events going until the voice line ends */
 	void waitForVoice();
 	bool saveShot(const Common::String &path);
+
+	// Clicks (input.cpp)
+	void postInput(int y, int x, int code);
+	/** Test hooks: a click at a scene point, played out until the puppies are idle */
+	void clickAndWait(int y, int x);
+	void processInput();
+	void dispatchInput(const InputEvent &e);
+	/** Calls the current act's entry in a per-act handler table (C.PRG 0xdf020 ...) */
+	int callActHandler(uint32 table, int a, int b, int c, int none);
+	void dropHeldItem();
+	int hotspotIndexAt(int y, int x, uint16 mask) const;
+	int layerIndexAt(int y, int x, uint16 mask) const;
+	int objectIndexAt(int y, int x, bool temporary, uint16 mask) const;
+	Record *recordById(int kind, int id);
+	int32 *recordState(int kind, int id);
 
 private:
 	bool mountData();
@@ -189,12 +230,22 @@ private:
 	Common::Point _mousePos;
 	bool _dirty;
 	Actor *_actors[2];
+	Logic *_logic;
 	WalkMap _walkMap;
 	Common::HashMap<uint, AnimFrames *> _actorFrames;
 	uint32 _nextStep;
 	uint32 _shotEvery, _nextShot, _shotCount;  // test hook: periodic screenshots
 	Common::String _shotDir;
 	bool _inScript;
+	Common::Queue<InputEvent> _input;
+	bool _checkPuppies;  // 0xdf044: clicks may hit the puppies
+	void checkArrivals();
+	int preFilterClick(int y, int x);
+	int runVerb(int verb, int kind, int id, int y, int x, int code);
+	int verbClick(int verb, int y, int x, int code);
+	void lookClick(int y, int x, int code);
+	void walkClick(int y, int x, bool arrow);
+	void useClick(int y, int x, int code);
 	void drawScene();
 	void startObject(SceneObject &o);
 	void advanceObject(SceneObject &o);

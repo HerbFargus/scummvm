@@ -154,7 +154,43 @@ void Sound::stopMusic() {
 	_music = kNoMusic;
 }
 
+int Sound::nextHandle() {
+	for (int i = 0; i < kSoundHandles; i++)
+		if (!_mixer->isSoundHandleActive(_handles[i]))
+			return i;
+	_mixer->stopHandle(_handles[0]);
+	return 0;
+}
+
+int Sound::startVoice(int id) {
+	int h = nextHandle();
+	debugC(1, kDebugSound, "voice %d -> handle %d", id, h);
+	if (!play(_vm->getArchive(3), voiceIndex(id), 22050, false, Audio::Mixer::kSpeechSoundType, &_handles[h]))
+		return -1;
+	return h;
+}
+
+int Sound::startSfx(int id, int volume, bool loop) {
+	int h = nextHandle();
+	debugC(1, kDebugSound, "sfx %d -> handle %d%s", id, h, loop ? ", loop" : "");
+	if (!play(_vm->getArchive(1), sfxIndex(id), 22050, loop, Audio::Mixer::kSFXSoundType, &_handles[h]))
+		return -1;
+	_mixer->setChannelVolume(_handles[h], CLIP(volume, 0, 0x7FFF) * Audio::Mixer::kMaxChannelVolume / 0x7FFF);
+	return h;
+}
+
+bool Sound::isPlaying(int handle) const {
+	return handle >= 0 && handle < kSoundHandles && _mixer->isSoundHandleActive(_handles[handle]);
+}
+
+void Sound::stop(int handle) {
+	if (handle >= 0 && handle < kSoundHandles)
+		_mixer->stopHandle(_handles[handle]);
+}
+
 void Sound::stopAll() {
+	for (int i = 0; i < kSoundHandles; i++)
+		_mixer->stopHandle(_handles[i]);
 	for (uint i = 0; i < kSfxChannels; i++)
 		_mixer->stopHandle(_sfxHandles[i]);
 	_mixer->stopHandle(_voiceHandle);

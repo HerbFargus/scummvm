@@ -31,7 +31,8 @@ class ResourceArchive;
 
 enum {
 	kSfxChannels = 4,
-	kNoMusic = -666  // the original's "leave the music alone"
+	kNoMusic = -666, // the original's "leave the music alone"
+	kSoundHandles = 16
 };
 
 /**
@@ -64,6 +65,14 @@ public:
 	int getMusic() const { return _music; }
 	void stopAll();
 
+	// Sounds the room code keeps hold of (C.PRG 0x11b90, 0x11bc0, 0x494a0, 0x49940)
+	/** Starts a voice line; returns a handle, or -1 */
+	int startVoice(int id);
+	/** Starts an effect at a volume (0..0x7fff), looping or not; returns a handle, or -1 */
+	int startSfx(int id, int volume, bool loop);
+	bool isPlaying(int handle) const;
+	void stop(int handle);
+
 private:
 	struct Bank {
 		int first;  // first number in the bank
@@ -80,6 +89,8 @@ private:
 	Audio::SoundHandle _sfxHandles[kSfxChannels];
 	Audio::SoundHandle _voiceHandle;
 	Audio::SoundHandle _musicHandle;
+	Audio::SoundHandle _handles[kSoundHandles];
+	int nextHandle();
 	int _music;
 };
 
