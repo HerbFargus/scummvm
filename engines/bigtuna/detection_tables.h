@@ -22,6 +22,7 @@
 namespace BigTuna {
 
 const PlainGameDescriptor bigTunaGames[] = {
+	{"jmmdad", "Just Me and My Dad"},
 	{"jmmmom", "Just Me and My Mom"},
 	{"smellymystery", "Little Monster: The Smelly Mystery"},
 	{"greatrace", "Little Critter and the Great Race"},
@@ -30,6 +31,17 @@ const PlainGameDescriptor bigTunaGames[] = {
 };
 
 const ADGameDescription gameDescriptions[] = {
+	{
+		"jmmdad",
+		nullptr,
+		AD_ENTRY2s("DAD.EXE", "daa2fea3f8a592b4b76ba8a9c89b891e", 70912,
+				   "INTRO.IMP", "4a235d58f8c9ae560e57583e0171aa6a", 395934),
+		Common::EN_ANY,
+		Common::kPlatformWindows,
+		ADGF_UNSTABLE | GF_IMP,
+		GUIO1(GUIO_NOMIDI)
+	},
+
 	{
 		"jmmmom",
 		nullptr,

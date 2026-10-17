@@ -45,6 +45,8 @@ public:
 	~Bitmap() { _surface.free(); }
 
 	bool load(Common::SeekableReadStream &stream, bool v1);
+	// Just Me and My Dad's .P pictures
+	bool loadImp(Common::SeekableReadStream &stream);
 
 	const Graphics::Surface &getSurface() const { return _surface; }
 	// 1 where a pixel is drawn

@@ -36,6 +36,7 @@
 #include "bigtuna/bitmap.h"
 #include "bigtuna/console.h"
 #include "bigtuna/detection.h"
+#include "bigtuna/imp.h"
 #include "bigtuna/movie.h"
 #include "bigtuna/score.h"
 #include "bigtuna/script.h"
@@ -55,11 +56,12 @@ BigTunaEngine::BigTunaEngine(OSystem *syst, const ADGameDescription *gameDesc) :
 	_timerStart(0), _movie(nullptr), _player(nullptr), _stage(nullptr), _cursorId(-1),
 	_movieRequested(false), _clicked(false), _moved(false), _lastClickTime(0), _hoverChannel(0),
 	_startTime(0), _fast(false), _stopAfter(0), _framesPlayed(0), _fuzzNext(0), _fuzz(false),
-	_quitAt(0) {
+	_quitAt(0), _imp(nullptr) {
 	memset(_palette, 0, sizeof(_palette));
 }
 
 BigTunaEngine::~BigTunaEngine() {
+	delete _imp;
 	delete _player;
 	delete _movie;
 	delete _stage;
@@ -69,6 +71,43 @@ BigTunaEngine::~BigTunaEngine() {
 
 bool BigTunaEngine::hasFeature(EngineFeature f) const {
 	return f == kSupportsReturnToLauncher;
+}
+
+bool BigTunaEngine::isImp() const {
+	return _gameDescription->flags & GF_IMP;
+}
+
+void BigTunaEngine::setPaletteData(const byte *pal) {
+	memcpy(_palette, pal, sizeof(_palette));
+	g_system->getPaletteManager()->setPalette(_palette, 0, 256);
+	if (_cursorId != kCursorMember)
+		setCursor(_cursorId);
+}
+
+void BigTunaEngine::presentStage() {
+	const Graphics::Surface &surf = _stage->getSurface();
+	g_system->copyRectToScreen(surf.getPixels(), surf.pitch, 0, 0, surf.w, surf.h);
+	g_system->updateScreen();
+}
+
+bool BigTunaEngine::takeClick(Common::Point &p) {
+	if (!_clicked)
+		return false;
+	_clicked = _moved = false;
+	p = _mousePos;
+	return true;
+}
+
+byte BigTunaEngine::takeKey() {
+	byte k = _keyChar;
+	_keyChar = 0;
+	return k;
+}
+
+void BigTunaEngine::frameDone() {
+	_framesPlayed++;
+	if (_stopAfter && _framesPlayed >= _stopAfter)
+		quitGame();
 }
 
 bool BigTunaEngine::isV1() const {
@@ -460,6 +499,30 @@ void BigTunaEngine::readTestHooks() {
 	_startTime = g_system->getMillis();
 }
 
+Common::String BigTunaEngine::where() const {
+	if (_imp)
+		return Common::String::format("%s record %d", _imp->getFilmName().c_str(), _imp->getPosition());
+	if (_movie)
+		return Common::String::format("%s frame %d", _movie->getName().c_str(), _player->getFrame());
+	return "?";
+}
+
+Common::Array<Common::Point> BigTunaEngine::fuzzTargets() const {
+	if (_imp)
+		return _imp->getButtonPoints();
+	Common::Array<Common::Point> targets;
+	if (!_player)
+		return targets;
+	const Common::Array<Sprite> &sprites = _player->getSprites();
+	for (uint i = 1; i < sprites.size(); i++) {
+		if (sprites[i].exists && sprites[i].visible && sprites[i].script && sprites[i].member) {
+			Common::Rect r = _player->getSpriteRect(sprites[i]);
+			targets.push_back(Common::Point((r.left + r.right) / 2, (r.top + r.bottom) / 2));
+		}
+	}
+	return targets;
+}
+
 void BigTunaEngine::checkTestHooks() {
 	uint32 t = g_system->getMillis() - _startTime;
 	for (uint i = 0; i < _actions.size();) {
@@ -473,28 +536,24 @@ void BigTunaEngine::checkTestHooks() {
 			_mousePos = Common::Point(a.x, a.y);
 			g_system->warpMouse(a.x, a.y);
 			_clicked = _moved = true;
-			debug("test: click %d,%d at %d ms in %s frame %d", a.x, a.y, t, _movie->getName().c_str(), _player->getFrame());
+			debug("test: click %d,%d at %d ms in %s", a.x, a.y, t, where().c_str());
 		} else if (a.type == 'k') {
 			_keyChar = a.x;
-		} else if (_movie) {
-			Common::String path = Common::String::format("%s/t%06d-%s-%04d.png", _shotDir.c_str(), a.time,
-				_movie->getName().c_str(), _player->getFrame());
-			saveShot(path);
+		} else if (_movie || _imp) {
+			Common::String name = where();
+			for (uint n = 0; n < name.size(); n++) {
+				if (name[n] == ' ')
+					name.setChar('-', n);
+			}
+			saveShot(Common::String::format("%s/t%06d-%s.png", _shotDir.c_str(), a.time, name.c_str()));
 		}
 	}
-	if (_fuzz && _movie && t >= _fuzzNext) {
+	if (_fuzz && (_movie || _imp) && t >= _fuzzNext) {
 		_fuzzNext = t + 300 + _rnd.getRandomNumber(700);
-		Common::Array<Common::Point> targets;
-		const Common::Array<Sprite> &sprites = _player->getSprites();
-		for (uint i = 1; i < sprites.size(); i++) {
-			if (sprites[i].exists && sprites[i].visible && sprites[i].script && sprites[i].member) {
-				Common::Rect r = _player->getSpriteRect(sprites[i]);
-				targets.push_back(Common::Point((r.left + r.right) / 2, (r.top + r.bottom) / 2));
-			}
-		}
+		Common::Array<Common::Point> targets = fuzzTargets();
 		if (_rnd.getRandomNumber(6) == 0) {
-			_keyChar = 27;
-			debug("fuzz: escape in %s frame %d", _movie->getName().c_str(), _player->getFrame());
+			_keyChar = _imp ? ' ' : 27;
+			debug("fuzz: key %d in %s", _keyChar, where().c_str());
 			return;
 		}
 		Common::Point p(_rnd.getRandomNumber(639), _rnd.getRandomNumber(479));
@@ -502,7 +561,7 @@ void BigTunaEngine::checkTestHooks() {
 			p = targets[_rnd.getRandomNumber(targets.size() - 1)];
 		_mousePos = p;
 		_clicked = _moved = true;
-		debug("fuzz: click %d,%d in %s frame %d", p.x, p.y, _movie->getName().c_str(), _player->getFrame());
+		debug("fuzz: click %d,%d in %s", p.x, p.y, where().c_str());
 	}
 	if (_quitAt && t >= _quitAt)
 		quitGame();
@@ -573,6 +632,17 @@ Common::Error BigTunaEngine::run() {
 	_script = new Script(this);
 	readTestHooks();
 	_timerStart = g_system->getMillis();
+
+	if (isImp()) {
+		_imp = new ImpPlayer(this);
+		if (ConfMan.getBool("bigtuna_allmovies")) {
+			_imp->sweep();
+			return Common::kNoError;
+		}
+		Common::String start = ConfMan.get("bigtuna_movie");
+		_imp->run(start.empty() ? "intro" : start);
+		return Common::kNoError;
+	}
 
 	if (ConfMan.getBool("bigtuna_allmovies")) {
 		sweepMovies();

@@ -5,6 +5,7 @@ MODULE_OBJS = \
 	bitmap.o \
 	builtins.o \
 	console.o \
+	imp.o \
 	metaengine.o \
 	movie.o \
 	score.o \

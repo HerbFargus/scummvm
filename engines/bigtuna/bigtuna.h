@@ -33,6 +33,7 @@
 
 namespace BigTuna {
 
+class ImpPlayer;
 class Movie;
 class ScorePlayer;
 class Script;
@@ -49,6 +50,18 @@ public:
 	bool hasFeature(EngineFeature f) const override;
 
 	bool isV1() const;
+	bool isImp() const;
+
+	// Used by the Just Me and My Dad player
+	Stage *getStage() const { return _stage; }
+	void presentStage();
+	void setPaletteData(const byte *pal);
+	const byte *getPalette() const { return _palette; }
+	void pumpEvents() { pollEvents(); }
+	bool takeClick(Common::Point &p);
+	byte takeKey();
+	bool isFast() const { return _fast; }
+	void frameDone();
 	Movie *getMovie() const { return _movie; }
 	ScorePlayer *getPlayer() const { return _player; }
 
@@ -90,6 +103,8 @@ private:
 	void readTestHooks();
 	void checkTestHooks();
 	void checkFrameShot();
+	Common::String where() const;
+	Common::Array<Common::Point> fuzzTargets() const;
 
 	const ADGameDescription *_gameDescription;
 	Movie *_movie;
@@ -122,6 +137,7 @@ private:
 	uint32 _fuzzNext;
 	bool _fuzz;
 	uint32 _quitAt;
+	ImpPlayer *_imp;
 };
 
 } // End of namespace BigTuna

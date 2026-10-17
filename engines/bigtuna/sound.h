@@ -43,6 +43,8 @@ public:
 
 	// Keeps playing if the channel already plays this sound (FUN_0040c030)
 	void play(int channel, Movie *movie, uint res);
+	// Unsigned 8-bit mono PCM; keeps playing if the channel already plays the same key
+	void playRaw(int channel, const Common::String &key, const byte *data, uint32 size, uint rate, bool loop);
 	void stop(int channel);
 	void stopAll();
 	// On a movie change: both channels stop and go back to full volume
@@ -58,6 +60,7 @@ private:
 		Audio::SoundHandle handle;
 		Movie *movie;
 		uint res;
+		Common::String key;
 		int volume;
 		int fadeFrom, fadeTo;
 		uint32 fadeStart, fadeLength;

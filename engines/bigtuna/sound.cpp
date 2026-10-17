@@ -21,6 +21,7 @@
 
 #include "audio/audiostream.h"
 #include "audio/decoders/raw.h"
+#include "common/str.h"
 #include "common/debug.h"
 #include "common/textconsole.h"
 
@@ -52,6 +53,7 @@ void Sound::play(int channel, Movie *movie, uint res) {
 	_mixer->stopHandle(ch.handle);
 	ch.movie = movie;
 	ch.res = res;
+	ch.key.clear();
 	if (res == 0)
 		return;
 	if (movie->getType(res) != kResSound) {
@@ -74,6 +76,24 @@ void Sound::play(int channel, Movie *movie, uint res) {
 	_mixer->playStream(Audio::Mixer::kSFXSoundType, &ch.handle, audio, -1, ch.volume);
 }
 
+void Sound::playRaw(int channel, const Common::String &key, const byte *data, uint32 size, uint rate, bool loop) {
+	if (!valid(channel))
+		return;
+	Channel &ch = _channels[channel - 1];
+	if (!key.empty() && ch.key == key && _mixer->isSoundHandleActive(ch.handle))
+		return;
+	_mixer->stopHandle(ch.handle);
+	ch.movie = nullptr;
+	ch.res = 0;
+	ch.key = key;
+	byte *copy = (byte *)malloc(size);
+	memcpy(copy, data, size);
+	debugC(1, kDebugSound, "Sound channel %d: %s, %d Hz, %d bytes%s", channel, key.c_str(), rate, size, loop ? ", looping" : "");
+	Audio::RewindableAudioStream *raw = Audio::makeRawStream(copy, size, rate, Audio::FLAG_UNSIGNED, DisposeAfterUse::YES);
+	Audio::AudioStream *audio = loop ? Audio::makeLoopingAudioStream(raw, 0) : raw;
+	_mixer->playStream(Audio::Mixer::kSFXSoundType, &ch.handle, audio, -1, ch.volume);
+}
+
 void Sound::stop(int channel) {
 	if (valid(channel))
 		_mixer->stopHandle(_channels[channel - 1].handle);
@@ -89,6 +109,7 @@ void Sound::reset() {
 		_mixer->stopHandle(ch.handle);
 		ch.movie = nullptr;
 		ch.res = 0;
+		ch.key.clear();
 		ch.volume = ch.fadeFrom = ch.fadeTo = 255;
 		ch.fadeLength = 0;
 	}

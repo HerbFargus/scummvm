@@ -42,10 +42,13 @@ public:
 	// Draws the sprite channels in order, higher channels on top
 	void render(const ScorePlayer &player);
 	const Graphics::Surface &getSurface() const { return _surface; }
+	Graphics::Surface &getSurface() { return _surface; }
+
+	void clear(byte color);
+	void drawBitmap(const Bitmap &bitmap, int x, int y, const Common::Rect &clip);
 
 private:
 	void drawPlayer(const ScorePlayer &player, int offsetX, int offsetY);
-	void drawBitmap(const Bitmap &bitmap, int x, int y);
 
 	Graphics::Surface _surface;
 };

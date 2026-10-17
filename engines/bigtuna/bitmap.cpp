@@ -79,6 +79,46 @@ bool Bitmap::load(Common::SeekableReadStream &stream, bool v1) {
 	return !stream.err();
 }
 
+// u16 width, u16 height, u16 flags (always 0), then per row a u16 byte count and
+// 00 = end of row, 01-7F = literal bytes, 80-FF = run of (code & 7F). Index 255
+// and pixels a row never reaches are transparent.
+bool Bitmap::loadImp(Common::SeekableReadStream &stream) {
+	uint16 width = stream.readUint16LE();
+	uint16 height = stream.readUint16LE();
+	stream.readUint16LE();
+	_format = kBitmapRLE;
+	_opaque = false;
+	_regX = _regY = 0;
+	_surface.create(width, height, Graphics::PixelFormat::createFormatCLUT8());
+	_surface.fillRect(Common::Rect(width, height), 0);
+	_mask.resize(width * height);
+	memset(&_mask[0], 0, _mask.size());
+
+	for (int y = 0; y < height; y++) {
+		uint16 len = stream.readUint16LE();
+		int64 end = stream.pos() + len;
+		byte *dst = (byte *)_surface.getBasePtr(0, y);
+		int x = 0;
+		while (stream.pos() < end) {
+			byte code = stream.readByte();
+			if (code == 0)
+				break;
+			int count = code & 0x7F;
+			if (x + count > width)
+				return false;
+			if (code < 0x80)
+				stream.read(dst + x, count);
+			else
+				memset(dst + x, stream.readByte(), count);
+			x += count;
+		}
+		for (int i = 0; i < width; i++)
+			_mask[y * width + i] = i < x && dst[i] != 0xFF;
+		stream.seek(end);
+	}
+	return !stream.err();
+}
+
 // Per row: 00 = end of row, 01-7F = literal bytes, 80-BF = run of one byte,
 // C0-FF = transparent skip; counts are (code & 3F) + 1 for runs and skips.
 bool Bitmap::decodeRLE(Common::SeekableReadStream &stream) {

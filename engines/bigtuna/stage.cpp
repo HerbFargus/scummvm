@@ -37,8 +37,12 @@ Stage::~Stage() {
 }
 
 void Stage::render(const ScorePlayer &player) {
-	_surface.fillRect(Common::Rect(kStageWidth, kStageHeight), 0);
+	clear(0);
 	drawPlayer(player, 0, 0);
+}
+
+void Stage::clear(byte color) {
+	_surface.fillRect(Common::Rect(kStageWidth, kStageHeight), color);
 }
 
 void Stage::drawPlayer(const ScorePlayer &player, int offsetX, int offsetY) {
@@ -55,16 +59,16 @@ void Stage::drawPlayer(const ScorePlayer &player, int offsetX, int offsetY) {
 		}
 		const Bitmap *bitmap = player.getMovie()->getBitmap(sprite.member);
 		if (bitmap)
-			drawBitmap(*bitmap, x - bitmap->getRegX(), y - bitmap->getRegY());
+			drawBitmap(*bitmap, x - bitmap->getRegX(), y - bitmap->getRegY(), Common::Rect(kStageWidth, kStageHeight));
 	}
 }
 
-void Stage::drawBitmap(const Bitmap &bitmap, int x, int y) {
+void Stage::drawBitmap(const Bitmap &bitmap, int x, int y, const Common::Rect &clip) {
 	const Graphics::Surface &src = bitmap.getSurface();
 	if (src.format.bytesPerPixel != 1)
 		return;
 	Common::Rect dst(x, y, x + src.w, y + src.h);
-	dst.clip(Common::Rect(kStageWidth, kStageHeight));
+	dst.clip(clip);
 	if (dst.isEmpty())
 		return;
 

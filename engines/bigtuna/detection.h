@@ -37,6 +37,8 @@ enum BigTunaDebugChannels {
 // labels stored as score byte offsets in resource 3.
 enum BigTunaGameFlags {
 	GF_IM2_V1 = 1 << 0,
+	// Just Me and My Dad: DAD.EXE's .IMP player
+	GF_IMP = 1 << 1,
 };
 
 extern const PlainGameDescriptor bigTunaGames[];
