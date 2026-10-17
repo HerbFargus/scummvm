@@ -725,16 +725,18 @@ void Runtime::updateSprite(int el, uint32 dt) {
 
 // Sprite positions are those of the registration point. Each segment starts
 // where the one before ends and goes to its end point, relative to its start
-// (flag 1) or absolute.
+// (flag 1) or absolute. Paths only move x and y: the sprite engine adds a
+// finished segment's x and y to the position and keeps z (FUN_1048_2fea), so z
+// changes only through .z (SE-Mercury's Sun keeps z 100 between the planets'
+// 95 and 105 though its path ends at +50).
 void Runtime::getPathPoint(const ElementState &e, int32 &x, int32 &y, int32 &z) const {
-	int64 px = e.x, py = e.y, pz = e.z;
+	int64 px = e.x, py = e.y;
 	for (int i = 0; i <= e.seg && i < (int)e.def->segments.size(); i++) {
 		const PathSegment &seg = e.def->segments[i];
-		int64 tx = seg.x, ty = seg.y, tz = seg.z;
+		int64 tx = seg.x, ty = seg.y;
 		if (seg.flags & kSegRelative) {
 			tx += px;
 			ty += py;
-			tz += pz;
 		}
 		if (i == e.seg) {
 			uint32 duration = e.segmentDuration();
@@ -745,15 +747,13 @@ void Runtime::getPathPoint(const ElementState &e, int32 &x, int32 &y, int32 &z) 
 				break;
 			tx = px + (tx - px) * t / duration;
 			ty = py + (ty - py) * t / duration;
-			tz = pz + (tz - pz) * t / duration;
 		}
 		px = tx;
 		py = ty;
-		pz = tz;
 	}
 	x = (int32)px;
 	y = (int32)py;
-	z = (int32)pz;
+	z = e.z;
 }
 
 Common::Point Runtime::getPosition(const ElementState &e) const {
