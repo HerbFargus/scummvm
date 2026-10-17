@@ -27,7 +27,9 @@
 #include "common/rect.h"
 #include "common/str.h"
 
+#include "nightmarened/data.h"
 #include "nightmarened/resources.h"
+#include "nightmarened/world.h"
 
 namespace NightmareNed {
 
@@ -38,7 +40,7 @@ class NightmareNedEngine;
 /**
  * Stands in for the scene code until M3: builds a scene from its request list and
  * its .SST placement table, then loops every sprite's sequence on the game's 41 ms
- * tick. The arrows move the camera instead of Ned.
+ * tick. Ned walks the attic on the input bits; the camera follows him.
  */
 class PlacementDemo {
 public:
@@ -50,11 +52,15 @@ public:
 	void setScroll(const Common::Point &scroll) { _scroll = scroll; }
 	/** One main-loop iteration; returns true when it drew a frame */
 	bool tick(uint32 input, uint32 now);
+	const Common::Point &getNedPosition() const { return _nedPos; }
 
 private:
 	int findSequenceScene(int id) const;
 	bool loadSlot(int area, int id, int scene);
 	void place(uint32 now, bool advance);
+	void startNed();
+	void follow();
+	static void xform(void *user, int &x, int &y);
 
 	NightmareNedEngine *_vm;
 	Game *_game;
@@ -71,6 +77,11 @@ private:
 	Common::HashMap<int, int> _slotScenes;
 	Common::Point _scroll;
 	uint32 _lastTick;
+	CollisionWorld _world;    // DAT_00525da4
+	CollisionMap _userMap;    // DAT_00525da8 (bc_new)
+	Common::Point _nedPos;    // DAT_00525df8/fc
+	int _facing;              // the copy ned_tick writes (DAT_004c5750)
+	bool _nedStarted;
 };
 
 } // End of namespace NightmareNed

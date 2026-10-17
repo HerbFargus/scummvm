@@ -37,6 +37,7 @@
 #include "video/smk_decoder.h"
 
 #include "nightmarened/demo.h"
+#include "nightmarened/ned.h"
 #include "nightmarened/detection.h"
 #include "nightmarened/display.h"
 #include "nightmarened/game.h"
@@ -489,16 +490,50 @@ void NightmareNedEngine::runDemo() {
 	_keysDown.resize(Common::KEYCODE_LAST);
 	_display->_showCollision = ConfMan.hasKey("nightmarened_collision") && ConfMan.getBool("nightmarened_collision");
 
+	// WinMain start-up: NED00000 and Ned (0x44f710, 0x44fbc0)
+	_game->setNed(new Ned(_game));
+	if (!_game->ned()->init())
+		warning("Ned did not load");
+
 	PlacementDemo demo(this, _game);
 	if (!demo.loadAttic())
 		return;
-	Common::Point scroll(-2900, -2454);
-	if (ConfMan.hasKey("nightmarened_scroll"))
+	if (ConfMan.hasKey("nightmarened_scroll")) {
+		Common::Point scroll;
 		sscanf(ConfMan.get("nightmarened_scroll").c_str(), "%hd,%hd", &scroll.x, &scroll.y);
-	demo.setScroll(scroll);
+		demo.setScroll(scroll);
+	}
 
-	// Test hooks: nightmarened_ticks=<n> runs n drawn ticks, then nightmarened_shot=<png>
+	// Test hooks: nightmarened_ticks=<n> runs n drawn ticks, then nightmarened_shot=<png>;
+	// nightmarened_inputs=<bits>:<ticks>,... replaces the keyboard for that many drawn ticks each
 	int ticksLeft = ConfMan.hasKey("nightmarened_ticks") ? ConfMan.getInt("nightmarened_ticks") : -1;
+	struct ScriptedInput {
+		uint32 bits;
+		int ticks;
+	};
+	Common::Array<ScriptedInput> script;
+	if (ConfMan.hasKey("nightmarened_inputs")) {
+		Common::String spec = ConfMan.get("nightmarened_inputs");
+		const char *p = spec.c_str();
+		while (*p) {
+			char *end;
+			ScriptedInput in;
+			in.bits = strtoul(p, &end, 0);
+			if (end == p)
+				break;
+			p = end;
+			in.ticks = 1;
+			if (*p == ':') {
+				in.ticks = strtol(p + 1, &end, 0);
+				p = end;
+			}
+			script.push_back(in);
+			while (*p == ',' || *p == ' ')
+				p++;
+		}
+	}
+	uint scriptIndex = 0;
+	int scriptTicks = 0;
 	while (!shouldQuit()) {
 		Common::Event event;
 		while (g_system->getEventManager()->pollEvent(event)) {
@@ -510,7 +545,15 @@ void NightmareNedEngine::runDemo() {
 				_keysDown[event.kbd.keycode] = false;
 			}
 		}
-		if (demo.tick(readInput(), g_system->getMillis()) && ticksLeft > 0 && --ticksLeft == 0) {
+		uint32 input = readInput();
+		if (scriptIndex < script.size())
+			input = script[scriptIndex].bits;
+		bool drew = demo.tick(input, _game->now());
+		if (drew && scriptIndex < script.size() && ++scriptTicks >= script[scriptIndex].ticks) {
+			scriptIndex++;
+			scriptTicks = 0;
+		}
+		if (drew && ticksLeft > 0 && --ticksLeft == 0) {
 			if (ConfMan.hasKey("nightmarened_shot")) {
 				Common::DumpFile out;
 				byte pal[256 * 3];

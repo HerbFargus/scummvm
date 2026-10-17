@@ -54,12 +54,15 @@ struct HitBoxes {
 		int16 offX, offY, altOffX, altOffY;
 		Common::Rect rects[6];
 		bool hasRect[6];
+		int32 raw[6][4]; // as stored, including absent rects
 	};
 	Common::Array<Frame> frames;
 
 	bool load(Common::SeekableReadStream &stream);
 	/** NITENED.EXE 0x4860d0 */
 	bool getRect(int frame, int k, Common::Rect &r) const;
+	/** NITENED.EXE 0x4860d0 as is: x0, y0, x1, y1, -0x7fff when absent or out of range */
+	void getRawRect(int frame, int k, int32 out[4]) const;
 };
 
 /** 'BC' collision map (cbix): named regions plus a 1-bit solid mask */

@@ -24,7 +24,7 @@
 
 namespace NightmareNed {
 
-CollisionWorld::CollisionWorld() : _lastHit(0), _count(0), _user(0) {
+CollisionWorld::CollisionWorld() : _lastHit(0), _count(0), _user(nullptr) {
 	for (int i = 0; i < kMaxMaps; i++) {
 		_disabled[i] = false;
 		_maps[i] = nullptr;
@@ -76,10 +76,10 @@ void CollisionWorld::moveMap(CollisionMap *map, const Common::Rect &bounds) {
 	}
 }
 
-void CollisionWorld::setUser(int value) {
+void CollisionWorld::setUser(CollisionMap *map) {
 	// The original refuses once the world is full
 	if (_count < kMaxMaps)
-		_user = value;
+		_user = map;
 }
 
 bool CollisionWorld::testMap(int index, int16 x, int16 y) const {

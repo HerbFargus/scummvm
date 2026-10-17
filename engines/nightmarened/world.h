@@ -50,9 +50,9 @@ public:
 	void setDisabled(int index, bool disabled) { if (index >= 0 && index < kMaxMaps) _disabled[index] = disabled; }
 	int getMapCount() const { return _count; }
 	CollisionMap *getMap(int index) const { return index >= 0 && index < _count ? _maps[index] : nullptr; }
-	/** 0x487400 / 0x487c90: a value the scenes store with the world */
-	void setUser(int value);
-	int getUser() const { return _user; }
+	/** 0x487400 / 0x487c90: the scene's own region map (a bc_new map that Ned's region tests read) */
+	void setUser(CollisionMap *map);
+	CollisionMap *getUser() const { return _user; }
 
 	/** 0x487d10 world_solid_at */
 	bool isSolid(int x, int y);
@@ -65,7 +65,7 @@ private:
 	bool _disabled[kMaxMaps];
 	int _bounds[kMaxMaps][4];
 	CollisionMap *_maps[kMaxMaps];
-	int _user;
+	CollisionMap *_user;
 };
 
 } // End of namespace NightmareNed

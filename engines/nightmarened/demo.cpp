@@ -27,6 +27,7 @@
 #include "nightmarened/detection.h"
 #include "nightmarened/display.h"
 #include "nightmarened/game.h"
+#include "nightmarened/ned.h"
 #include "nightmarened/nightmarened.h"
 #include "nightmarened/rdx.h"
 
@@ -36,11 +37,22 @@ enum {
 	kAtticArea = 3,
 	kAtticList = 0x497680,
 	kAtticListCount = 0x13,
-	kScrollStep = 16
+	kAtticPalette = 0x5259a0, // the scene palette 0x404760 merges Ned's colours into
+	kNedListAttic1 = 7,       // 0x403f60
+	kNedListAttic2 = 0x15,
+	kAtticStartRoom = 2,      // InitialAtticScene's default (0x403f60)
+	kFollowLeft = 200,
+	kFollowRight = 440,
+	kFollowTop = 140,
+	kFollowBottom = 440
 };
 
+// The collision maps 0x404760 adds to the world by default (list 0x497680 destinations);
+// 0x52594c and 0x52595c are alternates it adds only for other attic states
+static const uint32 kAtticMaps[] = { 0x525940, 0x525944, 0x525948, 0x525950, 0x525954, 0x525958, 0x525960 };
+
 PlacementDemo::PlacementDemo(NightmareNedEngine *vm, Game *game) : _vm(vm), _game(game), _res(&game->res()),
-	_display(&game->display()), _naf(nullptr), _lastTick(0) {
+	_display(&game->display()), _naf(nullptr), _lastTick(0), _facing(1), _nedStarted(false) {
 }
 
 PlacementDemo::~PlacementDemo() {
@@ -90,14 +102,30 @@ bool PlacementDemo::loadAttic() {
 	_naf = _vm->openNaf(98000);
 	if (!_naf)
 		return false;
+	Ned *ned = _game->ned();
+	if (ned) {
+		// 0x403f60 (m2): the attic's Ned lists
+		ned->listLoad(kNedListAttic1);
+		ned->listLoad(kNedListAttic2);
+	}
 	_list = Resources::readRequests(_vm->getExe(), kAtticList, kAtticListCount);
 	_res->loadList(_naf, _list, 0);
 	for (Request &r : _list) {
-		if (r.collision)
+		if (r.collision) {
 			_collision.push_back(r.collision);
-		if (r.hasPalette && r.paletteVA)
+			for (uint32 va : kAtticMaps) {
+				if (r.destVA == va) // 0x404760: world_add_map(map, bc_bounds(map))
+					_world.addMap(r.collision, r.collision->bounds.left, r.collision->bounds.top,
+						r.collision->bounds.right, r.collision->bounds.bottom);
+			}
+		}
+		if (r.hasPalette && r.paletteVA) {
+			if (ned && r.paletteVA == kAtticPalette)
+				ned->copyPalette(r.palette); // 0x450210(0x5259a0)
 			_display->applyPalette(r.palette, kPalGame); // 0x404760: pal_apply(0x5259a0, 11)
+		}
 	}
+	_world.setUser(&_userMap);
 
 	Common::ScopedPtr<Common::SeekableReadStream> sst(_vm->openFile("98999001.SST"));
 	Common::Array<Placement> placements;
@@ -158,7 +186,62 @@ bool PlacementDemo::loadAttic() {
 		_placed.push_back(placed);
 	}
 	debugC(1, kDebugGraphics, "Attic: %d objects placed, %d collision maps", _placed.size(), _collision.size());
+	if (ned)
+		startNed();
 	return true;
+}
+
+// 0x404760 (m3) for Ned: the room's scroll, a floor point found upwards from the room's
+// bottom in map 0, facing right, idle, 33 ms steps through the attic xform
+void PlacementDemo::startNed() {
+	Ned *ned = _game->ned();
+	ned->listShow(kNedListAttic1);
+	ned->listShow(kNedListAttic2);
+	const ExeImage &exe = _vm->getExe();
+	uint32 room = 0x497938 + kAtticStartRoom * 0x54;
+	_scroll.x = kAtticStartRoom == 2 ? -0xd8d : -0x189 - exe.readSint32(room + 0x10);
+	_scroll.y = -exe.readSint32(room + 0x14);
+	_nedPos.x = -0x48 - _scroll.x;
+	_nedPos.y = 0;
+	int top = exe.readSint32(room + 0x14);
+	for (int y = (int16)exe.readUint16(room + 0x1c); y >= top; y--) {
+		if (!_collision.empty() && _collision[0]->isSolid((int16)_nedPos.x, y)) {
+			_nedPos.y = y;
+			break;
+		}
+	}
+	ned->setFacing(1);
+	ned->resetIdle();
+	ned->setWrap1(false, 0x1e58, xform, this);
+	ned->show(true);
+	ned->enable(true);
+	debugC(1, kDebugGraphics, "Ned starts at %d,%d, scroll %d,%d", _nedPos.x, _nedPos.y, _scroll.x, _scroll.y);
+}
+
+// FUN_004039e0: world -> screen in the attic
+void PlacementDemo::xform(void *user, int &x, int &y) {
+	PlacementDemo *demo = (PlacementDemo *)user;
+	x += demo->_scroll.x;
+	y += demo->_scroll.y;
+}
+
+// Stands in for the attic camera (0x407c50): keeps Ned's screen position inside a band
+void PlacementDemo::follow() {
+	int sx = _nedPos.x + _scroll.x, sy = _nedPos.y + _scroll.y;
+	int dx = 0, dy = 0;
+	if (sx < kFollowLeft)
+		dx = kFollowLeft - sx;
+	else if (sx > kFollowRight)
+		dx = kFollowRight - sx;
+	if (sy < kFollowTop)
+		dy = kFollowTop - sy;
+	else if (sy > kFollowBottom)
+		dy = kFollowBottom - sy;
+	if (!dx && !dy)
+		return;
+	_scroll.x += dx;
+	_scroll.y += dy;
+	_game->ned()->adjPosition(dx, dy);
 }
 
 // Each sprite loops its sequence: step, place, deadline = now + duration * 41 ms
@@ -188,14 +271,14 @@ bool PlacementDemo::tick(uint32 input, uint32 now) {
 		return false;
 	_lastTick = now;
 
-	if (input & kInputLeft)
-		_scroll.x += kScrollStep;
-	if (input & kInputRight)
-		_scroll.x -= kScrollStep;
-	if (input & kInputUp)
-		_scroll.y += kScrollStep;
-	if (input & kInputDown)
-		_scroll.y -= kScrollStep;
+	// 0x404f10: ned_tick, then the camera
+	Ned *ned = _game->ned();
+	if (ned) {
+		ned->tick(_world, input, _facing, _nedPos, now, _scroll.x, _scroll.y, nullptr);
+		follow();
+		debugC(3, kDebugGraphics, "Ned input %x state %d slot %d step %d at %d,%d facing %d", input, ned->getState(),
+			ned->getCurSlot(), ned->getSlotStep(ned->getCurSlot()), _nedPos.x, _nedPos.y, ned->getFacing());
+	}
 
 	place(now, true);
 	_display->setCollisionOverlay(_collision, _scroll);

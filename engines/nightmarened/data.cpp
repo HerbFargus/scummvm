@@ -73,6 +73,10 @@ bool HitBoxes::load(Common::SeekableReadStream &stream) {
 		for (int k = 0; k < 6; k++) {
 			int32 x0 = stream.readSint32LE(), y0 = stream.readSint32LE();
 			int32 x1 = stream.readSint32LE(), y1 = stream.readSint32LE();
+			fr.raw[k][0] = x0;
+			fr.raw[k][1] = y0;
+			fr.raw[k][2] = x1;
+			fr.raw[k][3] = y1;
 			fr.hasRect[k] = x0 != -0x7fff;
 			fr.rects[k] = fr.hasRect[k] ? Common::Rect(x0, y0, x1, y1) : Common::Rect();
 		}
@@ -85,6 +89,11 @@ bool HitBoxes::getRect(int frame, int k, Common::Rect &r) const {
 		return false;
 	r = frames[frame].rects[k];
 	return true;
+}
+
+void HitBoxes::getRawRect(int frame, int k, int32 out[4]) const {
+	for (int i = 0; i < 4; i++)
+		out[i] = (frame >= 0 && frame < (int)frames.size() && k >= 0 && k < 6) ? frames[frame].raw[k][i] : -0x7fff;
 }
 
 // u16 1, 'BC', i32 x0, y0, x1, y1, mask size, 0, i16 count (+pad);
