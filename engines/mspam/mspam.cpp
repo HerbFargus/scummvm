@@ -29,7 +29,9 @@
 #include "common/system.h"
 #include "common/textconsole.h"
 #include "engines/util.h"
+#include "graphics/cursorman.h"
 #include "graphics/paletteman.h"
+#include "graphics/wincursor.h"
 #include "image/png.h"
 
 #include "mspam/detection.h"
@@ -534,6 +536,13 @@ void MSPAMEngine::runGame(const Common::String &start) {
 Common::Error MSPAMEngine::run() {
 	initGraphics(kScreenWidth, kScreenHeight);
 	_screen.create(kScreenWidth, kScreenHeight, Graphics::PixelFormat::createFormatCLUT8());
+
+	// The title's cursor table and its window class both use the standard Windows arrow
+	Graphics::Cursor *cursor = Graphics::makeDefaultWinCursor();
+	CursorMan.replaceCursor(cursor);
+	delete cursor;
+	CursorMan.showMouse(true);
+
 	if (!loadTitle())
 		return Common::kNoGameDataFoundError;
 
