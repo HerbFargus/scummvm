@@ -8,7 +8,8 @@ MODULE_OBJS = \
 	mspam.o \
 	runtime.o \
 	script.o \
-	sound.o
+	sound.o \
+	video.o
 
 # This module can be built as a plugin
 ifeq ($(ENABLE_MSPAM), DYNAMIC_PLUGIN)
