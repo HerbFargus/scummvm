@@ -321,6 +321,12 @@ int Logic::objectCount() {
 	return s ? (int)s->_objects.size() : 0;
 }
 
+void Logic::endGame() {
+	_vm->playCutscene(0x62);
+	_vm->playCutscene(0x176);
+	_vm->quitGame();
+}
+
 void Logic::dropHeld() {
 	_vm->dropHeldItem();
 }
@@ -485,8 +491,18 @@ void Logic::step() {
 		_vm->runStep();
 }
 
-void Logic::fadePalette(int first, int count, int r, int g, int b, int speed) {
-	debugC(1, kDebugScript, "TODO: palette fade %d+%d to (%d, %d, %d), speed %d", first, count, r, g, b, speed);
+void Logic::fadeOut(int first, int last, int r, int g, int b) {
+	if (_vm->getScene())
+		_vm->fadePalette(_vm->getScene()->_palette, first, last, r, g, b, false);
+}
+
+void Logic::fadeIn(int first, int last, int r, int g, int b) {
+	if (_vm->getScene())
+		_vm->fadePalette(_vm->getScene()->_palette, first, last, r, g, b, true);
+}
+
+void Logic::unfade() {
+	_vm->setFaded(false);
 }
 
 void Logic::todo(const char *what) {

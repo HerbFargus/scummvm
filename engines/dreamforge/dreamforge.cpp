@@ -37,6 +37,7 @@
 #include "image/png.h"
 
 #include "dreamforge/act1_hooks.h"
+#include "dreamforge/act2.h"
 #include "dreamforge/actor.h"
 #include "dreamforge/banter.h"
 #include "dreamforge/console.h"
@@ -60,6 +61,13 @@ DreamForgeEngine::DreamForgeEngine(OSystem *syst, const ADGameDescription *gameD
 	memset(_layerState, 0, sizeof(_layerState));
 	memset(_objectState, 0, sizeof(_objectState));
 	_heldItem = -1;
+	_faded = false;
+	_checkPuppies = true;
+	_idleBanterAt = 0;
+	for (int n = 0; n < 2; n++) {
+		_fidgetAt[n] = 0;
+		_fidgetDir[n] = 0;
+	}
 	_newGame = false;
 	_restoring = false;
 	_roomsSeen = 0;
@@ -177,6 +185,9 @@ bool DreamForgeEngine::loadScene(int act, int area, int room) {
 	for (int n = 0; n < 2; n++)
 		_actors[n]->_arrivalCode = -1;
 	_logic->var(0x6DE34) = ticks() + 200;  // 0x107e0: the idle hook's timer
+	_idleBanterAt = ticks() + 0xE10;
+	_wanderSpots.clear();
+	resetFidget(3);
 	for (auto *o : _scene->_objects)
 		startObject(*o);
 	updateObjects(true);
@@ -184,7 +195,17 @@ bool DreamForgeEngine::loadScene(int act, int area, int room) {
 	_layerVisible.resize(_scene->_layers.size());
 	for (uint i = 0; i < _layerVisible.size(); i++)
 		_layerVisible[i] = true;
-	g_system->getPaletteManager()->setPalette(_scene->_palette, 0, 256);
+	setFaded(false);
+	if (isFlagSet(4)) {
+		redraw(false);
+		byte white[256 * 3];
+		memset(white, 0xFF, sizeof(white));
+		fadePalette(white, 0, 255, 0, 0, 0, false);
+		setFlag(4, false);
+		fadePalette(_scene->_palette, 0, 255, 0, 0, 0, true);
+	} else {
+		g_system->getPaletteManager()->setPalette(_scene->_palette, 0, 256);
+	}
 	if (_sound)
 		_sound->playMusic(_scene->_music, true);  // C.PRG 0x1db00: -666 keeps the current track
 	setScroll(0);
@@ -192,11 +213,16 @@ bool DreamForgeEngine::loadScene(int act, int area, int room) {
 		showActors(3);
 	if (act == 1 && !_restoring)
 		act1Enter(room, area);
+	else if (act == 2 && !_restoring)
+		act2_48bd0(*_logic, room, area);
 	redraw();
-	if (act == 1 && !_restoring && !isFlagSet(9) && !isFlagSet(3)) {
+	if ((act == 1 || act == 2) && !_restoring && !isFlagSet(9) && !isFlagSet(3)) {
 		bool wasInScript = _inScript;
 		_inScript = true;
-		act1AfterLoad(room, area);
+		if (act == 1)
+			act1AfterLoad(room, area);
+		else
+			act2_48c30(*_logic, room, area);
 		_inScript = wasInScript;
 	}
 	_dirty = true;
@@ -565,9 +591,37 @@ bool DreamForgeEngine::conditionsHold(const byte *conds, uint count) const {
 	return true;
 }
 
+void DreamForgeEngine::fadePalette(const byte *pal, int first, int last, int r, int g, int b, bool in) {
+	first = CLIP(first, 0, 255);
+	last = CLIP(last, first, 255);
+	const int to[3] = { r * 255 / 63, g * 255 / 63, b * 255 / 63 };
+	byte cur[256 * 3];
+	memcpy(cur, pal, sizeof(cur));
+	// One step per vertical retrace: levels 7..0 out, 1..8 in
+	for (int step = 0; step < 8 && !shouldQuit(); step++) {
+		int level = in ? step + 1 : 7 - step;
+		for (int i = first * 3; i < (last + 1) * 3; i++)
+			cur[i] = to[i % 3] + (((int)pal[i] - to[i % 3]) * level >> 3);
+		g_system->getPaletteManager()->setPalette(cur, 0, 256);
+		g_system->updateScreen();
+		Common::Event event;
+		while (g_system->getEventManager()->pollEvent(event)) {
+			if (event.type == Common::EVENT_MOUSEMOVE)
+				_mousePos = event.mouse;
+		}
+		g_system->delayMillis(14);
+	}
+	setFaded(!in);
+}
+
+void DreamForgeEngine::setFaded(bool faded) {
+	_faded = faded;
+	CursorMan.showMouse(!faded);
+}
+
 // Puppy depth shading (C.PRG 0x25350): darker the further back they stand
 void DreamForgeEngine::shadeActors() {
-	if (!_scene)
+	if (!_scene || _faded)
 		return;
 	for (int n = 1; n <= 2; n++) {
 		const Actor *a = getActor(n);
@@ -711,6 +765,7 @@ void DreamForgeEngine::updateObjects(bool force) {
 		advanceObject(o);
 		o.nextTick = now + o.delay;
 		int hookId = o.id, hookFrame = o.frame, hookFlags = o.flags;
+		int hookFrames = o.dfa ? o.dfa->getFrameCount() : 0;
 		if (o.frame != -1)
 			o.flags &= ~4;
 		if (o.temporary && (o.flags & 0x10)) {
@@ -723,9 +778,12 @@ void DreamForgeEngine::updateObjects(bool force) {
 			i--;
 		}
 		// The act's hook after each frame (0xdf05c); it may change the scene
-		if (!force && _scene->_act == 1) {
+		if (!force && (_scene->_act == 1 || _scene->_act == 2)) {
 			Scene *scene = _scene;
-			act1_3db10(*_logic, hookId, hookFrame, hookFlags);
+			if (_scene->_act == 1)
+				act1_3db10(*_logic, hookId, hookFrame, hookFlags);
+			else
+				act2_48730(*_logic, hookId, hookFrame, hookFrames);
 			if (_scene != scene)
 				return;
 		}
@@ -1071,6 +1129,7 @@ void DreamForgeEngine::actorWalk(int actor, int y, int x, int dir) {
 }
 
 void DreamForgeEngine::banter(int set) {
+	debugC(1, kDebugScript, "banter set %d", set);
 	banter_1c720(*_logic, set);
 }
 
@@ -1168,11 +1227,9 @@ void DreamForgeEngine::mainLoop() {
 			checkArrivals();
 			animateCursor();
 			_dirty = true;
-			// 0x10890: the act's idle hook while nothing else is going on
-			if (!_inScript && !_newGame && !isFlagSet(0x1A) && !_actors[0]->_busy && !_actors[1]->_busy &&
-				_scene && _scene->_act == 1) {
+			if (!_inScript && _input.empty()) {
 				_inScript = true;
-				act1_3f780(*_logic);
+				idleStep();
 				_inScript = false;
 			}
 		}

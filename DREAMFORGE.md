@@ -46,13 +46,15 @@ Clicks go through the game's own dispatcher: the cursor id under the mouse
 picks the verb, each verb runs a pipeline per layer, hotspot or object
 (walk to the record's point, then its script, then the act's handler), and
 a puppy that has to walk first posts the click again when it arrives. All
-of act 1's room code written in C is ported (scene entry and after-load,
-the click pre-filter, the per-verb handlers, the idle, object-frame and
-fidget hooks, banter) behind a small `Logic` API in `logic.h`.
+of the room code written in C is ported (act 1 and the act 2 finale:
+scene entry and after-load, the click pre-filter, the per-verb handlers,
+the idle, object-frame and fidget hooks, banter) behind a small `Logic`
+API in `logic.h`. The idle logic runs as the original's: fidgets, idle
+banter, puppy 2 wandering between the room's spots, and palette fades.
 
-Not yet: the other acts' room code, puppy 2's wandering and fidgets,
-pixel-accurate puppy hit tests, palette fades, start/stop/footstep
-details, the game's own options and quit screens.
+Not yet: objects that follow a path (the finale's barrels need them),
+pixel-accurate puppy hit tests, start/stop/footstep details, the game's
+own options and quit screens.
 
 The reverse-engineering notes (formats, code map) live outside the fork, in
 `escape-from-devil-manor/NOTES.md`.

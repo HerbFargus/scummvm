@@ -8,6 +8,7 @@ MODULE_OBJS = \
 	act1_hooks.o \
 	act1_post.o \
 	act1_use.o \
+	act2.o \
 	actor.o \
 	banter.o \
 	console.o \
@@ -15,6 +16,7 @@ MODULE_OBJS = \
 	dfa.o \
 	dreamforge.o \
 	game.o \
+	idle.o \
 	input.o \
 	lipsync.o \
 	logic.o \

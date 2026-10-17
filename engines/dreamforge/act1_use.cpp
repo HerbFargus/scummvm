@@ -50,8 +50,8 @@ int act1_37ea0(Logic &L, int layerId) {
 			L.set(flagLow);
 		else
 			L.set(flagHigh);
-		L.fadePalette(0x10, 0xff, 0, 0, 0, 0);  // 0x51160(0x883a4, 0x10, 0xff, 0, 0, 0)
-		L.todo("0x4cbe0 clear bit 7 of 0xe15e0");
+		L.fadeOut(0x10, 0xff, 0, 0, 0);
+		L.unfade();
 		L.changeScene(0x1cd, 0x140, 6, 0x1d6, 0x26c, 0, 1, 1, 4);
 		return 0;
 	};
@@ -1173,8 +1173,8 @@ int act1_3bed0(Logic &L, int hotspotId) {
 	// The shared ending: fade, then on to 1X01X05 (from either side of the floor)
 	auto leave = [&](int x1, int d1) {
 		L.set(0x177);
-		L.fadePalette(0x10, 0xff, 0, 0, 0, 0);  // 0x51160(0x883a4, 0x10, 0xff, 0, 0, 0)
-		L.todo("0x4cbe0 clear bit 7 of 0xe15e0");
+		L.fadeOut(0x10, 0xff, 0, 0, 0);
+		L.unfade();
 		act1_473f0(L);
 		L.changeScene(0x107, x1, d1, 0x10e, 0x213, 0, 1, 1, 5);
 		return 0;

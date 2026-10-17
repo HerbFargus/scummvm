@@ -117,6 +117,7 @@ public:
 	/** Every act's room-code globals to their starting values */
 	void initLogicVars();
 	void roomEventDone();
+	bool roomBanterAllowed() const;
 	void hideActors(int which);
 	void showActors(int which);
 	void setActorPos(int actor, int y, int x);
@@ -136,6 +137,14 @@ public:
 	Common::Array<bool> _layerVisible;
 
 	void redraw(bool present = true);
+	/**
+	 * Fades palette entries first..last between pal and a 6-bit colour in eight
+	 * steps (C.PRG 0x51160 out, 0x51240 in). Out leaves the screen marked faded,
+	 * which hides the cursor, until a fade in or setFaded(false) (0x4cbe0).
+	 */
+	void fadePalette(const byte *pal, int first, int last, int r, int g, int b, bool in);
+	void setFaded(bool faded);
+	bool _faded;  // bit 7 of 0xe15e0
 
 	// Game state
 	bool isFlagSet(uint flag) const;
@@ -246,6 +255,21 @@ private:
 	void lookClick(int y, int x, int code);
 	void walkClick(int y, int x, bool arrow);
 	void useClick(int y, int x, int code);
+	int callAct2Handler(uint32 table, int a, int b, int c, int none);
+	// Idle logic (idle.cpp, 0x10890)
+	void idleStep();
+	bool actorBusy(int g) const;
+	bool actVeto(int g);
+	void resetFidget(int g);
+	void fidget(int g);
+	void idleBanter();
+	void faceGuy1();
+	void wander();
+	uint32 _fidgetAt[2];          // 0x8737c
+	Common::Point _fidgetFrom[2];  // where the puppy stood when the fidget timer started
+	int _fidgetDir[2];
+	uint32 _idleBanterAt;         // 0xdf040
+	Common::Array<int> _wanderSpots;  // 0x88330: the spots puppy 2 picks from
 	void drawScene();
 	void startObject(SceneObject &o);
 	void advanceObject(SceneObject &o);

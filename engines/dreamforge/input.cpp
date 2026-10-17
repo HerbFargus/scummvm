@@ -24,8 +24,10 @@
 #include "common/textconsole.h"
 
 #include "dreamforge/act1_click.h"
+#include "dreamforge/act1_hooks.h"
 #include "dreamforge/act1_post.h"
 #include "dreamforge/act1_use.h"
+#include "dreamforge/act2.h"
 #include "dreamforge/actor.h"
 #include "dreamforge/detection.h"
 #include "dreamforge/dfa.h"
@@ -65,10 +67,19 @@ static const VerbTables kVerbs[] = {
 // The act's handler in one of the per-act tables; 'none' when the act has none.
 // Only act 1 is ported; most of its "before" entries are 0x35ae0, which returns 0.
 int DreamForgeEngine::callActHandler(uint32 table, int a, int b, int c, int none) {
-	if (!_scene || _scene->_act != 1)
+	if (!_scene)
+		return none;
+	if (_scene->_act == 2)
+		return callAct2Handler(table, a, b, c, none);
+	if (_scene->_act != 1)
 		return none;
 	Logic &L = *_logic;
 	switch (table) {
+	case 0x88370:
+		return act1_40cb0(L, a) ? 1 : 0;
+	case 0x6DE38:
+		act1_3f780(L);
+		return 0;
 	case 0xDF020:
 		return act1_43d60(L, a, b, c);
 	case 0xDF030:
@@ -138,6 +149,42 @@ int DreamForgeEngine::callActHandler(uint32 table, int a, int b, int c, int none
 	default:
 		warning("No act 1 handler for table 0x%x", table);
 		return none;
+	}
+}
+
+// Act 2 (the finale) fills most of its tables with stubs
+int DreamForgeEngine::callAct2Handler(uint32 table, int a, int b, int c, int none) {
+	Logic &L = *_logic;
+	switch (table) {
+	case 0x88370:
+		return act2_48b40(L, a) ? 1 : 0;
+	case 0x6DE38:
+		act2_48a80(L);
+		return 0;
+	case 0xDF020:
+	case 0xDF030:
+		return 1;  // 0x48e30
+	case 0xDF010:
+	case 0xE1304:
+	case 0xDF92C:
+		return 0;  // 0x48710
+	case 0xDF8FC:
+	case 0xDF90C:
+	case 0xDF91C:
+		dropHeldItem();  // 0x48720
+		return 0;
+	case 0xDFA08:
+		// 0x486f0, 0x48690, 0x486c0: the talk depth, read by id as an array index as the original does
+		L.var(0xE0AD4) = L.hotspotTopAt(a) + L.hotspotHeightAt(a) - 1;
+		return 0;
+	case 0xDFA18:
+		L.var(0xE0AD4) = L.layerDepthAt(a);
+		return 0;
+	case 0xDFA28:
+		L.var(0xE0AD4) = L.objectDepthAt(a);
+		return 0;
+	default:
+		return 0;  // 0x48670 and 0x48680
 	}
 }
 

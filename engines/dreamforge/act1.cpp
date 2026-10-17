@@ -26,6 +26,7 @@
 #include "dreamforge/act1_hooks.h"
 #include "dreamforge/act1_post.h"
 #include "dreamforge/act1_use.h"
+#include "dreamforge/act2.h"
 #include "dreamforge/actor.h"
 #include "dreamforge/banter.h"
 #include "dreamforge/logic.h"
@@ -219,6 +220,7 @@ void DreamForgeEngine::initLogicVars() {
 	act1_hooks_initVars(*_logic);
 	act1_post_initVars(*_logic);
 	act1_use_initVars(*_logic);
+	act2_initVars(*_logic);
 }
 
 // 0x477e0: in the tile puzzle room (1, 1, 4) a button shows no cursor while
@@ -298,8 +300,23 @@ void DreamForgeEngine::roomEventDone() {
 			break;
 		}
 	}
-	// TODO: banter set 6 (0x1c720) over the first few rooms when flag 0x1b is up (0x20450)
+	// Over the first few new rooms the puppies remark on them, unless the story is busy
+	if (_roomsSeen != 0 && _roomsSeen < 4 && _logic->var(0x647B0) == 0 && !_newGame && roomBanterAllowed()) {
+		if (!isFlagSet(0x1B))
+			return;
+		banter(6);
+	}
 	setFlag(0x1B, false);
+}
+
+// 0x20450
+bool DreamForgeEngine::roomBanterAllowed() const {
+	static const int16 kBusy[] = { 0x16D, 0xCC, 0xD3, 200, 0x154, 0x170, 0xED, 0xDD, 0xDA, 0x16B };
+	bool allowed = !(isFlagSet(0x174) && !isFlagSet(0x176));
+	for (int f : kBusy)
+		if (isFlagSet(f))
+			allowed = false;
+	return allowed && !isFlagSet(0xB5);
 }
 
 } // End of namespace DreamForge
