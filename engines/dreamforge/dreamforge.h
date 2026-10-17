@@ -61,6 +61,12 @@ public:
 	Sound *getSound() const { return _sound; }
 	/** Plays CINE\<number>.DFA with its sound cues, then restores the scene */
 	bool playCutscene(int number);
+	/**
+	 * Lip sync demo until actors exist: plays a voice line with a puppy's talking
+	 * animation (PIG2, on black with its own palette) driven by its visemes.
+	 * shotDir, if set, gets a PNG per step.
+	 */
+	bool sayDemo(int voiceId, int actor, int slot, int view, const Common::String &shotDir = Common::String());
 	ResourceArchive *getArchive(uint n) const { return n < kArchiveCount ? _archives[n] : nullptr; }
 
 	void setScroll(int x);

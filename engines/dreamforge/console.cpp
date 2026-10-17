@@ -21,6 +21,7 @@
 
 #include "dreamforge/console.h"
 #include "dreamforge/dreamforge.h"
+#include "dreamforge/lipsync.h"
 #include "dreamforge/resource.h"
 #include "dreamforge/scene.h"
 #include "dreamforge/sound.h"
@@ -28,6 +29,7 @@
 namespace DreamForge {
 
 Console::Console(DreamForgeEngine *vm) : GUI::Debugger(), _vm(vm), _cine(-1) {
+	_say[0] = -1;
 	registerCmd("scene", WRAP_METHOD(Console, cmdScene));
 	registerCmd("scenes", WRAP_METHOD(Console, cmdScenes));
 	registerCmd("hotspots", WRAP_METHOD(Console, cmdHotspots));
@@ -40,6 +42,7 @@ Console::Console(DreamForgeEngine *vm) : GUI::Debugger(), _vm(vm), _cine(-1) {
 	registerCmd("sfx", WRAP_METHOD(Console, cmdSfx));
 	registerCmd("voice", WRAP_METHOD(Console, cmdVoice));
 	registerCmd("music", WRAP_METHOD(Console, cmdMusic));
+	registerCmd("say", WRAP_METHOD(Console, cmdSay));
 }
 
 bool Console::cmdScene(int argc, const char **argv) {
@@ -178,10 +181,27 @@ bool Console::cmdMusic(int argc, const char **argv) {
 	return true;
 }
 
+bool Console::cmdSay(int argc, const char **argv) {
+	if (argc < 2) {
+		debugPrintf("Usage: %s <voice> [actor 1|2] [slot] [view 0-4]\n", argv[0]);
+		debugPrintf("Talking slots: 9 or 30 (normal), 11 or 14, 18 or 26 (the first of each pair is quick)\n");
+		return true;
+	}
+	_say[0] = atoi(argv[1]);
+	_say[1] = argc > 2 ? atoi(argv[2]) : 1;
+	_say[2] = argc > 3 ? atoi(argv[3]) : talkSlot(false, false, true);
+	_say[3] = argc > 4 ? atoi(argv[4]) : 0;
+	return cmdExit(0, nullptr);
+}
+
 void Console::postEnter() {
 	if (_cine >= 0) {
 		_vm->playCutscene(_cine);
 		_cine = -1;
+	}
+	if (_say[0] >= 0) {
+		_vm->sayDemo(_say[0], _say[1], _say[2], _say[3]);
+		_say[0] = -1;
 	}
 }
 

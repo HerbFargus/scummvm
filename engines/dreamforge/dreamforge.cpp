@@ -38,6 +38,7 @@
 #include "dreamforge/cutscene.h"
 #include "dreamforge/detection.h"
 #include "dreamforge/dreamforge.h"
+#include "dreamforge/lipsync.h"
 #include "dreamforge/resource.h"
 #include "dreamforge/scene.h"
 #include "dreamforge/sound.h"
@@ -229,6 +230,56 @@ void DreamForgeEngine::runCutsceneHook() {
 		cutscene.play(atoi(cines.nextToken().c_str()));
 }
 
+bool DreamForgeEngine::sayDemo(int voiceId, int actor, int slot, int view, const Common::String &shotDir) {
+	AnimFrames anim;
+	uint index = actorAnimIndex(actor, slot, view);
+	if (!anim.load(_archives[2], index)) {
+		warning("say: no animation PIG2 #%u", index);
+		return false;
+	}
+	Common::Array<byte> visemes;
+	if (!LipSync::load(this, voiceId, visemes))
+		warning("say: voice %d has no lip sync", voiceId);
+	debugC(1, kDebugSound, "say %d: actor %d slot %d view %d (PIG2 #%u, %u frames)", voiceId, actor, slot, view,
+		index, anim.frames.size());
+
+	g_system->getPaletteManager()->setPalette(anim.palette, 0, 256);
+	const Graphics::Surface *first = anim.frames[0];
+	int x = (kScreenWidth - first->w) / 2, y = (kScreenHeight - first->h) / 2;
+	_sound->playVoice(voiceId);
+	uint32 start = g_system->getMillis();
+	Common::String trace;
+	for (uint step = 0; step <= visemes.size() && !shouldQuit(); step++) {
+		// 0 (or the end of the string) ends the line, and so does the end of the voice
+		byte v = step < visemes.size() ? visemes[step] : 0;
+		if (v == 0 || (step > 0 && shotDir.empty() && !_sound->isVoicePlaying()))
+			break;
+		uint frame = (v - 1) % anim.frames.size();
+		trace += Common::String::format("%u", frame);
+		_screen.fillRect(Common::Rect(kScreenWidth, kScreenHeight), 0);
+		_screen.copyRectToSurface(*anim.frames[frame], x, y, Common::Rect(first->w, first->h));
+		g_system->copyRectToScreen(_screen.getPixels(), _screen.pitch, 0, 0, kScreenWidth, kScreenHeight);
+		g_system->updateScreen();
+		if (!shotDir.empty()) {
+			Common::DumpFile out;
+			if (out.open(Common::Path(Common::String::format("%s/say%d_%03u_f%u.png", shotDir.c_str(), voiceId, step, frame), '/'), true))
+				Image::writePNG(out, *anim.frames[frame], anim.palette);
+		}
+		uint32 due = start + (step + 1) * kLipSyncStepMs;
+		while (g_system->getMillis() < due && !shouldQuit()) {
+			Common::Event event;
+			while (g_system->getEventManager()->pollEvent(event)) {
+			}
+			g_system->delayMillis(5);
+		}
+	}
+	debugC(1, kDebugSound, "say %d frames: %s", voiceId, trace.c_str());
+	if (_scene)
+		g_system->getPaletteManager()->setPalette(_scene->_palette, 0, 256);
+	_dirty = true;
+	return true;
+}
+
 void DreamForgeEngine::handleEvents() {
 	Common::Event event;
 	while (g_system->getEventManager()->pollEvent(event)) {
@@ -281,6 +332,13 @@ Common::Error DreamForgeEngine::run() {
 	_sound = new Sound(this, _mixer);
 	_sound->init();
 
+	// Test hook: dreamforge_say=<voice>[,actor,slot,view] runs the lip sync demo and quits
+	if (ConfMan.hasKey("dreamforge_say")) {
+		int v = 0, a = 1, s = talkSlot(false, false, true), w = 0;
+		sscanf(ConfMan.get("dreamforge_say").c_str(), "%d,%d,%d,%d", &v, &a, &s, &w);
+		sayDemo(v, a, s, w, ConfMan.get("dreamforge_shot_dir"));
+		return Common::kNoError;
+	}
 	if (ConfMan.hasKey("dreamforge_cine")) {
 		runCutsceneHook();
 		return Common::kNoError;

@@ -18,8 +18,12 @@ with palette and scrolling, the paw cursor, and a debug console that jumps
 between scenes.
 
 M2 (cutscenes and sound): the DFA decoder, cutscenes with their ACT sound
-cues, effects, voices and scene music. Not yet: the talking-head lip sync
-drawn during voice lines (C.PRG 0x14260). No game logic yet.
+cues, effects, voices and scene music.
+
+Lip sync: the viseme data, its timing and the talking animations, shown by a
+stand-alone demo (`say`) until the actor system exists. Cutscene mouths are
+drawn into the DFAs; the caption panel the cutaway code can draw beside a
+cutscene (C.PRG 0x14260) is never switched on by the game. No game logic yet.
 
 The reverse-engineering notes (formats, code map) live outside the fork, in
 `escape-from-devil-manor/NOTES.md`.
@@ -57,8 +61,17 @@ CD (or a copy of it) is enough.
 - Sound numbers come in banks of 1000. INIT.PIG (31 words) gives each bank's
   first archive index: effects (11000-14000, 20000-23000, 30000, 31000,
   40000, 41000) are in PIG1, voices (10000, 11000, 20000-22000, 30000,
-  42000-46000) in PIG3. Music track n is PIG4 entry n. The 801 lip-sync
-  entries in PIG6 match the voices before the 20000 bank.
+  42000-46000) in PIG3. Music track n is PIG4 entry n.
+- Puppy animations (PIG2): entry = (actor - 1) * 165 + slot * 5 + view, for
+  2 actors, 33 slots (frame counts at C.PRG 0x16340) and 5 drawn views. They
+  carry their own 16-colour palette (indices 0-46, 0 is the green key);
+  how the game fits them to each scene's palette isn't worked out yet.
+- Lip sync (PIG6, C.PRG 0x1bd20): entry n goes with voice n in PIG3, for the
+  801 voices before the 20000 bank. One viseme per game step; viseme v shows
+  frame v - 1 of a 6-frame talking slot (9/30, 11/14 or 18/26, picked by two
+  actor state flags and whether the line is quick), 0 ends the line, and the
+  line also ends with its sound. A step is two ticks of the game timer; the
+  data averages 10.2 visemes per second of speech, so it's 100 ms here.
 
 ## Testing
 
@@ -67,8 +80,8 @@ plays, and `boot.sh` runs with test hooks (`dreamforge_scene=1X01X06`,
 `dreamforge_scroll=N`, `dreamforge_layers=true`, `dreamforge_shot=<png>`,
 `dreamforge_allscenes=<dir>`, `dreamforge_cine=<n,...>` with
 `dreamforge_fast=true`, `dreamforge_cine_frames=<f,...>` and
-`dreamforge_shot_dir=<dir>`).
+`dreamforge_shot_dir=<dir>`, `dreamforge_say=<voice>[,actor,slot,view]`).
 
 Console: `scene 1X01X06`, `scenes`, `hotspots`, `layers`, `layer <n|all|none>`,
 `scroll <x>`, `archives`, `shot <png>`, `cine <n>`, `sfx <n> [channel]`,
-`voice <n>`, `music <n|stop>`. Keys: arrows scroll, L toggles layers.
+`voice <n>`, `music <n|stop>`, `say <voice> [actor] [slot] [view]`. Keys: arrows scroll, L toggles layers.

@@ -5,6 +5,7 @@ MODULE_OBJS = \
 	cutscene.o \
 	dfa.o \
 	dreamforge.o \
+	lipsync.o \
 	metaengine.o \
 	resource.o \
 	scene.o \
