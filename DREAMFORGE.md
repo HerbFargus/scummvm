@@ -21,9 +21,19 @@ M2 (cutscenes and sound): the DFA decoder, cutscenes with their ACT sound
 cues, effects, voices and scene music.
 
 Lip sync: the viseme data, its timing and the talking animations, shown by a
-stand-alone demo (`say`) until the actor system exists. Cutscene mouths are
-drawn into the DFAs; the caption panel the cutaway code can draw beside a
-cutscene (C.PRG 0x14260) is never switched on by the game. No game logic yet.
+stand-alone demo (`say`). Cutscene mouths are drawn into the DFAs; the caption
+panel the cutaway code can draw beside a cutscene (C.PRG 0x14260) is never
+switched on by the game.
+
+M3 (gameplay, in progress): the action-script interpreter (most of the room
+interactions are bytecode in the scene records), and the puppies: placing,
+facing, turning, one-shots, walking with the original step tables and
+scaling, routing over the waypoint graph, depth-sorted drawing with layers
+and objects, depth shading, and talking with lip sync. Clicks walk puppy 1
+or send a hotspot's puppy over before its script; walking into a region
+(exits) runs its script. Not yet: object animation, puppy 2's wandering,
+start/stop/footstep details, the cursor, menus and inventory, saving, and
+the act handlers written in C.
 
 The reverse-engineering notes (formats, code map) live outside the fork, in
 `escape-from-devil-manor/NOTES.md`.
@@ -73,6 +83,12 @@ CD (or a copy of it) is enough.
   line also ends with its sound. A step is two ticks of the game timer; the
   data averages 10.2 visemes per second of speech, so it's 100 ms here.
 
+- Action scripts (hotspots, objects and layers share a record header: rect
+  as top, left, height, width; per-puppy walk-to x, y, dir; who acts; the
+  script at +0x34; name at +0x258): 21-byte instructions, u8 opcode + 10 u16
+  args, 64 opcodes, run to an end marker. Hotspot masks: 1 walk-in region,
+  4 click, 2 use, 0x10/0x20 room logic.
+
 ## Testing
 
 `tools-dreamforge/` in the parent folder: `make.sh` builds, `play.sh [scene]`
@@ -80,8 +96,11 @@ plays, and `boot.sh` runs with test hooks (`dreamforge_scene=1X01X06`,
 `dreamforge_scroll=N`, `dreamforge_layers=true`, `dreamforge_shot=<png>`,
 `dreamforge_allscenes=<dir>`, `dreamforge_cine=<n,...>` with
 `dreamforge_fast=true`, `dreamforge_cine_frames=<f,...>` and
-`dreamforge_shot_dir=<dir>`, `dreamforge_say=<voice>[,actor,slot,view]`).
+`dreamforge_shot_dir=<dir>`, `dreamforge_say=<voice>[,actor,slot,view]`,
+`dreamforge_use=<hotspot id,...>`, `dreamforge_walk=<y,x>`, `dreamforge_run_ms=<ms>`,
+`dreamforge_shot_every=<ms>`, `dreamforge_quit=true`).
 
 Console: `scene 1X01X06`, `scenes`, `hotspots`, `layers`, `layer <n|all|none>`,
 `scroll <x>`, `archives`, `shot <png>`, `cine <n>`, `sfx <n> [channel]`,
-`voice <n>`, `music <n|stop>`, `say <voice> [actor] [slot] [view]`. Keys: arrows scroll, L toggles layers.
+`voice <n>`, `music <n|stop>`, `say <voice> [actor] [slot] [view]`, `use <id>`,
+`flag <n> [0|1]`. Keys: arrows scroll, L toggles layers.
