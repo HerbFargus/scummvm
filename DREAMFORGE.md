@@ -52,9 +52,11 @@ the idle, object-frame and fidget hooks, banter) behind a small `Logic`
 API in `logic.h`. The idle logic runs as the original's: fidgets, idle
 banter, puppy 2 wandering between the room's spots, and palette fades.
 
-Not yet: objects that follow a path (the finale's barrels need them),
-pixel-accurate puppy hit tests, start/stop/footstep details, the game's
-own options and quit screens.
+Objects that follow a path (the finale's tunnel pieces and TNT) slide
+down their track scaled per row, setting off on random rolls.
+
+Not yet: pixel-accurate puppy hit tests, start/stop/footstep details,
+the game's own options and quit screens.
 
 The reverse-engineering notes (formats, code map) live outside the fork, in
 `escape-from-devil-manor/NOTES.md`.

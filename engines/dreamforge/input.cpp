@@ -293,12 +293,13 @@ int DreamForgeEngine::objectIndexAt(int y, int x, bool temporary, uint16 mask) c
 		const SceneObject *o = _scene->_objects[i];
 		if (o->temporary && !temporary)
 			continue;
-		if (o->data.size() < 0x284 || !o->dfa || o->frame < 0 || (o->flags2 & 0x80))
+		if (o->data.size() < 0x284 || !o->dfa || o->frame < 0 || (o->flags2 & 0xA0))
 			continue;
 		uint16 m = READ_LE_UINT16(o->data.data() + 0x270);
 		if (!(m & mask) || !conditionsHold(o->data.data() + 0x272, 9))
 			continue;
-		if (!o->rect.contains(Common::Point(x, y)))
+		Common::Rect r = o->isPath() ? Common::Rect(o->pathX, o->pathRow - o->pathH + 1, o->pathX + o->pathW, o->pathRow + 1) : o->rect;
+		if (!r.contains(Common::Point(x, y)))
 			continue;
 		if (o->depth >= bestDepth) {
 			best = i;

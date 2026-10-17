@@ -271,9 +271,18 @@ private:
 	uint32 _idleBanterAt;         // 0xdf040
 	Common::Array<int> _wanderSpots;  // 0x88330: the spots puppy 2 picks from
 	void drawScene();
+	void drawSurface(const Graphics::Surface &surf, const Common::Point &pos, bool mirror, bool keyed);
 	void startObject(SceneObject &o);
 	void advanceObject(SceneObject &o);
 	void updateObjects(bool force);
+	// Path objects (objects.cpp: 0x22e20 launch, 0x22590 step)
+	bool launchPath(SceneObject &o);
+	void stepPath(SceneObject &o);
+	void sizePath(SceneObject &o);
+	void shufflePathDice(bool reset);
+	uint32 _pathTick;      // 0xdf058, updates so far
+	byte _pathDice[100];   // 0xeb248: 1..100 shuffled
+	int _pathDie;          // 0xeb2ac
 	uint32 ticks() const { return g_system->getMillis() * 182 / 10000; }  // the 18.2 Hz game timer
 	void shadeActors();
 	bool conditionsHold(const byte *conds, uint count) const;

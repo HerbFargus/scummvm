@@ -110,6 +110,8 @@ public:
 	void dropHeld();                                   // 0x257a0
 	/** The end of the game (0x10180): the closing cutscenes, then back to the launcher */
 	void endGame();
+	bool objOnPath(int id);                 // 0x223b0: a path object out on its run
+	void objPathChance(int id, int chance); // 0x22090
 	/** Swaps in another scene file's walk map and waypoints (0x485a0) */
 	void loadWalkMap(int act, int area, int room);
 	void roomDone();                                  // 0x205c0

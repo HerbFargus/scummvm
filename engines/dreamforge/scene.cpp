@@ -162,9 +162,11 @@ bool Scene::load(int act, int area, int room) {
 		// flags & 4: a byte, then (if set) a run as long as the object's travel range
 		if (obj.data[0x32] & 4) {
 			if (in.readByte()) {
-				int32 a = (int32)READ_LE_UINT32(obj.data.data() + 0x284);
-				int32 b = (int32)READ_LE_UINT32(obj.data.data() + 0x28C);
-				in.skip(ABS(a - b) + 1);
+				obj.pathScale.resize(ABS(obj.pathEnd() - obj.pathStart()) + 1);
+				in.read(obj.pathScale.data(), obj.pathScale.size());
+				obj.flags2 |= 0x20;
+				obj.pathDepthOff = obj.pathEnd() - obj.depth;
+				obj.pathChance = READ_LE_UINT16(obj.data.data() + 0x294);
 			}
 		}
 	}

@@ -439,6 +439,17 @@ bool Logic::objCond(int id) {
 	return o && (o->temporary || _vm->conditionsHold(o->data.data() + 0x272, 9));
 }
 
+bool Logic::objOnPath(int id) {
+	SceneObject *o = findObject(_vm, id);
+	return o && !(o->flags2 & 0x20);
+}
+
+void Logic::objPathChance(int id, int chance) {
+	SceneObject *o = findObject(_vm, id);
+	if (o)
+		o->pathChance = chance & 0xFF;
+}
+
 int Logic::objFrameOf(int id) {
 	SceneObject *o = findObject(_vm, id);
 	return o ? o->frame : -1;

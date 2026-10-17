@@ -21,6 +21,7 @@ MODULE_OBJS = \
 	lipsync.o \
 	logic.o \
 	metaengine.o \
+	objects.o \
 	resource.o \
 	scene.o \
 	script.o \

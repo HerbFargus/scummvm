@@ -45,9 +45,7 @@ void act2_48730(Logic &L, int objectId, int frame, int frameCount) {
 	case 0xc: {
 		if (last != frame)
 			return;
-		L.todo("0x223b0(3): true if path object 3 has left its start (record +0x31 bit 0x20 clear)");
-		const bool running = false;
-		if (running || L.isSet(0x1c0)) {
+		if (L.objOnPath(3) || L.isSet(0x1c0)) {
 			L.cutscene(0x144, 10, 0, 0, 0, 0, 1);
 			L.cutscene(0xe8, 10, 0, 0, 0, 0, 1);
 			L.cutscene(0x45, 10, 0, 0, 0, 0, 1);
@@ -116,7 +114,7 @@ void act2_48a80(Logic &L) {
 			L.busyOff();    // a tail jump to 0x12d90
 			return;
 		}
-		L.todo("0x22090(3, 100): set path object 3's start chance (record +0x294) to 100, so it sets off now");
+		L.objPathChance(3, 100);
 		return;
 	}
 	if (!L.isSet(0xe8))

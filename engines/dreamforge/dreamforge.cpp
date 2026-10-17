@@ -63,6 +63,8 @@ DreamForgeEngine::DreamForgeEngine(OSystem *syst, const ADGameDescription *gameD
 	_heldItem = -1;
 	_faded = false;
 	_checkPuppies = true;
+	_pathTick = 0;
+	shufflePathDice(true);
 	_idleBanterAt = 0;
 	for (int n = 0; n < 2; n++) {
 		_fidgetAt[n] = 0;
@@ -262,7 +264,10 @@ bool DreamForgeEngine::saveShot(const Common::String &path) {
 	Common::DumpFile out;
 	if (!out.open(Common::Path(path, '/'), true))
 		return false;
-	return Image::writePNG(out, _screen, _scene ? _scene->_palette : nullptr);
+	// What is on screen: the live palette, with fades and puppy shading
+	byte pal[256 * 3];
+	g_system->getPaletteManager()->grabPalette(pal, 0, 256);
+	return Image::writePNG(out, _screen, pal);
 }
 
 // Test hook: dreamforge_allscenes=<dir> writes <dir>/<scene>.png (and _layers.png) for every scene
@@ -592,6 +597,7 @@ bool DreamForgeEngine::conditionsHold(const byte *conds, uint count) const {
 }
 
 void DreamForgeEngine::fadePalette(const byte *pal, int first, int last, int r, int g, int b, bool in) {
+	debugC(1, kDebugScript, "fade %s %d..%d %s (%d, %d, %d)", in ? "in" : "out", first, last, in ? "from" : "to", r, g, b);
 	first = CLIP(first, 0, 255);
 	last = CLIP(last, first, 255);
 	const int to[3] = { r * 255 / 63, g * 255 / 63, b * 255 / 63 };
@@ -657,7 +663,7 @@ void DreamForgeEngine::drawScene() {
 	}
 	for (uint i = 0; i < _scene->_objects.size(); i++) {
 		const SceneObject &o = *_scene->_objects[i];
-		if (o.dfa && o.frame >= 0 && (o.temporary || conditionsHold(o.data.data() + 0x272, 9)) && !(o.flags2 & 0x80)) {
+		if (o.dfa && o.frame >= 0 && (o.temporary || conditionsHold(o.data.data() + 0x272, 9)) && !(o.flags2 & 0xA0)) {
 			Item it = { o.depth, 1, (int)i };
 			items.push_back(it);
 		}
@@ -691,27 +697,39 @@ void DreamForgeEngine::drawScene() {
 			surf = o.dfa->getSurface();
 			pos = Common::Point(o.rect.left, o.rect.top);
 			keyed = false;
-		}
-		Common::Rect dst(pos.x - _scrollX, pos.y, pos.x - _scrollX + surf->w, pos.y + surf->h);
-		Common::Rect clipped = dst.findIntersectingRect(screen);
-		if (clipped.isEmpty())
-			continue;
-		Common::Rect part(clipped.left - dst.left, clipped.top - dst.top, clipped.right - dst.left, clipped.bottom - dst.top);
-		bool mirror = it.kind == 1 && (_scene->_objects[it.index]->flags & 1);
-		if (mirror) {
-			for (int y = clipped.top; y < clipped.bottom; y++) {
-				const byte *src = (const byte *)surf->getBasePtr(0, y - dst.top);
-				byte *out = (byte *)_screen.getBasePtr(0, y);
-				for (int x = clipped.left; x < clipped.right; x++)
-					out[x] = src[surf->w - 1 - (x - dst.left)];
+			if (o.isPath()) {
+				// 0x53110: scaled to the size for its row
+				Graphics::Surface *scaled = surf->scale(MAX(o.pathW, 1), MAX(o.pathH, 1));
+				drawSurface(*scaled, Common::Point(o.pathX, o.pathRow - o.pathH + 1), (o.flags & 1) != 0, false);
+				scaled->free();
+				delete scaled;
+				continue;
 			}
-		} else if (keyed) {
-			_screen.copyRectToSurfaceWithKey(*surf, clipped.left, clipped.top, part, 0);
-		} else {
-			_screen.copyRectToSurface(*surf, clipped.left, clipped.top, part);
 		}
+		drawSurface(*surf, pos, it.kind == 1 && (_scene->_objects[it.index]->flags & 1), keyed);
 	}
 	shadeActors();
+}
+
+void DreamForgeEngine::drawSurface(const Graphics::Surface &surf, const Common::Point &pos, bool mirror, bool keyed) {
+	Common::Rect screen(kScreenWidth, kScreenHeight);
+	Common::Rect dst(pos.x - _scrollX, pos.y, pos.x - _scrollX + surf.w, pos.y + surf.h);
+	Common::Rect clipped = dst.findIntersectingRect(screen);
+	if (clipped.isEmpty())
+		return;
+	Common::Rect part(clipped.left - dst.left, clipped.top - dst.top, clipped.right - dst.left, clipped.bottom - dst.top);
+	if (mirror) {
+		for (int y = clipped.top; y < clipped.bottom; y++) {
+			const byte *src = (const byte *)surf.getBasePtr(0, y - dst.top);
+			byte *out = (byte *)_screen.getBasePtr(0, y);
+			for (int x = clipped.left; x < clipped.right; x++)
+				out[x] = src[surf.w - 1 - (x - dst.left)];
+		}
+	} else if (keyed) {
+		_screen.copyRectToSurfaceWithKey(surf, clipped.left, clipped.top, part, 0);
+	} else {
+		_screen.copyRectToSurface(surf, clipped.left, clipped.top, part);
+	}
 }
 
 void DreamForgeEngine::startObject(SceneObject &o) {
@@ -757,11 +775,20 @@ void DreamForgeEngine::updateObjects(bool force) {
 	for (uint i = 0; i < _scene->_objects.size(); i++) {
 		SceneObject &o = *_scene->_objects[i];
 		bool live = force || (!(o.flags & 0x10) && (o.temporary || conditionsHold(o.data.data() + 0x272, 9)));
-		if (!live || now < o.nextTick)
+		if (!live)
+			continue;
+		if (o.isPath()) {
+			if (o.flags2 & 0x20) {
+				if (!launchPath(o))
+					continue;
+			} else {
+				stepPath(o);
+			}
+		}
+		if (now < o.nextTick)
 			continue;
 		if ((o.flags3 & 1) && !(o.flags & 4))
 			continue;
-		// TODO: objects that follow a path (+0x32 & 4)
 		advanceObject(o);
 		o.nextTick = now + o.delay;
 		int hookId = o.id, hookFrame = o.frame, hookFlags = o.flags;
@@ -788,6 +815,7 @@ void DreamForgeEngine::updateObjects(bool force) {
 				return;
 		}
 	}
+	_pathTick++;
 }
 
 // C.PRG 0x82d7c: per cursor, first frame in the cursor sheet (PIG0 #2), frame count, hotspot y, x
@@ -1303,6 +1331,11 @@ Common::Error DreamForgeEngine::run() {
 	if (ConfMan.hasKey("dreamforge_scroll"))
 		setScroll(ConfMan.getInt("dreamforge_scroll"));
 	_showLayers = ConfMan.getBool("dreamforge_layers");
+
+	// Test hook: dreamforge_flags=<flag,...> sets flags before the clicks
+	Common::StringTokenizer flags(ConfMan.get("dreamforge_flags"), ",");
+	while (!flags.empty())
+		setFlag(atoi(flags.nextToken().c_str()), true);
 
 	// Test hooks: dreamforge_use=<hotspot id,...> clicks the middle of hotspots by id;
 	// dreamforge_click=<x:y,...> clicks scene points; each click plays out before the next

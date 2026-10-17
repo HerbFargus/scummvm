@@ -23,6 +23,7 @@
 #define DREAMFORGE_SCENE_H
 
 #include "common/array.h"
+#include "common/endian.h"
 #include "common/str.h"
 #include "graphics/surface.h"
 
@@ -84,9 +85,21 @@ struct SceneObject : Record {
 	int depth;
 	bool temporary;   // an in-room animation (script op 0x0f), removed when it finishes
 	int hideActor;    // the puppy it stands in for (1, 2, 3 both, 0 none)
+	// An object that slides down a track between two rows (+0x32 & 4), scaled per row
+	// by pathScale (percent, from the scene file); parked while flags2 & 0x20
+	Common::Array<byte> pathScale;
+	int pathRow, pathX, pathW, pathH;  // +0x2e4, left, +0x2e8, +0x2ec
+	int pathDepthOff;                  // +0x2d8: end row - depth
+	int pathChance;                    // +0x294: percent chance per try to set off
+	bool isPath() const { return !pathScale.empty(); }
+	int pathEnd() const { return (int32)READ_LE_UINT32(data.data() + 0x284); }
+	int pathEndX() const { return (int32)READ_LE_UINT32(data.data() + 0x288); }
+	int pathStart() const { return (int32)READ_LE_UINT32(data.data() + 0x28C); }
+	int pathStartX() const { return (int32)READ_LE_UINT32(data.data() + 0x290); }
 
 	SceneObject() : unk(0), dfa(nullptr), act(nullptr), frame(-1), nextTick(0), delay(0), flags(0), flags2(0),
-		flags3(0), depth(0), temporary(false), hideActor(0) {}
+		flags3(0), depth(0), temporary(false), hideActor(0), pathRow(0), pathX(0), pathW(0), pathH(0),
+		pathDepthOff(0), pathChance(0) {}
 };
 
 /** A state overlay or occlusion piece; drawn over the background when its flags say so */
