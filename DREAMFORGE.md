@@ -33,9 +33,19 @@ and objects, depth shading, and talking with lip sync. Clicks walk puppy 1
 or send a hotspot's puppy over before its script; walking into a region
 (exits) runs its script. Scene objects animate on the game timer, in-room
 animations are temporary objects in depth order, and the cursor follows what
-is under the mouse. Not yet: puppy 2's wandering, start/stop/footstep
-details, held items, menus, saving, the game's start, and the act handlers
-written in C.
+is under the mouse.
+
+The game starts as the original does: the intro cutscenes, the title menu
+(New Game plays the opening cutscenes, randomizes the per-game flags and
+runs the first room's opening), and in game the bone menu (Escape, Enter or
+Space) with ScummVM's load, save and options dialogs; L, S and O are
+shortcuts. Saves keep the room, flags, record states, held item, the
+puppies and the music. Act 1's scene entry handler is ported in full;
+the after-load handler only for the first room so far.
+
+Not yet: the rest of the act handlers written in C (after-load and
+click/hover logic), banter, puppy 2's wandering, start/stop/footstep
+details, the game's own options and quit screens.
 
 The reverse-engineering notes (formats, code map) live outside the fork, in
 `escape-from-devil-manor/NOTES.md`.
@@ -100,9 +110,12 @@ plays, and `boot.sh` runs with test hooks (`dreamforge_scene=1X01X06`,
 `dreamforge_fast=true`, `dreamforge_cine_frames=<f,...>` and
 `dreamforge_shot_dir=<dir>`, `dreamforge_say=<voice>[,actor,slot,view]`,
 `dreamforge_use=<hotspot id,...>`, `dreamforge_walk=<y,x>`, `dreamforge_run_ms=<ms>`,
-`dreamforge_shot_every=<ms>`, `dreamforge_quit=true`).
+`dreamforge_shot_every=<ms>`, `dreamforge_quit=true`, `dreamforge_skip_intro=true`,
+`dreamforge_skip_cutscenes=true`, `dreamforge_title=<1-3>`, `dreamforge_save=<slot>`,
+`dreamforge_title_shot=<png>`, `dreamforge_bone_shot=<png>`, `dreamforge_cursor_probe=<x:y,...>`).
 
 Console: `scene 1X01X06`, `scenes`, `hotspots`, `layers`, `layer <n|all|none>`,
 `scroll <x>`, `archives`, `shot <png>`, `cine <n>`, `sfx <n> [channel]`,
 `voice <n>`, `music <n|stop>`, `say <voice> [actor] [slot] [view]`, `use <id>`,
-`flag <n> [0|1]`. Keys: arrows scroll, L toggles layers.
+`flag <n> [0|1]`. Keys: arrows scroll, Escape/Enter/Space the bone menu, L load,
+S save, O options, Ctrl+L shows every layer.

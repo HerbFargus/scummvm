@@ -36,7 +36,7 @@ public:
 	}
 
 	bool hasFeature(MetaEngineFeature f) const override {
-		return false;
+		return checkExtendedSaves(f) || f == kSupportsLoadingDuringStartup;
 	}
 };
 

@@ -25,6 +25,7 @@
 #include "common/array.h"
 #include "common/hashmap.h"
 #include "common/random.h"
+#include "common/serializer.h"
 #include "common/rect.h"
 #include "common/str.h"
 #include "engines/advancedDetector.h"
@@ -62,6 +63,15 @@ public:
 	Common::Error run() override;
 	bool hasFeature(EngineFeature f) const override;
 
+	// Saves: room, flags, record states, held item, the puppies, the music
+	bool canLoadGameStateCurrently(Common::U32String *msg = nullptr) override;
+	bool canSaveGameStateCurrently(Common::U32String *msg = nullptr) override;
+	Common::Error saveGameStream(Common::WriteStream *stream, bool isAutosave = false) override;
+	Common::Error loadGameStream(Common::SeekableReadStream *stream) override;
+	void syncGame(Common::Serializer &s);
+	/** The in-game bone menu (C.PRG 0x32430, drawn by 0x31dc0, input 0x33c20) */
+	void boneMenu();
+
 	/** Loads a scene by act, area and room (SCENES\<act>X<area>X<room>.PIG) */
 	bool loadScene(int act, int area, int room);
 	/** Parses "1X01X06" (or "1x01x06.pig") */
@@ -82,6 +92,7 @@ public:
 	bool loadMenuPalette(int n, byte *pal) const;
 	void drawSprite(uint archive, uint index, int x, int y);
 	bool _newGame;     // 0xe0fec: set while a new game's first scene loads
+	bool _restoring;   // loading a save: the scene comes back without its handlers
 	int _roomsSeen;    // 0x6d260
 
 	// Act 1 room logic (act1.cpp)

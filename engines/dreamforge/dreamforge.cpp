@@ -22,6 +22,8 @@
 #include "common/archive.h"
 #include "common/compression/installshieldv3_archive.h"
 #include "common/config-manager.h"
+#include "common/translation.h"
+#include "gui/message.h"
 #include "common/debug.h"
 #include "common/events.h"
 #include "common/file.h"
@@ -56,6 +58,7 @@ DreamForgeEngine::DreamForgeEngine(OSystem *syst, const ADGameDescription *gameD
 	memset(_objectState, 0, sizeof(_objectState));
 	_heldItem = -1;
 	_newGame = false;
+	_restoring = false;
 	_roomsSeen = 0;
 	_cursorId = -1;
 	_cursorFrame = 0;
@@ -86,7 +89,7 @@ DreamForgeEngine::~DreamForgeEngine() {
 }
 
 bool DreamForgeEngine::hasFeature(EngineFeature f) const {
-	return f == kSupportsReturnToLauncher;
+	return f == kSupportsReturnToLauncher || f == kSupportsLoadingDuringRuntime || f == kSupportsSavingDuringRuntime;
 }
 
 // The game runs from 101D\ on the CD. PIG0, PIG2, PIG5 and PIG6.USR only exist
@@ -175,12 +178,12 @@ bool DreamForgeEngine::loadScene(int act, int area, int room) {
 	if (_sound)
 		_sound->playMusic(_scene->_music, true);  // C.PRG 0x1db00: -666 keeps the current track
 	setScroll(0);
-	if (!_newGame)
+	if (!_newGame && !_restoring)
 		showActors(3);
-	if (act == 1)
+	if (act == 1 && !_restoring)
 		act1Enter(room, area);
 	redraw();
-	if (act == 1 && !isFlagSet(9) && !isFlagSet(3)) {
+	if (act == 1 && !_restoring && !isFlagSet(9) && !isFlagSet(3)) {
 		bool wasInScript = _inScript;
 		_inScript = true;
 		act1AfterLoad(room, area);
@@ -750,8 +753,13 @@ int DreamForgeEngine::cursorFor(const Common::Point &screen) const {
 		else if (screen.x > 0x243 && _scrollX < (int)_scene->_width - kScreenWidth)
 			id = kCursorScrollRight;
 	}
+	// 0x13c20: something held shows as the cursor (TODO: the variants over a puppy)
+	if (_heldItem >= 0) {
+		static const int8 kHeldCursors[6] = { 0x12, 0x14, 0x16, 0x16, 0x16, 0x18 };
+		return _heldItem < 6 ? (int)kHeldCursors[_heldItem] : (int)kCursorPaw;
+	}
 	if (hot) {
-		// 0x13c20: the hotspot's mask picks the cursor (TODO: held item cursors)
+		// 0x13c20: the hotspot's mask picks the cursor
 		uint16 m = hot->mask;
 		if (m & 8)
 			id = 1;
@@ -787,6 +795,157 @@ void DreamForgeEngine::animateCursor() {
 	_cursorFrame++;
 	Graphics::Surface f = _cursors->surface.getSubArea(_cursors->frameRect(frame));
 	CursorMan.replaceCursor(f, def[3], def[2], 0);
+}
+
+// C.PRG 0x2ecb0: bone menu items as top, left, height, width: options, load, save, exit, go on
+static const int16 kBoneRects[5][4] = {
+	{ 62, 241, 70, 158 }, { 132, 240, 70, 158 }, { 203, 241, 70, 158 }, { 273, 241, 70, 158 }, { 343, 241, 70, 158 }
+};
+static const uint16 kBoneSprites[5] = { 0x18, 0x0F, 0x1D, 0x0C, 0x0D };
+
+enum {
+	kBoneMenuSprite = 2,
+	kBoneMenuX = 0xC3,
+	kMenuClickSfx = 14011  // 0x8721c + 0xb
+};
+
+void DreamForgeEngine::boneMenu() {
+	auto draw = [&](int lit) {
+		redraw(false);
+		drawSprite(5, kBoneMenuSprite, kBoneMenuX, 0);
+		if (lit >= 0)
+			drawSprite(5, kBoneSprites[lit], kBoneRects[lit][1], kBoneRects[lit][0]);
+		g_system->copyRectToScreen(_screen.getPixels(), _screen.pitch, 0, 0, kScreenWidth, kScreenHeight);
+		g_system->updateScreen();
+	};
+	setCursor(0);
+	draw(-1);
+	// Test hook: dreamforge_bone_shot=<png> saves the menu with "go on" lit and closes it
+	if (ConfMan.hasKey("dreamforge_bone_shot")) {
+		draw(4);
+		Common::DumpFile out;
+		if (out.open(Common::Path(ConfMan.get("dreamforge_bone_shot"), '/'), true))
+			Image::writePNG(out, _screen, _scene ? _scene->_palette : nullptr);
+		_dirty = true;
+		return;
+	}
+	int choice = -1;
+	while (!shouldQuit() && choice < 0) {
+		Common::Event event;
+		while (g_system->getEventManager()->pollEvent(event)) {
+			if (event.type == Common::EVENT_RBUTTONDOWN ||
+				(event.type == Common::EVENT_KEYDOWN && event.kbd.keycode == Common::KEYCODE_ESCAPE)) {
+				choice = 4;
+			} else if (event.type == Common::EVENT_LBUTTONDOWN) {
+				for (int i = 0; i < 5; i++) {
+					const int16 *r = kBoneRects[i];
+					if (event.mouse.y >= r[0] && event.mouse.y < r[0] + r[2] && event.mouse.x >= r[1] && event.mouse.x < r[1] + r[3])
+						choice = i;
+				}
+			}
+		}
+		g_system->delayMillis(10);
+	}
+	if (choice < 0)
+		return;
+	draw(choice);
+	_sound->playSfx(kMenuClickSfx, 0, false);
+	g_system->delayMillis(200);
+	_dirty = true;
+	switch (choice) {
+	case 0:
+		// TODO: the game's own options screen (0x323a0)
+		openMainMenuDialog();
+		break;
+	case 1:
+		loadGameDialog();
+		break;
+	case 2:
+		saveGameDialog();
+		break;
+	case 3: {
+		// TODO: the game's own "are you sure" screen (0x32180)
+		GUI::MessageDialog dialog(_("Do you really want to quit?"), _("Yes"), _("No"));
+		if (dialog.runModal() == GUI::kMessageOK)
+			quitGame();
+		break;
+	}
+	default:
+		break;
+	}
+}
+
+bool DreamForgeEngine::canLoadGameStateCurrently(Common::U32String *msg) {
+	return !_inScript;
+}
+
+bool DreamForgeEngine::canSaveGameStateCurrently(Common::U32String *msg) {
+	return _scene && !_inScript;
+}
+
+Common::Error DreamForgeEngine::saveGameStream(Common::WriteStream *stream, bool isAutosave) {
+	Common::Serializer s(nullptr, stream);
+	syncGame(s);
+	return Common::kNoError;
+}
+
+Common::Error DreamForgeEngine::loadGameStream(Common::SeekableReadStream *stream) {
+	Common::Serializer s(stream, nullptr);
+	syncGame(s);
+	return Common::kNoError;
+}
+
+void DreamForgeEngine::syncGame(Common::Serializer &s) {
+	const uint32 kSaveVersion = 1;
+	uint32 version = kSaveVersion;
+	s.syncAsUint32LE(version);
+	int32 act = _scene ? _scene->_act : 1, area = _scene ? _scene->_area : 1, room = _scene ? _scene->_room : 1;
+	int32 scroll = _scrollX, music = _sound->getMusic();
+	s.syncAsSint32LE(act);
+	s.syncAsSint32LE(area);
+	s.syncAsSint32LE(room);
+	s.syncAsSint32LE(scroll);
+	s.syncAsSint32LE(music);
+	s.syncBytes(_flags, sizeof(_flags));
+	for (int i = 0; i < kStateCount; i++) {
+		s.syncAsSint32LE(_hotspotState[i]);
+		s.syncAsSint32LE(_layerState[i]);
+		s.syncAsSint32LE(_objectState[i]);
+	}
+	s.syncAsSint32LE(_heldItem);
+	s.syncAsSint32LE(_currentActor);
+	s.syncAsSint32LE(_counter3D);
+	s.syncAsSint32LE(_roomsSeen);
+	int32 ay[2], ax[2], adir[2], apost[2];
+	byte ahide[2];
+	for (int n = 0; n < 2; n++) {
+		ay[n] = _actors[n]->_y;
+		ax[n] = _actors[n]->_x;
+		adir[n] = _actors[n]->_dir;
+		apost[n] = _actors[n]->_posture;
+		ahide[n] = _actors[n]->_hidden;
+		s.syncAsSint32LE(ay[n]);
+		s.syncAsSint32LE(ax[n]);
+		s.syncAsSint32LE(adir[n]);
+		s.syncAsSint32LE(apost[n]);
+		s.syncAsByte(ahide[n]);
+	}
+	if (s.isLoading()) {
+		// Put the room back as it was: no entry handlers, no openings
+		_restoring = true;
+		loadScene(act, area, room);
+		_restoring = false;
+		for (int n = 0; n < 2; n++) {
+			_actors[n]->place(ay[n], ax[n], adir[n]);
+			_actors[n]->_posture = (Posture)apost[n];
+			_actors[n]->_hidden = ahide[n] != 0;
+			_actors[n]->idle();
+		}
+		_sound->playMusic(music, true);
+		setScroll(scroll);
+		_currentRegion = -1;
+		_dirty = true;
+	}
 }
 
 void DreamForgeEngine::runStep() {
@@ -922,7 +1081,16 @@ void DreamForgeEngine::handleEvents() {
 				setScroll(_scrollX - 32);
 			else if (event.kbd.keycode == Common::KEYCODE_RIGHT)
 				setScroll(_scrollX + 32);
-			else if (event.kbd.keycode == Common::KEYCODE_l) {
+			else if (event.kbd.keycode == Common::KEYCODE_ESCAPE || event.kbd.keycode == Common::KEYCODE_RETURN ||
+					 event.kbd.keycode == Common::KEYCODE_SPACE)
+				boneMenu();
+			else if (event.kbd.keycode == Common::KEYCODE_l && !event.kbd.hasFlags(Common::KBD_CTRL))
+				loadGameDialog();
+			else if (event.kbd.keycode == Common::KEYCODE_s && !event.kbd.hasFlags(Common::KBD_CTRL))
+				saveGameDialog();
+			else if (event.kbd.keycode == Common::KEYCODE_o)
+				openMainMenuDialog();
+			else if (event.kbd.keycode == Common::KEYCODE_l && event.kbd.hasFlags(Common::KBD_CTRL)) {
 				_showLayers = !_showLayers;
 				_dirty = true;
 			}
@@ -998,7 +1166,9 @@ Common::Error DreamForgeEngine::run() {
 		_shotDir = ConfMan.get("dreamforge_shot_dir");
 	}
 
-	if (!ConfMan.hasKey("dreamforge_scene")) {
+	if (ConfMan.hasKey("save_slot") && loadGameState(ConfMan.getInt("save_slot")).getCode() == Common::kNoError) {
+		// loaded from the launcher
+	} else if (!ConfMan.hasKey("dreamforge_scene")) {
 		// 0x11cc0: the intro, the title menu, then the game
 		if (!ConfMan.getBool("dreamforge_skip_intro"))
 			playIntro();
@@ -1038,6 +1208,12 @@ Common::Error DreamForgeEngine::run() {
 		if (sscanf(probes.nextToken().c_str(), "%d:%d", &px, &py) == 2)
 			debug("cursor at (%d, %d): %d", px, py, cursorFor(Common::Point(px, py)));
 	}
+
+	if (ConfMan.hasKey("dreamforge_bone_shot"))
+		boneMenu();
+	// Test hook: dreamforge_save=<slot> saves after the other hooks
+	if (ConfMan.hasKey("dreamforge_save"))
+		saveGameState(ConfMan.getInt("dreamforge_save"), "test");
 
 	if (ConfMan.getBool("dreamforge_quit"))
 		return Common::kNoError;
