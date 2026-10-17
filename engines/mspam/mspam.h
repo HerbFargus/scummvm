@@ -60,6 +60,8 @@ private:
 	void saveAllShots(const Common::String &dir);
 	void dumpLayouts(const Common::String &path);
 	void viewer();
+	/** Runs the title from a layout with the action runtime */
+	void runGame(const Common::String &start);
 
 	const ADGameDescription *_gameDescription;
 	CompoundFile _tdf;

@@ -5,7 +5,10 @@ MODULE_OBJS = \
 	layout.o \
 	media.o \
 	metaengine.o \
-	mspam.o
+	mspam.o \
+	runtime.o \
+	script.o \
+	sound.o
 
 # This module can be built as a plugin
 ifeq ($(ENABLE_MSPAM), DYNAMIC_PLUGIN)

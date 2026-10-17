@@ -29,6 +29,8 @@ const DebugChannelDef MSPAMMetaEngineDetection::debugFlagList[] = {
 	{ MSPAM::kDebugLayout, "Layout", "Layout model and rendering" },
 	{ MSPAM::kDebugActions, "Actions", "Triggers and action lists" },
 	{ MSPAM::kDebugInput, "Input", "Mouse hit-testing" },
+	{ MSPAM::kDebugScript, "Script", "Title expressions and variables" },
+	{ MSPAM::kDebugSound, "Sound", "Sound manager" },
 	DEBUG_CHANNEL_END
 };
 

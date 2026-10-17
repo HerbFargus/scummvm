@@ -24,6 +24,8 @@
 #include "common/events.h"
 #include "common/file.h"
 #include "common/fs.h"
+#include "common/str-array.h"
+#include "common/tokenizer.h"
 #include "common/system.h"
 #include "common/textconsole.h"
 #include "engines/util.h"
@@ -34,6 +36,7 @@
 #include "mspam/layout.h"
 #include "mspam/media.h"
 #include "mspam/mspam.h"
+#include "mspam/runtime.h"
 
 namespace MSPAM {
 
@@ -357,6 +360,166 @@ void MSPAMEngine::viewer() {
 	}
 }
 
+// Development aid: when "mspam_test_input" names a file, its lines are run as a
+// test script, injecting input through the event queue:
+//   wait <ms>          wait
+//   idle               wait until no action lists or transitions are pending
+//   layout <name>      wait until the layout is showing and idle
+//   click <x> <y>      click at screen coordinates
+//   clickon <name> [hotspot ID in hex]
+//                      click a visible element (on a hotspot, or its picture)
+//   move <x> <y>       move the mouse
+//   key <esc|space|enter>
+//   shot <path>        save a PNG of the screen
+//   list               log the elements that react to clicks
+//   quit               quit
+class TestInputScript {
+public:
+	explicit TestInputScript(const Common::Path &path) : _line(0), _waitUntil(0) {
+		Common::File f;
+		if (!f.open(Common::FSNode(path))) {
+			warning("Test input: can't open '%s'", path.toString().c_str());
+			return;
+		}
+		while (!f.eos()) {
+			Common::String line = f.readLine();
+			line.trim();
+			if (!line.empty() && !line.hasPrefix("#"))
+				_lines.push_back(line);
+		}
+	}
+
+	bool update(Runtime *runtime, const Graphics::Surface &screen, uint32 now) {
+		Common::EventManager *events = g_system->getEventManager();
+		while (_line < _lines.size() && now >= _waitUntil) {
+			Common::String cmd = _lines[_line], arg;
+			size_t space = cmd.findFirstOf(' ');
+			if (space != Common::String::npos) {
+				arg = cmd.substr(space + 1);
+				cmd = cmd.substr(0, space);
+			}
+			int x = 0, y = 0;
+			if (cmd == "wait") {
+				_waitUntil = now + atoi(arg.c_str());
+			} else if (cmd == "idle") {
+				if (!runtime->isIdle())
+					return true;
+			} else if (cmd == "layout") {
+				if (!runtime->getLayoutName().equalsIgnoreCase(arg) || !runtime->isIdle())
+					return true;
+				debug(1, "Test input: layout %s", arg.c_str());
+			} else if (cmd == "click" || cmd == "clickon") {
+				Common::Point pt;
+				if (cmd == "click") {
+					sscanf(arg.c_str(), "%d %d", &x, &y);
+					pt = Common::Point(x, y);
+				} else {
+					Common::StringArray words = Common::StringTokenizer(arg).split();
+					uint hotspot = 0;
+					if (words.size() > 1)
+						sscanf(words[1].c_str(), "%x", &hotspot);
+					if (words.empty() || !runtime->findElement(words[0], hotspot, pt)) {
+						warning("Test input: can't click '%s' in %s", arg.c_str(), runtime->getLayoutName().c_str());
+						_line++;
+						continue;
+					}
+					debug(1, "Test input: clicking %s at %d,%d", arg.c_str(), pt.x, pt.y);
+				}
+				pushMouse(events, Common::EVENT_MOUSEMOVE, pt);
+				pushMouse(events, Common::EVENT_LBUTTONDOWN, pt);
+				pushMouse(events, Common::EVENT_LBUTTONUP, pt);
+				_waitUntil = now + 100;
+			} else if (cmd == "move") {
+				sscanf(arg.c_str(), "%d %d", &x, &y);
+				pushMouse(events, Common::EVENT_MOUSEMOVE, Common::Point(x, y));
+			} else if (cmd == "key") {
+				Common::Event ev;
+				bool esc = arg == "esc", enter = arg == "enter";
+				ev.type = Common::EVENT_KEYDOWN;
+				ev.kbd = Common::KeyState(esc ? Common::KEYCODE_ESCAPE : enter ? Common::KEYCODE_RETURN : Common::KEYCODE_SPACE,
+					esc ? 27 : enter ? 13 : ' ');
+				events->pushEvent(ev);
+				ev.type = Common::EVENT_KEYUP;
+				events->pushEvent(ev);
+			} else if (cmd == "shot") {
+				Common::DumpFile out;
+				if (out.open(Common::FSNode(Common::Path(arg, Common::Path::kNativeSeparator))))
+					Image::writePNG(out, screen, runtime->getPalette());
+				else
+					warning("Test input: can't write '%s'", arg.c_str());
+			} else if (cmd == "list") {
+				runtime->listClickable();
+			} else if (cmd == "quit") {
+				return false;
+			} else {
+				warning("Test input: unknown command '%s'", cmd.c_str());
+			}
+			_line++;
+		}
+		return true;
+	}
+
+private:
+	static void pushMouse(Common::EventManager *events, Common::EventType type, const Common::Point &pt) {
+		Common::Event ev;
+		ev.type = type;
+		ev.mouse = pt;
+		events->pushEvent(ev);
+	}
+
+	Common::StringArray _lines;
+	uint _line;
+	uint32 _waitUntil;
+};
+
+void MSPAMEngine::runGame(const Common::String &start) {
+	Runtime runtime(_media, _tdf, _title, _mixer);
+	Common::ScopedPtr<TestInputScript> test;
+	if (ConfMan.hasKey("mspam_test_input"))
+		test.reset(new TestInputScript(Common::Path(ConfMan.get("mspam_test_input"), Common::Path::kNativeSeparator)));
+
+	runtime.start(start);
+	while (!shouldQuit() && !runtime.quitRequested()) {
+		Common::Event event;
+		while (g_system->getEventManager()->pollEvent(event)) {
+			switch (event.type) {
+			case Common::EVENT_MOUSEMOVE:
+				runtime.mouseEvent(kEventMouseMove, event.mouse.x, event.mouse.y);
+				break;
+			case Common::EVENT_LBUTTONDOWN:
+				runtime.mouseEvent(kEventLButtonDown, event.mouse.x, event.mouse.y);
+				break;
+			case Common::EVENT_LBUTTONUP:
+				runtime.mouseEvent(kEventLButtonUp, event.mouse.x, event.mouse.y);
+				break;
+			case Common::EVENT_RBUTTONDOWN:
+				runtime.mouseEvent(kEventRButtonDown, event.mouse.x, event.mouse.y);
+				break;
+			case Common::EVENT_RBUTTONUP:
+				runtime.mouseEvent(kEventRButtonUp, event.mouse.x, event.mouse.y);
+				break;
+			case Common::EVENT_KEYDOWN:
+				if (event.kbd.keycode == Common::KEYCODE_ESCAPE || event.kbd.keycode == Common::KEYCODE_SPACE)
+					runtime.escape();
+				break;
+			default:
+				break;
+			}
+		}
+
+		uint32 now = g_system->getMillis();
+		runtime.update(now);
+		runtime.render(_screen);
+		if (test && !test->update(&runtime, _screen, now))
+			break;
+		g_system->getPaletteManager()->setPalette(runtime.getPalette(), 0, 256);
+		g_system->copyRectToScreen(_screen.getPixels(), _screen.pitch, 0, 0, kScreenWidth, kScreenHeight);
+		g_system->updateScreen();
+		g_system->delayMillis(10);
+	}
+	runtime.logStatistics();
+}
+
 Common::Error MSPAMEngine::run() {
 	initGraphics(kScreenWidth, kScreenHeight);
 	_screen.create(kScreenWidth, kScreenHeight, Graphics::PixelFormat::createFormatCLUT8());
@@ -377,13 +540,19 @@ Common::Error MSPAMEngine::run() {
 	}
 
 	// The game starts in Startup (the intro videos), which goes to the classroom
-	Common::String start = ConfMan.hasKey("mspam_layout") ? ConfMan.get("mspam_layout") : "Classroom";
-	int index = _title->findLayout(start);
-	if (index < 0) {
+	Common::String start = ConfMan.hasKey("mspam_layout") ? ConfMan.get("mspam_layout") : "Startup";
+	if (_title->findLayout(start) < 0) {
 		warning("No layout '%s'", start.c_str());
-		index = 0;
+		start = "Startup";
 	}
-	if (!showLayout(index))
+	bool viewerMode = ConfMan.hasKey("mspam_viewer") && ConfMan.getBool("mspam_viewer");
+	if (!viewerMode && !ConfMan.hasKey("mspam_click") && !ConfMan.hasKey("mspam_shot")) {
+		runGame(start);
+		return Common::kNoError;
+	}
+
+	// The static viewer of M2: layouts as loaded, no actions
+	if (!showLayout(_title->findLayout(start)))
 		return Common::kUnknownError;
 
 	// mspam_click=x,y[;x,y...] logs what each click would trigger

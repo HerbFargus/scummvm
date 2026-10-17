@@ -31,7 +31,9 @@ enum MSPAMDebugChannels {
 	kDebugGraphics,
 	kDebugLayout,
 	kDebugActions,
-	kDebugInput
+	kDebugInput,
+	kDebugScript,
+	kDebugSound
 };
 
 extern const PlainGameDescriptor mspamGames[];
