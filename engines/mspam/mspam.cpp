@@ -1,0 +1,409 @@
+/* ScummVM - Graphic Adventure Engine
+ *
+ * ScummVM is the legal property of its developers, whose names
+ * are too numerous to list here. Please refer to the COPYRIGHT
+ * file distributed with this source distribution.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ */
+
+#include "common/config-manager.h"
+#include "common/debug.h"
+#include "common/events.h"
+#include "common/file.h"
+#include "common/fs.h"
+#include "common/system.h"
+#include "common/textconsole.h"
+#include "engines/util.h"
+#include "graphics/paletteman.h"
+#include "image/png.h"
+
+#include "mspam/detection.h"
+#include "mspam/layout.h"
+#include "mspam/media.h"
+#include "mspam/mspam.h"
+
+namespace MSPAM {
+
+enum {
+	kColorHotspot = 249,  // static red
+	kColorVideo = 251,    // static yellow
+	kColorHidden = 253    // static magenta
+};
+
+MSPAMEngine::MSPAMEngine(OSystem *syst, const ADGameDescription *gameDesc) : Engine(syst),
+	_gameDescription(gameDesc), _media(nullptr), _title(nullptr), _layout(nullptr), _layoutIndex(-1),
+	_showHidden(false), _showHotspots(false) {
+	memset(_palette, 0, sizeof(_palette));
+	MediaManager::setStaticColors(_palette);
+}
+
+MSPAMEngine::~MSPAMEngine() {
+	delete _layout;
+	delete _title;
+	delete _media;
+	_screen.free();
+}
+
+bool MSPAMEngine::hasFeature(EngineFeature f) const {
+	return f == kSupportsReturnToLauncher;
+}
+
+// MSBSOLAR.INI's [Media] section: msbsolar.mdf/cmf (the CMF stays on the disc) and
+// msbamb.mdf/cmf (installed); the AVIs live in the 0\ and 1\ folders
+bool MSPAMEngine::loadTitle() {
+	const Common::FSNode gameDir(ConfMan.getPath("path"));
+	SearchMan.addSubDirectoryMatching(gameDir, "msbsolar", 0, 2);
+
+	_media = new MediaManager();
+	if (!_media->addIndex(Common::Path("MSBSOLAR.MDF"), Common::Path("MSBSOLAR.CMF"))) {
+		GUIErrorMessage("Can't open MSBSOLAR.MDF/CMF");
+		return false;
+	}
+	if (!_media->addIndex(Common::Path("MSBAMB.MDF"), Common::Path("MSBAMB.CMF")))
+		warning("Can't open MSBAMB.MDF/CMF, the ambient sound will be missing");
+
+	Common::File *tdf = new Common::File();
+	if (!tdf->open(Common::Path("MSBSOLAR.TDF")) || !_tdf.open(tdf)) {
+		GUIErrorMessage("Can't read MSBSOLAR.TDF");
+		return false;
+	}
+	_title = new Title();
+	if (!_title->load(_tdf)) {
+		GUIErrorMessage("MSBSOLAR.TDF has no title view");
+		return false;
+	}
+	return true;
+}
+
+bool MSPAMEngine::showLayout(int index) {
+	int count = _title->_layouts.size();
+	index = (index % count + count) % count;
+	Layout *layout = _title->loadLayout(_tdf, index);
+	if (!layout)
+		return false;
+	delete _layout;
+	_layout = layout;
+	_layoutIndex = index;
+	_media->clearCache();
+	if (_layout->_paletteId && !_media->loadPalette(_layout->_paletteId, _palette))
+		warning("Layout %s: palette %x is missing", _layout->_name.c_str(), _layout->_paletteId);
+	redraw();
+	return true;
+}
+
+// Elements are drawn back to front (descending z) at their site position. Until
+// the action runtime exists, sprites show the first frame of their initial path segment.
+void MSPAMEngine::renderLayout(const Layout &layout, Graphics::Surface &dst, bool showHidden, bool showHotspots) {
+	dst.fillRect(Common::Rect(dst.w, dst.h), 0);
+	for (int i = layout._siteOrder.size() - 1; i >= 0; i--) {
+		const Element &e = layout._elements[layout._siteOrder[i]];
+		if (!e.visible && !showHidden)
+			continue;
+		if (!e.isSprite())
+			continue;
+		const PathSegment *seg = e.getCurrentSegment();
+		const PibList *list = seg ? _media->getPibList(seg->pibList) : nullptr;
+		const Pib *pib = list ? list->getFrame(0) : nullptr;
+		if (!pib)
+			continue;
+		for (int y = 0; y < pib->surface.h; y++) {
+			int dy = e.y + y;
+			if (dy < 0 || dy >= dst.h)
+				continue;
+			const byte *src = (const byte *)pib->surface.getBasePtr(0, y);
+			byte *out = (byte *)dst.getBasePtr(0, dy);
+			for (int x = 0; x < pib->surface.w; x++) {
+				int dx = e.x + x;
+				if (dx >= 0 && dx < dst.w && pib->isOpaque(x, y))
+					out[dx] = src[x];
+			}
+		}
+	}
+
+	if (!showHotspots)
+		return;
+	for (uint idx : layout._siteOrder) {
+		const Element &e = layout._elements[idx];
+		if (!e.visible && !showHidden)
+			continue;
+		if (e.isVideo()) {
+			Common::Rect r(e.x, e.y, e.x + e.width, e.y + e.height);
+			r.clip(Common::Rect(dst.w, dst.h));
+			if (!r.isEmpty())
+				dst.frameRect(r, kColorVideo);
+			continue;
+		}
+		const PathSegment *seg = e.getCurrentSegment();
+		if (!seg)
+			continue;
+		for (const Hotspot &h : seg->hotspots) {
+			for (uint k = 0; k < h.points.size(); k++) {
+				const Common::Point &a = h.points[k], &b = h.points[(k + 1) % h.points.size()];
+				int x0 = CLIP<int>(e.x + a.x, 0, dst.w - 1), y0 = CLIP<int>(e.y + a.y, 0, dst.h - 1);
+				int x1 = CLIP<int>(e.x + b.x, 0, dst.w - 1), y1 = CLIP<int>(e.y + b.y, 0, dst.h - 1);
+				dst.drawLine(x0, y0, x1, y1, e.visible ? kColorHotspot : kColorHidden);
+			}
+		}
+	}
+}
+
+void MSPAMEngine::redraw() {
+	if (!_layout)
+		return;
+	renderLayout(*_layout, _screen, _showHidden, _showHotspots);
+	g_system->getPaletteManager()->setPalette(_palette, 0, 256);
+	g_system->copyRectToScreen(_screen.getPixels(), _screen.pitch, 0, 0, kScreenWidth, kScreenHeight);
+	g_system->updateScreen();
+}
+
+// Front to back: a visible sprite is hit on an opaque pixel or inside one of its
+// current segment's hotspots, a visible video inside its rectangle. Mouse triggers
+// match when their path segment and hotspot filters are 0 or equal the hit ones.
+void MSPAMEngine::hitTest(int x, int y) {
+	if (!_layout)
+		return;
+	debugC(1, kDebugInput, "Click at %d,%d in %s", x, y, _layout->_name.c_str());
+	bool dispatched = false;
+	for (uint idx : _layout->_siteOrder) {
+		const Element &e = _layout->_elements[idx];
+		if (!e.visible)
+			continue;
+		int lx = x - e.x, ly = y - e.y;
+		const PathSegment *seg = nullptr;
+		const Hotspot *hot = nullptr;
+		bool hit = false;
+		if (e.isVideo()) {
+			hit = lx >= 0 && ly >= 0 && lx < (int)e.width && ly < (int)e.height;
+		} else {
+			seg = e.getCurrentSegment();
+			if (!seg)
+				continue;
+			for (const Hotspot &h : seg->hotspots) {
+				if (h.contains(lx, ly)) {
+					hot = &h;
+					break;
+				}
+			}
+			const PibList *list = _media->getPibList(seg->pibList);
+			const Pib *pib = list ? list->getFrame(0) : nullptr;
+			hit = hot || (pib && pib->isOpaque(lx, ly));
+		}
+		if (!hit)
+			continue;
+
+		Common::String where = Common::String::format("%s (z %d", e.name.c_str(), e.z);
+		if (seg)
+			where += Common::String::format(", segment %x", seg->id);
+		if (hot)
+			where += Common::String::format(", hotspot %x", hot->id);
+		where += ")";
+		int matches = 0;
+		for (const Trigger &t : e.triggers) {
+			if (t.kind != 0 || (t.event != kEventLButtonDown && t.event != kEventLButtonUp))
+				continue;
+			if (t.segmentId && (!seg || t.segmentId != seg->id))
+				continue;
+			if (t.hotspotId && (!hot || t.hotspotId != hot->id))
+				continue;
+			if (!matches++)
+				debugC(1, kDebugInput, "  %s%s", dispatched ? "(covered) " : "", where.c_str());
+			debugC(1, kDebugInput, "    %s -> list of %d actions:", getEventName(t.event, t.kind), t.list.actions.size());
+			for (const Action &a : t.list.actions)
+				debugC(1, kDebugInput, "      %s", describeAction(a, _layout).c_str());
+		}
+		if (!matches)
+			debugC(1, kDebugInput, "  %s%s: no mouse trigger", dispatched ? "(covered) " : "", where.c_str());
+		else
+			dispatched = true;
+	}
+	if (!dispatched)
+		debugC(1, kDebugInput, "  nothing would trigger");
+}
+
+bool MSPAMEngine::saveShot(const Common::String &path) {
+	Common::DumpFile out;
+	if (!out.open(Common::Path(path, '/'), true))
+		return false;
+	return Image::writePNG(out, _screen, _palette);
+}
+
+// Test hook: every layout as <dir>/<NN>_<name>.png
+void MSPAMEngine::saveAllShots(const Common::String &dir) {
+	for (uint i = 0; i < _title->_layouts.size() && !shouldQuit(); i++) {
+		if (!showLayout(i)) {
+			warning("Layout %s doesn't load", _title->_layouts[i].c_str());
+			continue;
+		}
+		saveShot(Common::String::format("%s/%02d_%s.png", dir.c_str(), i, _title->_layouts[i].c_str()));
+	}
+}
+
+// Test hook: a text dump of every layout's model
+void MSPAMEngine::dumpLayouts(const Common::String &path) {
+	Common::DumpFile out;
+	if (!out.open(Common::Path(path, '/'), true))
+		return;
+	out.writeString(Common::String::format("View %s %dx%d, %d layouts\n", _title->_viewName.c_str(),
+		_title->_width, _title->_height, _title->_layouts.size()));
+	int failures = 0;
+	for (uint i = 0; i < _title->_layouts.size(); i++) {
+		Common::ScopedPtr<Layout> l(_title->loadLayout(_tdf, i));
+		if (!l) {
+			out.writeString(Common::String::format("\n[%d] %s FAILED\n", i, _title->_layouts[i].c_str()));
+			failures++;
+			continue;
+		}
+		out.writeString(Common::String::format("\n[%d] %s: palette %x, flags %x, priority %x, transition %x (%d %d %d), %d elements\n",
+			i, l->_name.c_str(), l->_paletteId, l->_flags, l->_priority, l->_transClass,
+			l->_transParams[0], l->_transParams[1], l->_transParams[2], l->_elements.size()));
+		for (uint n = 0; n < l->_lists.size(); n++) {
+			const ActionList &al = l->_lists[n];
+			out.writeString(Common::String::format("  layout list %d (%s, flags %x/%x):\n", n,
+				n == 0 ? "enter" : n == 1 ? "leave" : "?", al.flags, al.flags2));
+			for (const Action &a : al.actions)
+				out.writeString("    " + describeAction(a, l.get()) + "\n");
+		}
+		for (uint idx : l->_siteOrder) {
+			const Element &e = l->_elements[idx];
+			if (e.isVideo()) {
+				out.writeString(Common::String::format("  #%d %s: video %dx%d at %d,%d z %d%s, AVI %x (%s), %d %d flags %x\n",
+					idx, e.name.c_str(), e.width, e.height, e.x, e.y, e.z, e.visible ? "" : " hidden", e.videoId,
+					_media->getVideoPath(e.videoId).toString().c_str(), e.videoParam, e.videoParam2, e.videoFlags));
+			} else {
+				out.writeString(Common::String::format("  #%d %s: sprite at %d,%d z %d%s, speed %d, iterations %d, segment %x, flags %x\n",
+					idx, e.name.c_str(), e.x, e.y, e.z, e.visible ? "" : " hidden", e.speed, e.iterations,
+					e.initialSegment, e.spriteFlags));
+				for (const PathSegment &s : e.segments) {
+					out.writeString(Common::String::format("    segment %x: pibs %x, sound %x/%d, to %d,%d,%d, flags %x, %d ms, %d frames, cursor %d",
+						s.id, s.pibList, s.sound, s.soundParam, s.x, s.y, s.z, s.flags, s.duration, s.frames, s.cursor));
+					if (s.hasTransition)
+						out.writeString(Common::String::format(", transition %x %d %d", s.transClass, s.transDuration, s.transParam));
+					out.writeString("\n");
+					for (const Hotspot &h : s.hotspots)
+						out.writeString(Common::String::format("      hotspot %x: (%d,%d)-(%d,%d), %d points, cursor %d\n",
+							h.id, h.bounds.left, h.bounds.top, h.bounds.right, h.bounds.bottom, h.points.size(), h.cursor));
+				}
+			}
+			for (const Trigger &t : e.triggers) {
+				out.writeString(Common::String::format("    on %s", getEventName(t.event, t.kind)));
+				if (t.segmentId)
+					out.writeString(Common::String::format(" segment %x", t.segmentId));
+				if (t.hotspotId)
+					out.writeString(Common::String::format(" hotspot %x", t.hotspotId));
+				out.writeString(Common::String::format(" (flags %x/%x):\n", t.list.flags, t.list.flags2));
+				for (const Action &a : t.list.actions)
+					out.writeString("      " + describeAction(a, l.get()) + "\n");
+			}
+		}
+	}
+	debug("Layout dump written to %s, %d failures", path.c_str(), failures);
+}
+
+void MSPAMEngine::viewer() {
+	// PgUp/PgDn (or P/N) change layout, Home goes to the classroom, H toggles the
+	// hotspot outlines, A shows hidden elements; clicks log what they would trigger
+	while (!shouldQuit()) {
+		Common::Event event;
+		bool dirty = false;
+		while (g_system->getEventManager()->pollEvent(event)) {
+			if (event.type == Common::EVENT_LBUTTONDOWN) {
+				hitTest(event.mouse.x, event.mouse.y);
+				continue;
+			}
+			if (event.type != Common::EVENT_KEYDOWN)
+				continue;
+			switch (event.kbd.keycode) {
+			case Common::KEYCODE_PAGEUP:
+			case Common::KEYCODE_p:
+				showLayout(_layoutIndex - 1);
+				debug("Layout %d: %s", _layoutIndex, _layout->_name.c_str());
+				break;
+			case Common::KEYCODE_PAGEDOWN:
+			case Common::KEYCODE_n:
+				showLayout(_layoutIndex + 1);
+				debug("Layout %d: %s", _layoutIndex, _layout->_name.c_str());
+				break;
+			case Common::KEYCODE_HOME:
+				showLayout(MAX(0, _title->findLayout("Classroom")));
+				break;
+			case Common::KEYCODE_h:
+				_showHotspots = !_showHotspots;
+				dirty = true;
+				break;
+			case Common::KEYCODE_a:
+				_showHidden = !_showHidden;
+				dirty = true;
+				break;
+			default:
+				break;
+			}
+		}
+		if (dirty)
+			redraw();
+		g_system->delayMillis(10);
+	}
+}
+
+Common::Error MSPAMEngine::run() {
+	initGraphics(kScreenWidth, kScreenHeight);
+	_screen.create(kScreenWidth, kScreenHeight, Graphics::PixelFormat::createFormatCLUT8());
+	if (!loadTitle())
+		return Common::kNoGameDataFoundError;
+
+	_showHidden = ConfMan.hasKey("mspam_hidden") && ConfMan.getBool("mspam_hidden");
+	_showHotspots = ConfMan.hasKey("mspam_hotspots") && ConfMan.getBool("mspam_hotspots");
+
+	// Test hooks
+	if (ConfMan.hasKey("mspam_dump")) {
+		dumpLayouts(ConfMan.get("mspam_dump"));
+		return Common::kNoError;
+	}
+	if (ConfMan.hasKey("mspam_allshots")) {
+		saveAllShots(ConfMan.get("mspam_allshots"));
+		return Common::kNoError;
+	}
+
+	// The game starts in Startup (the intro videos), which goes to the classroom
+	Common::String start = ConfMan.hasKey("mspam_layout") ? ConfMan.get("mspam_layout") : "Classroom";
+	int index = _title->findLayout(start);
+	if (index < 0) {
+		warning("No layout '%s'", start.c_str());
+		index = 0;
+	}
+	if (!showLayout(index))
+		return Common::kUnknownError;
+
+	// mspam_click=x,y[;x,y...] logs what each click would trigger
+	if (ConfMan.hasKey("mspam_click")) {
+		Common::String spec = ConfMan.get("mspam_click");
+		const char *p = spec.c_str();
+		int x, y, n;
+		while (sscanf(p, "%d,%d%n", &x, &y, &n) == 2) {
+			hitTest(x, y);
+			p += n;
+			while (*p == ';' || *p == ' ')
+				p++;
+		}
+	}
+	if (ConfMan.hasKey("mspam_shot")) {
+		saveShot(ConfMan.get("mspam_shot"));
+		return Common::kNoError;
+	}
+	viewer();
+	return Common::kNoError;
+}
+
+} // End of namespace MSPAM
