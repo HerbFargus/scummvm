@@ -438,7 +438,7 @@ void DreamForgeEngine::useHotspot(const Record &hotspot, bool walk) {
 	_dirty = true;
 }
 
-bool DreamForgeEngine::playSceneAnim(int cine, int top, int left, bool flip, int delay, int depth, bool noWait, int hideActor) {
+bool DreamForgeEngine::playSceneAnim(int cine, int top, int left, bool transparent, int delay, int depth, bool noWait, int hideActor) {
 	if (!_scene)
 		return false;
 	// 0x23af0: a temporary scene object, drawn in depth order with everything else
@@ -453,7 +453,7 @@ bool DreamForgeEngine::playSceneAnim(int cine, int top, int left, bool flip, int
 	}
 	o->rect = Common::Rect(left, top, left + o->dfa->getWidth(), top + o->dfa->getHeight());
 	o->depth = depth == -1 ? top + o->dfa->getHeight() - 1 : depth;
-	o->flags = 4 | (flip ? 1 : 0);
+	o->flags = 4 | (transparent ? 1 : 0);
 	o->delay = delay;
 	o->nextTick = ticks() + delay;
 	// The puppy the animation shows is hidden until it ends
@@ -463,7 +463,7 @@ bool DreamForgeEngine::playSceneAnim(int cine, int top, int left, bool flip, int
 			getActor(n)->_hidden = true;
 	_scene->_objects.push_back(o);
 	debugC(1, kDebugScript, "scene anim %d at (%d, %d), %d frames, depth %d%s%s", cine, left, top,
-		o->dfa->getFrameCount(), o->depth, flip ? ", flipped" : "", noWait ? ", no wait" : "");
+		o->dfa->getFrameCount(), o->depth, transparent ? ", transparent" : "", noWait ? ", no wait" : "");
 	if (noWait)
 		return true;
 	int id = o->id;
@@ -698,17 +698,18 @@ void DreamForgeEngine::drawScene() {
 			const SceneObject &o = *_scene->_objects[it.index];
 			surf = o.dfa->getSurface();
 			pos = Common::Point(o.rect.left, o.rect.top);
-			keyed = false;
+			// Flag 1 draws it with colour 0 see-through (0x4d9e0); otherwise it is opaque (0x4d9a0)
+			keyed = (o.flags & 1) != 0;
 			if (o.isPath()) {
 				// 0x53110: scaled to the size for its row
 				Graphics::Surface *scaled = surf->scale(MAX(o.pathW, 1), MAX(o.pathH, 1));
-				drawSurface(*scaled, Common::Point(o.pathX, o.pathRow - o.pathH + 1), (o.flags & 1) != 0, false);
+				drawSurface(*scaled, Common::Point(o.pathX, o.pathRow - o.pathH + 1), false, keyed);
 				scaled->free();
 				delete scaled;
 				continue;
 			}
 		}
-		drawSurface(*surf, pos, it.kind == 1 && (_scene->_objects[it.index]->flags & 1), keyed);
+		drawSurface(*surf, pos, false, keyed);
 	}
 	shadeActors();
 }
@@ -724,8 +725,11 @@ void DreamForgeEngine::drawSurface(const Graphics::Surface &surf, const Common::
 		for (int y = clipped.top; y < clipped.bottom; y++) {
 			const byte *src = (const byte *)surf.getBasePtr(0, y - dst.top);
 			byte *out = (byte *)_screen.getBasePtr(0, y);
-			for (int x = clipped.left; x < clipped.right; x++)
-				out[x] = src[surf.w - 1 - (x - dst.left)];
+			for (int x = clipped.left; x < clipped.right; x++) {
+				byte c = src[surf.w - 1 - (x - dst.left)];
+				if (c || !keyed)
+					out[x] = c;
+			}
 		}
 	} else if (keyed) {
 		_screen.copyRectToSurfaceWithKey(surf, clipped.left, clipped.top, part, 0);

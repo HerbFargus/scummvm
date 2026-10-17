@@ -93,7 +93,7 @@ public:
 	int dirTo(int y0, int x0, int y1, int x1);        // 0x341e0
 
 	// The scene
-	void sceneAnim(int cine, int top, int left, int flip, int delay, int depth, int noWait, int hideGuy);  // 0x23af0
+	void sceneAnim(int cine, int top, int left, int transparent, int delay, int depth, int noWait, int hideGuy);  // 0x23af0
 	int cutscene(int n, int mode = 10, int a = 0, int b = 0, int c = 0, int d = 0, int e = 1);       // 0x15650; 1 if skipped
 	void changeScene(int y1, int x1, int d1, int y2, int x2, int d2, int act, int area, int room);  // 0x1f800
 	void redraw(int reload, int present);             // 0x1d700

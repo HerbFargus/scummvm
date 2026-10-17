@@ -239,8 +239,8 @@ int Logic::dirTo(int y0, int x0, int y1, int x1) {
 	return d < 0 ? 0 : d;
 }
 
-void Logic::sceneAnim(int cine, int top, int left, int flip, int delay, int depth, int noWait, int hideGuy) {
-	_vm->playSceneAnim(cine, top, left, flip != 0, delay, depth, noWait != 0, hideGuy);
+void Logic::sceneAnim(int cine, int top, int left, int transparent, int delay, int depth, int noWait, int hideGuy) {
+	_vm->playSceneAnim(cine, top, left, transparent != 0, delay, depth, noWait != 0, hideGuy);
 }
 
 int Logic::cutscene(int n, int mode, int a, int b, int c, int d, int e) {

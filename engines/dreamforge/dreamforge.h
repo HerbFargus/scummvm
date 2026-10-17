@@ -202,7 +202,7 @@ public:
 	 * An animation played in the room (script op 0x0f, C.PRG 0x23af0): CINE\<cine>.DFA
 	 * drawn opaque at (left, top) in scene coordinates, with its .ACT cues.
 	 */
-	bool playSceneAnim(int cine, int top, int left, bool flip, int delay, int depth, bool noWait, int hideActor);
+	bool playSceneAnim(int cine, int top, int left, bool transparent, int delay, int depth, bool noWait, int hideActor);
 	/** Keeps the screen and events going until the voice line ends */
 	void waitForVoice();
 	bool saveShot(const Common::String &path);

@@ -79,7 +79,7 @@ struct SceneObject : Record {
 	int frame;        // -1 before the first
 	uint32 nextTick;  // game timer tick of the next frame
 	int16 delay;      // ticks between frames (+0x296)
-	byte flags;       // +0x30: 0x01 mirrored, 0x04 not started, 0x08 loops, 0x10 finished
+	byte flags;       // +0x30: 0x01 colour 0 see-through, 0x04 not started, 0x08 loops, 0x10 finished
 	byte flags2;      // +0x31: 0x80 hidden
 	byte flags3;      // +0x32: 0x01 steps only when started, 0x04 follows a path
 	int depth;
