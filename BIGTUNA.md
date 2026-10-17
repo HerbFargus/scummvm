@@ -1,9 +1,10 @@
 # bigtuna branch
 
 This is a personal fork branch adding an engine for Big Tuna New Media's
-"Implay" player, which runs the Mercer Mayer games that aren't Director:
-Just Me and My Mom (1996), Little Monster: The Smelly Mystery (1997), Little
-Critter and the Great Race (1999) and Little Monster: The Mummy Mystery (2001).
+players for the Mercer Mayer games that aren't Director: the "Implay" player
+(Just Me and My Mom, 1996; Little Monster: The Smelly Mystery, 1997; Little
+Critter and the Great Race, 1999; Little Monster: The Mummy Mystery, 2001)
+and the older "IW" player of the PC Just Me and My Dad (1996).
 
 **The whole engine is AI-written (Claude) and is not a ScummVM contribution.**
 ScummVM's AI-GUIDELINES.md does not allow AI-authored submissions, so nothing
@@ -28,9 +29,20 @@ resource N + 7.
   ended by `0x11` or `0x0D n`. A sprite whose member is a score is a film loop.
 - Scripts: a stack-machine bytecode compiled from Lingo.
 
+## Just Me and My Dad (.IMP)
+
+DAD.EXE is a Turbo Pascal player. An .IMP file is a record library:
+`u16 0x0063, u16 0x7AB7, u16 count`, then 19-byte entries {name in 11 bytes,
+u32 size, u32 offset}. Records: `.C` palette (1 byte + 768), `.P` picture
+(w, h, flags, rows of u16 length + RLE, 255 transparent), `.S` sound
+(`snd8`, rate, PCM), `.A` film: a 19-byte header and 19-byte records {type,
+channel, duration in 1/60 s, transition, a, b, c, name}. The stage is
+512x384 and film y counts up from the bottom. Buttons bind a channel to a
+target label or film; a film that runs out of records ends the game.
+
 ## Status
 
-Playable, not yet playtested start to finish. Detection, the movie loader,
+All five games playable, not yet playtested start to finish. Detection, the movie loader,
 all bitmap formats, sound with fades, the score with film loops, the
 compiled-Lingo interpreter with its builtins, the player's event model
 (enterFrame/exitFrame, mouse enter/within/leave/down/up, keyDown, startMovie,
