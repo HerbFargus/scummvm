@@ -921,7 +921,7 @@ void DreamForgeEngine::setCursor(int id) {
 
 int DreamForgeEngine::cursorFrame() const {
 	const int8 *def = kCursorDefs[_cursorId];
-	return MIN<int>(def[0] + _cursorFrame % def[1], _cursors->frames - 1);
+	return MIN<int>(def[0] + _cursorFrame % def[1], _cursors->height - 1);
 }
 
 void DreamForgeEngine::animateCursor() {

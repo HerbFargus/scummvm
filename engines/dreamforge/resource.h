@@ -102,6 +102,7 @@ struct Sprite {
 	~Sprite() { surface.free(); }
 
 	bool load(Resource &res);
+	/** Frame n of a strip; there are 'height' frames of 'frames' rows each */
 	Common::Rect frameRect(uint frame) const;
 };
 

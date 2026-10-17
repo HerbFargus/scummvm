@@ -188,8 +188,11 @@ bool Sprite::load(Resource &res) {
 	return true;
 }
 
+// A strip of frames (the cursors) reads the header the other way round: the first
+// field counts the frames and the second is each one's height (0x4e6c0 steps by
+// second field x width), so the cursor sheet is 45 frames of 43 x 43
 Common::Rect Sprite::frameRect(uint frame) const {
-	return Common::Rect(0, frame * height, width, (frame + 1) * height);
+	return Common::Rect(0, frame * frames, width, (frame + 1) * frames);
 }
 
 } // End of namespace DreamForge
