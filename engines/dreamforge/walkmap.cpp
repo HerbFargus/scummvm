@@ -66,9 +66,15 @@ const WalkMap::Span *WalkMap::spanAt(const DreamForgeEngine *vm, int y, int x) c
 	return nullptr;
 }
 
+// 0x19e10 takes the first span under x and ignores its conditions, so a puppy
+// placed where it can't walk (on a chair, say) still gets drawn at that size
 int WalkMap::scaleAt(const DreamForgeEngine *vm, int y, int x) const {
-	const Span *s = spanAt(vm, y, x);
-	return s ? s->scale : 0;
+	if (y < 0 || y >= (int)_rows.size())
+		return 0;
+	for (auto &s : _rows[y])
+		if (x >= s.xmin && x <= s.xmax)
+			return s.scale;
+	return 0;
 }
 
 bool WalkMap::lineClear(const DreamForgeEngine *vm, int y0, int x0, int y1, int x1) const {

@@ -54,7 +54,9 @@ DreamForgeEngine::DreamForgeEngine(OSystem *syst, const ADGameDescription *gameD
 	memset(_hotspotState, 0, sizeof(_hotspotState));
 	memset(_layerState, 0, sizeof(_layerState));
 	memset(_objectState, 0, sizeof(_objectState));
-	_heldItem = 0;
+	_heldItem = -1;
+	_cursorId = -1;
+	_cursorFrame = 0;
 	_currentActor = 1;
 	_counter3D = 0;
 	_actors[0] = new Actor(this, 1);
@@ -123,8 +125,7 @@ void DreamForgeEngine::setupCursor() {
 		return;
 	}
 	delete res;
-	Graphics::Surface frame = _cursors->surface.getSubArea(_cursors->frameRect(0));
-	CursorMan.replaceCursor(frame, frame.w / 2, frame.h / 2, 0);
+	setCursor(0);
 	CursorMan.showMouse(true);
 }
 
@@ -157,14 +158,9 @@ bool DreamForgeEngine::loadScene(int act, int area, int room) {
 	_scene = scene;
 	_walkMap.load(_scene->_walkMap);
 	_currentRegion = -1;
-	for (auto &o : _scene->_objects) {
-		DFADecoder dfa;
-		if (dfa.load(SearchMan.createReadStreamForMember(Common::Path("CINE/" + o.anim, '/')))) {
-			const Graphics::Surface *f = dfa.decodeNextFrame();
-			if (f)
-				o.frame.copyFrom(*f);
-		}
-	}
+	for (auto *o : _scene->_objects)
+		startObject(*o);
+	updateObjects(true);
 	_layerVisible.clear();
 	_layerVisible.resize(_scene->_layers.size());
 	for (uint i = 0; i < _layerVisible.size(); i++)
@@ -376,46 +372,43 @@ void DreamForgeEngine::useHotspot(const Record &hotspot, bool walk) {
 	_dirty = true;
 }
 
-bool DreamForgeEngine::playSceneAnim(int cine, int top, int left, bool flip, int delay, int depth, bool noWait) {
-	Common::String base = Common::String::format("CINE/%04d", cine);
-	DFADecoder dfa;
-	if (!dfa.load(SearchMan.createReadStreamForMember(Common::Path(base + ".DFA", '/')))) {
-		warning("playSceneAnim: no %s.DFA", base.c_str());
+bool DreamForgeEngine::playSceneAnim(int cine, int top, int left, bool flip, int delay, int depth, bool noWait, int hideActor) {
+	if (!_scene)
+		return false;
+	// 0x23af0: a temporary scene object, drawn in depth order with everything else
+	SceneObject *o = new SceneObject();
+	o->anim = Common::String::format("%04d.DFA", cine);
+	o->id = 0xA2C2A + cine;
+	o->temporary = true;
+	startObject(*o);
+	if (!o->dfa) {
+		deleteObject(o);
 		return false;
 	}
-	ActScript act;
-	act.load(base + ".ACT");
-	debugC(1, kDebugScript, "scene anim %d at (%d, %d), %d frames%s%s", cine, left, top, dfa.getFrameCount(),
-		flip ? ", flipped" : "", noWait ? ", no wait" : "");
-	// TODO: depth against the puppies, flipping, the start delay, and running on
-	// while the script carries on (noWait)
-	(void)depth;
-	(void)delay;
-	uint32 start = g_system->getMillis();
-	bool stop = false;
-	for (int frame = 0; frame < dfa.getFrameCount() && !stop && !shouldQuit(); frame++) {
-		if ((uint)frame < act.frames.size())
-			runActCues(this, act.frames[frame], stop);
-		const Graphics::Surface *surf = dfa.decodeNextFrame();
-		if (!surf)
-			break;
-		redraw(false);
-		Common::Rect dst(left - _scrollX, top, left - _scrollX + surf->w, top + surf->h);
-		Common::Rect clipped = dst.findIntersectingRect(Common::Rect(kScreenWidth, kScreenHeight));
-		if (!clipped.isEmpty())
-			_screen.copyRectToSurface(*surf, clipped.left, clipped.top, Common::Rect(clipped.left - dst.left,
-				clipped.top - dst.top, clipped.right - dst.left, clipped.bottom - dst.top));
-		g_system->copyRectToScreen(_screen.getPixels(), _screen.pitch, 0, 0, kScreenWidth, kScreenHeight);
-		g_system->updateScreen();
-		uint32 due = start + (frame + 1) * dfa.getFrameTime();
-		while (g_system->getMillis() < due && !shouldQuit()) {
-			Common::Event event;
-			while (g_system->getEventManager()->pollEvent(event)) {
-			}
-			g_system->delayMillis(5);
-		}
-	}
-	_dirty = true;
+	o->rect = Common::Rect(left, top, left + o->dfa->getWidth(), top + o->dfa->getHeight());
+	o->depth = depth == -1 ? top + o->dfa->getHeight() - 1 : depth;
+	o->flags = 4 | (flip ? 1 : 0);
+	o->delay = delay;
+	o->nextTick = ticks() + delay;
+	// The puppy the animation shows is hidden until it ends
+	o->hideActor = hideActor;
+	for (int n = 1; n <= 2; n++)
+		if (hideActor == n || hideActor == 3)
+			getActor(n)->_hidden = true;
+	_scene->_objects.push_back(o);
+	debugC(1, kDebugScript, "scene anim %d at (%d, %d), %d frames, depth %d%s%s", cine, left, top,
+		o->dfa->getFrameCount(), o->depth, flip ? ", flipped" : "", noWait ? ", no wait" : "");
+	if (noWait)
+		return true;
+	int id = o->id;
+	auto running = [&]() {
+		for (auto *obj : _scene->_objects)
+			if (obj->id == id)
+				return true;
+		return false;
+	};
+	while (_scene && running() && !shouldQuit())
+		runStep();
 	return true;
 }
 
@@ -576,9 +569,9 @@ void DreamForgeEngine::drawScene() {
 		}
 	}
 	for (uint i = 0; i < _scene->_objects.size(); i++) {
-		const SceneObject &o = _scene->_objects[i];
-		if (conditionsHold(o.data.data() + 0x272, 9) && !(o.data[0x31] & 0x80)) {
-			Item it = { (int32)READ_LE_UINT32(o.data.data() + 0x10), 1, (int)i };
+		const SceneObject &o = *_scene->_objects[i];
+		if (o.dfa && o.frame >= 0 && (o.temporary || conditionsHold(o.data.data() + 0x272, 9)) && !(o.flags2 & 0x80)) {
+			Item it = { o.depth, 1, (int)i };
 			items.push_back(it);
 		}
 	}
@@ -607,10 +600,8 @@ void DreamForgeEngine::drawScene() {
 			pos = Common::Point(l->x, l->y);
 			keyed = true;
 		} else {
-			const SceneObject &o = _scene->_objects[it.index];
-			if (!o.frame.getPixels())
-				continue;
-			surf = &o.frame;
+			const SceneObject &o = *_scene->_objects[it.index];
+			surf = o.dfa->getSurface();
 			pos = Common::Point(o.rect.left, o.rect.top);
 			keyed = false;
 		}
@@ -619,12 +610,163 @@ void DreamForgeEngine::drawScene() {
 		if (clipped.isEmpty())
 			continue;
 		Common::Rect part(clipped.left - dst.left, clipped.top - dst.top, clipped.right - dst.left, clipped.bottom - dst.top);
-		if (keyed)
+		bool mirror = it.kind == 1 && (_scene->_objects[it.index]->flags & 1);
+		if (mirror) {
+			for (int y = clipped.top; y < clipped.bottom; y++) {
+				const byte *src = (const byte *)surf->getBasePtr(0, y - dst.top);
+				byte *out = (byte *)_screen.getBasePtr(0, y);
+				for (int x = clipped.left; x < clipped.right; x++)
+					out[x] = src[surf->w - 1 - (x - dst.left)];
+			}
+		} else if (keyed) {
 			_screen.copyRectToSurfaceWithKey(*surf, clipped.left, clipped.top, part, 0);
-		else
+		} else {
 			_screen.copyRectToSurface(*surf, clipped.left, clipped.top, part);
+		}
 	}
 	shadeActors();
+}
+
+void DreamForgeEngine::startObject(SceneObject &o) {
+	o.dfa = new DFADecoder();
+	if (!o.dfa->load(SearchMan.createReadStreamForMember(Common::Path("CINE/" + o.anim, '/')))) {
+		warning("No animation %s for object %d", o.anim.c_str(), o.id);
+		delete o.dfa;
+		o.dfa = nullptr;
+		return;
+	}
+	o.act = new ActScript();
+	Common::String act = o.anim;
+	act.erase(act.size() - 4);
+	o.act->load("CINE/" + act + ".ACT");
+	o.frame = -1;
+}
+
+// 0x22100: the next frame; at the end, a looping object starts again, others finish
+void DreamForgeEngine::advanceObject(SceneObject &o) {
+	if (!o.dfa)
+		return;
+	if (o.frame == -1 || o.frame >= o.dfa->getFrameCount() - 1) {
+		if (o.frame != -1 && !(o.flags & 0x08)) {
+			o.flags |= 0x10;
+			return;
+		}
+		o.dfa->rewind();
+		o.frame = -1;
+	}
+	if (o.dfa->decodeNextFrame()) {
+		o.frame++;
+		bool stop = false;
+		if ((uint)o.frame < o.act->frames.size())
+			runActCues(this, o.act->frames[o.frame], stop);
+	}
+}
+
+// 0x231c0, once per game step
+void DreamForgeEngine::updateObjects(bool force) {
+	if (!_scene)
+		return;
+	uint32 now = ticks();
+	for (uint i = 0; i < _scene->_objects.size(); i++) {
+		SceneObject &o = *_scene->_objects[i];
+		bool live = force || (!(o.flags & 0x10) && (o.temporary || conditionsHold(o.data.data() + 0x272, 9)));
+		if (!live || now < o.nextTick)
+			continue;
+		if ((o.flags3 & 1) && !(o.flags & 4))
+			continue;
+		// TODO: objects that follow a path (+0x32 & 4)
+		advanceObject(o);
+		o.nextTick = now + o.delay;
+		if (o.frame != -1)
+			o.flags &= ~4;
+		if (o.temporary && (o.flags & 0x10)) {
+			if (o.hideActor)
+				for (int n = 1; n <= 2; n++)
+					if (o.hideActor == n || o.hideActor == 3)
+						getActor(n)->_hidden = false;
+			deleteObject(&o);
+			_scene->_objects.remove_at(i);
+			i--;
+		}
+	}
+}
+
+// C.PRG 0x82d7c: per cursor, first frame in the cursor sheet (PIG0 #2), frame count, hotspot y, x
+static const int8 kCursorDefs[][4] = {
+	{ 0, 2, 12, 12 }, { 2, 1, 12, 12 }, { 2, 1, 12, 12 }, { 2, 1, 12, 12 }, { 2, 1, 12, 12 }, { 2, 1, 12, 12 },
+	{ 2, 1, 12, 12 }, { 3, 13, 8, 9 }, { 16, 2, 10, 20 }, { 18, 2, 10, 23 }, { 20, 2, 18, 4 }, { 22, 2, 18, 39 },
+	{ 24, 2, 4, 11 }, { 26, 2, 37, 11 }, { 28, 2, 3, 39 }, { 30, 2, 3, 4 }, { 32, 2, 10, 19 }, { 34, 2, 10, 24 },
+	{ 36, 1, 8, 10 }, { 37, 1, 8, 10 }, { 38, 1, 4, 9 }, { 39, 1, 4, 9 }, { 40, 1, 9, 10 }, { 41, 1, 9, 10 },
+	{ 42, 1, 11, 12 }, { 42, 1, 11, 12 }
+};
+
+enum {
+	kCursorPaw = 0,
+	kCursorWait = 7,
+	kCursorScrollLeft = 0x10,
+	kCursorScrollRight = 0x11
+};
+
+// 0x82d5c: an exit's direction -> arrow cursor
+static const int8 kExitArrows[8] = { 12, 14, 9, 11, 13, 10, 8, 15 };
+
+int DreamForgeEngine::cursorFor(const Common::Point &screen) const {
+	if (_inScript)
+		return kCursorWait;
+	if (!_scene)
+		return kCursorPaw;
+	Common::Point p(screen.x + _scrollX, screen.y);
+	const Hotspot *hot = nullptr;
+	for (auto &h : _scene->_hotspots)
+		if (h.rect.contains(p)) {
+			hot = &h;
+			break;
+		}
+	// 0x13b40: the plain cursor turns into a scroll arrow near the edges of a wide room
+	int id = kCursorPaw;
+	if (_walkMap.isWalkable(this, p.y, p.x) && (int)_scene->_width > kScreenWidth) {
+		if (screen.x < 0x3D && _scrollX > 0)
+			id = kCursorScrollLeft;
+		else if (screen.x > 0x243 && _scrollX < (int)_scene->_width - kScreenWidth)
+			id = kCursorScrollRight;
+	}
+	if (hot) {
+		// 0x13c20: the hotspot's mask picks the cursor (TODO: held item cursors)
+		uint16 m = hot->mask;
+		if (m & 8)
+			id = 1;
+		else if (m & 0x40)
+			id = 6;
+		else if (m & 2)
+			id = 5;
+		else if (m & 0x10)
+			id = 3;
+		else if (m & 0x20)
+			id = 4;
+		else if (m & 4)
+			id = 2;
+		if ((id == kCursorPaw || id == kCursorScrollLeft || id == kCursorScrollRight) && hot->exitDir >= 0 && hot->exitDir < 8)
+			id = kExitArrows[hot->exitDir];
+	}
+	return id;
+}
+
+void DreamForgeEngine::setCursor(int id) {
+	if (id == _cursorId || !_cursors || !_cursors->frames)
+		return;
+	_cursorId = id;
+	_cursorFrame = 0;
+	animateCursor();
+}
+
+void DreamForgeEngine::animateCursor() {
+	if (!_cursors || _cursorId < 0)
+		return;
+	const int8 *def = kCursorDefs[_cursorId];
+	int frame = MIN<int>(def[0] + _cursorFrame % def[1], _cursors->frames - 1);
+	_cursorFrame++;
+	Graphics::Surface f = _cursors->surface.getSubArea(_cursors->frameRect(frame));
+	CursorMan.replaceCursor(f, def[3], def[2], 0);
 }
 
 void DreamForgeEngine::runStep() {
@@ -633,14 +775,17 @@ void DreamForgeEngine::runStep() {
 		if (event.type == Common::EVENT_MOUSEMOVE)
 			_mousePos = event.mouse;
 	}
+	setCursor(cursorFor(_mousePos));
 	uint32 now = g_system->getMillis();
 	if (now < _nextStep) {
 		g_system->delayMillis(MIN<uint32>(_nextStep - now, 10));
 		return;
 	}
 	_nextStep = MAX(_nextStep + kStepMs, now);
+	animateCursor();
 	for (int n = 0; n < 2; n++)
 		_actors[n]->step();
+	updateObjects(false);
 	redraw();
 }
 
@@ -779,12 +924,15 @@ void DreamForgeEngine::handleEvents() {
 void DreamForgeEngine::mainLoop() {
 	while (!shouldQuit() && (!_quitAt || g_system->getMillis() < _quitAt)) {
 		handleEvents();
+		setCursor(cursorFor(_mousePos));
 		uint32 now = g_system->getMillis();
 		if (now >= _nextStep) {
 			_nextStep = MAX(_nextStep + kStepMs, now);
 			for (int n = 0; n < 2; n++)
 				_actors[n]->step();
+			updateObjects(false);
 			checkRegions();
+			animateCursor();
 			_dirty = true;
 		}
 		if (_dirty)
@@ -846,6 +994,14 @@ Common::Error DreamForgeEngine::run() {
 		const Record *h = findHotspot(atoi(uses.nextToken().c_str()));
 		if (h)
 			useHotspot(*h);
+	}
+
+	// Test hook: dreamforge_cursor_probe=<x:y,x:y,...> logs the cursor at screen points
+	Common::StringTokenizer probes(ConfMan.get("dreamforge_cursor_probe"), ",");
+	while (!probes.empty()) {
+		int px = 0, py = 0;
+		if (sscanf(probes.nextToken().c_str(), "%d:%d", &px, &py) == 2)
+			debug("cursor at (%d, %d): %d", px, py, cursorFor(Common::Point(px, py)));
 	}
 
 	if (ConfMan.getBool("dreamforge_quit"))

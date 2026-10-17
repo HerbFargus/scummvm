@@ -28,6 +28,9 @@
 
 namespace DreamForge {
 
+class DFADecoder;
+struct ActScript;
+
 // Record sizes in the scene file (the loader, C.PRG 0x1e430)
 enum {
 	kHotspotSize = 0x4B0,
@@ -60,14 +63,30 @@ struct Record {
 };
 
 struct Hotspot : Record {
-	uint16 mask;  // 0x494; the click and hover tests ask for a bit of it
+	uint16 mask;     // 0x494: 1 walk-in region, 4 click, 2 use, ...; also picks the cursor
+	int32 exitDir;   // +0x10: an exit's direction (< 8) for the arrow cursor
 };
 
 /** An animated object: a record plus the CINE animation it plays */
 struct SceneObject : Record {
 	uint32 unk;
 	Common::String anim;
-	Graphics::Surface frame;  // the frame on show (TODO: animate)
+
+	// Running state (the 0x2f0 in-memory object, C.PRG 0x231c0 / 0x22100)
+	DFADecoder *dfa;
+	ActScript *act;
+	int frame;        // -1 before the first
+	uint32 nextTick;  // game timer tick of the next frame
+	int16 delay;      // ticks between frames (+0x296)
+	byte flags;       // +0x30: 0x01 mirrored, 0x04 not started, 0x08 loops, 0x10 finished
+	byte flags2;      // +0x31: 0x80 hidden
+	byte flags3;      // +0x32: 0x01 steps only when started, 0x04 follows a path
+	int depth;
+	bool temporary;   // an in-room animation (script op 0x0f), removed when it finishes
+	int hideActor;    // the puppy it stands in for (1, 2, 3 both, 0 none)
+
+	SceneObject() : unk(0), dfa(nullptr), act(nullptr), frame(-1), nextTick(0), delay(0), flags(0), flags2(0),
+		flags3(0), depth(0), temporary(false), hideActor(0) {}
 };
 
 /** A state overlay or occlusion piece; drawn over the background when its flags say so */
@@ -75,6 +94,8 @@ struct Layer : Record {
 	int32 x, y;
 	Graphics::Surface surface;
 };
+
+void deleteObject(SceneObject *o);
 
 class Scene {
 public:
@@ -93,7 +114,7 @@ public:
 	byte _palette[256 * 3];  // 8-bit, scaled from the 6-bit VGA palette
 	Graphics::Surface _background;
 	Common::Array<Hotspot> _hotspots;
-	Common::Array<SceneObject> _objects;
+	Common::Array<SceneObject *> _objects;
 	Common::Array<Layer *> _layers;
 	Common::Array<byte> _walkMap;  // per row [row, n, n x 6 ints] (C.PRG 0x19c20)
 	byte _shade[2];                // puppy darkening with depth: percent step, amount per step

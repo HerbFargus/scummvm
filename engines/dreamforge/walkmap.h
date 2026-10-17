@@ -49,7 +49,7 @@ public:
 	/** The enabled span under (y, x), or nullptr */
 	const Span *spanAt(const DreamForgeEngine *vm, int y, int x) const;
 	bool isWalkable(const DreamForgeEngine *vm, int y, int x) const { return spanAt(vm, y, x) != nullptr; }
-	/** The span's scale, or 0 off the map */
+	/** The scale of the first span under (y, x), enabled or not; 0 off the map */
 	int scaleAt(const DreamForgeEngine *vm, int y, int x) const;
 	/** Is the straight line between two points walkable all the way (0x1a4f0) */
 	bool lineClear(const DreamForgeEngine *vm, int y0, int x0, int y1, int x1) const;

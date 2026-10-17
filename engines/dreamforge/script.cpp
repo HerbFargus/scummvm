@@ -182,8 +182,8 @@ void ScriptRunner::run(const byte *script, int visits, const Common::Point &cent
 			break;
 		}
 		case kOpCinematic:
-			// cine, top, left, flip, delay, depth, don't wait, ?
-			_vm->playSceneAnim(a[0], (int16)a[1], (int16)a[2], a[3] != 0, a[4], (int16)a[5], a[6] != 0);
+			// cine, top, left, flip, delay, depth, don't wait, puppy to hide meanwhile
+			_vm->playSceneAnim(a[0], (int16)a[1], (int16)a[2], a[3] != 0, a[4], (int16)a[5], a[6] != 0, a[7]);
 			break;
 		case kOpCutscene:
 			_vm->playCutscene(a[0]);

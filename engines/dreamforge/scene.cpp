@@ -26,6 +26,8 @@
 
 #include "dreamforge/detection.h"
 #include "dreamforge/resource.h"
+#include "dreamforge/cutscene.h"
+#include "dreamforge/dfa.h"
 #include "dreamforge/scene.h"
 
 namespace DreamForge {
@@ -58,6 +60,12 @@ static void readBytes(Common::SeekableReadStream &in, Common::Array<byte> &out, 
 		in.read(out.data(), size);
 }
 
+void deleteObject(SceneObject *o) {
+	delete o->dfa;
+	delete o->act;
+	delete o;
+}
+
 Scene::Scene() : _act(0), _area(0), _room(0), _version(0), _width(0), _height(0), _music(-1), _refScale(0), _footstepSfx(0), _start(0) {
 	_shade[0] = _shade[1] = 0;
 	memset(_spots, 0, sizeof(_spots));
@@ -70,8 +78,8 @@ Scene::~Scene() {
 
 void Scene::clear() {
 	_background.free();
-	for (auto &o : _objects)
-		o.frame.free();
+	for (auto *o : _objects)
+		deleteObject(o);
 	for (uint i = 0; i < _layers.size(); i++) {
 		_layers[i]->surface.free();
 		delete _layers[i];
@@ -132,15 +140,21 @@ bool Scene::load(int act, int area, int room) {
 		readBytes(in, _hotspots[i].data, kHotspotSize);
 		_hotspots[i].parse(0x4AC);
 		_hotspots[i].mask = READ_LE_UINT16(_hotspots[i].data.data() + 0x494);
+		_hotspots[i].exitDir = (int32)READ_LE_UINT32(_hotspots[i].data.data() + 0x10);
 	}
 
 	readImageBlock(in, _background, _width, _height);
 
-	_objects.resize(nObjects);
 	for (uint i = 0; i < nObjects; i++) {
-		SceneObject &obj = _objects[i];
+		_objects.push_back(new SceneObject());
+		SceneObject &obj = *_objects.back();
 		readBytes(in, obj.data, kObjectSize);
 		obj.parse(0x298);
+		obj.flags = obj.data[0x30] | 4;
+		obj.flags2 = obj.data[0x31];
+		obj.flags3 = obj.data[0x32];
+		obj.delay = (int16)READ_LE_UINT16(obj.data.data() + 0x296);
+		obj.depth = (int32)READ_LE_UINT32(obj.data.data() + 0x10);
 		obj.unk = in.readUint32LE();
 		char anim[9] = {};
 		in.read(anim, 8);

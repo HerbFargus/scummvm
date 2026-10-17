@@ -29,6 +29,7 @@
 #include "common/str.h"
 #include "engines/advancedDetector.h"
 #include "engines/engine.h"
+#include "common/system.h"
 #include "graphics/surface.h"
 
 #include "dreamforge/walkmap.h"
@@ -38,6 +39,7 @@ namespace DreamForge {
 class Actor;
 struct AnimFrames;
 struct Record;
+struct SceneObject;
 class ResourceArchive;
 class Scene;
 class Sound;
@@ -121,6 +123,11 @@ public:
 	/** The walk-in region (mask 1) under a puppy's feet, or nullptr */
 	const Record *regionAt(int y, int x) const;
 	void checkRegions();
+	/** The cursor for what's under the mouse (C.PRG 0x24120); kCursorWait while busy */
+	int cursorFor(const Common::Point &screen) const;
+	void setCursor(int id);
+	void animateCursor();
+	int _cursorId, _cursorFrame;
 	int _currentRegion;
 	uint32 _quitAt;
 	/** The first hotspot with this id in the current scene, or nullptr */
@@ -129,7 +136,7 @@ public:
 	 * An animation played in the room (script op 0x0f, C.PRG 0x23af0): CINE\<cine>.DFA
 	 * drawn opaque at (left, top) in scene coordinates, with its .ACT cues.
 	 */
-	bool playSceneAnim(int cine, int top, int left, bool flip, int delay, int depth, bool noWait);
+	bool playSceneAnim(int cine, int top, int left, bool flip, int delay, int depth, bool noWait, int hideActor);
 	/** Keeps the screen and events going until the voice line ends */
 	void waitForVoice();
 	bool saveShot(const Common::String &path);
@@ -159,6 +166,10 @@ private:
 	Common::String _shotDir;
 	bool _inScript;
 	void drawScene();
+	void startObject(SceneObject &o);
+	void advanceObject(SceneObject &o);
+	void updateObjects(bool force);
+	uint32 ticks() const { return g_system->getMillis() * 182 / 10000; }  // the 18.2 Hz game timer
 	void shadeActors();
 	bool conditionsHold(const byte *conds, uint count) const;
 	byte _flags[kFlagCount / 8];
