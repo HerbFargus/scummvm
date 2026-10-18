@@ -27,13 +27,26 @@ const PlainGameDescriptor mspamGames[] = {
 };
 
 const ADGameDescription gameDescriptions[] = {
-	// US Windows CD (1994, files dated November 1995)
+	// US Windows CD, Microsoft Home reissue (files dated November 1995)
 	{
 		"msbsolar",
 		nullptr,
 		AD_ENTRY4s("MSBSOLAR.EX_", "7b24c03ce16508f4c3f44f961f7bee53", 32544,
 				   "MSBSOLAR.CMF", "7437002f84c079959b7f46744ceff422", 118043808,
 				   "MSBSOLAR.MDF", "55e0b3cbe8e05338520b527411e2aeef", 75688,
+				   "MSBSOLAR.TDF", "472937499287f4b988b3e292d74ceb37", 1024000),
+		Common::EN_USA,
+		Common::kPlatformWindows,
+		ADGF_UNSTABLE,
+		GUIO1(GUIO_NOMIDI)
+	},
+
+	// US Windows CD (1994, files dated October 1994). Same screens and media as the
+	// Microsoft Home reissue above; only the player and the title DLL were rebuilt.
+	{
+		"msbsolar",
+		nullptr,
+		AD_ENTRY2s("MSBSOLAR.EX_", "cf87249715963720ba36c285112d3844", 32576,
 				   "MSBSOLAR.TDF", "472937499287f4b988b3e292d74ceb37", 1024000),
 		Common::EN_USA,
 		Common::kPlatformWindows,
