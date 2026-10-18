@@ -27,6 +27,7 @@
 #include "nightmarened/attic.h"
 #include "nightmarened/detection.h"
 #include "nightmarened/game.h"
+#include "nightmarened/hints.h"
 #include "nightmarened/ned.h"
 #include "nightmarened/rdx.h"
 
@@ -4559,9 +4560,9 @@ void AtticScene::r25TickPump(uint32 now) {
 	setDeadline(cur, now + (int16)d * kMsPerStep);
 }
 
-// 0x475180: the help hints (Ned's thought balloons) belong to a shared module that isn't ported
+// 0x475180(which, facing, Ned's x, y, the room's scroll xform 0x404ef0 and copies, unused)
 void AtticScene::hint(int which, bool facingRight) {
-	debugC(1, kDebugGraphics, "Attic: hint %d (facing %d) not ported", which, facingRight);
+	_game->hints().trigger(which, facingRight, _nedPos.x, _nedPos.y, xform, this);
 }
 
 // The completion callbacks of the request lists (+0x1c of an entry)

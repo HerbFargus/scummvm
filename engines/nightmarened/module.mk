@@ -7,6 +7,7 @@ MODULE_OBJS = \
 	demo.o \
 	display.o \
 	game.o \
+	hints.o \
 	media.o \
 	metaengine.o \
 	naf.o \

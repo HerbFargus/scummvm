@@ -32,6 +32,7 @@
 namespace NightmareNed {
 
 class Game;
+class Hints;
 class Media;
 class Ned;
 class NightmareNedEngine;
@@ -84,6 +85,8 @@ public:
 	Ned *ned() { return _ned; }
 	/** The area music and the TV clip player (0x455960, 0x479ff0, 0x47a3e0) */
 	Media &media() { return *_media; }
+	/** Ned's visions (0x472960-0x4759e0) */
+	Hints &hints() { return *_hints; }
 	/** 0x48c5e0: the MSVC rand() */
 	uint32 crtRandom();
 	void setNed(Ned *ned) { _ned = ned; }
@@ -144,6 +147,7 @@ private:
 	Display _display;
 	Ned *_ned;
 	Media *_media;
+	Hints *_hints;
 	uint32 _randomSeed;
 	NafArchive *_nafs[12];
 	Common::Array<Scene *> _scenes;
