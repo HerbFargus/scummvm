@@ -120,7 +120,17 @@ bool CollisionMap::load(Common::SeekableReadStream &stream) {
 
 	maskStride = 0;
 	mask.clear();
-	if (maskSize >= 0x18 && stream.readUint16LE() == MKTAG16('C', 'c')) {
+	isColumn = false;
+	columns.clear();
+	uint16 tag = maskSize >= 0x18 ? stream.readUint16LE() : 0;
+	if (tag == MKTAG16('C', 'V')) {
+		isColumn = true;
+		stream.skip(0x16);
+		// (the size field counts only the columns here)
+		columns.resize(maskSize / 2);
+		for (uint16 &c : columns)
+			c = stream.readUint16LE();
+	} else if (tag == MKTAG16('C', 'c')) {
 		stream.skip(2);
 		maskStride = stream.readSint32LE();
 		int32 mx0 = stream.readSint32LE(), my0 = stream.readSint32LE();
@@ -133,6 +143,8 @@ bool CollisionMap::load(Common::SeekableReadStream &stream) {
 }
 
 bool CollisionMap::isSolid(int x, int y) const {
+	if (isColumn)
+		return x >= 0 && x < (int)columns.size() && columns[x] == (uint16)y;
 	// x1 is inclusive, y1 exclusive; the byte index rounds up, the bit index doesn't
 	if (mask.empty() || x < maskBounds.left || x > maskBounds.right || y < maskBounds.top || y >= maskBounds.bottom)
 		return false;

@@ -17,6 +17,17 @@ MODULE_OBJS = \
 	options.o \
 	rdx.o \
 	resources.o \
+	scene1.o \
+	scene1_base.o \
+	scene1_enemies1.o \
+	scene1_enemies2.o \
+	scene1_graves.o \
+	scene1_sub0.o \
+	scene1_sub2.o \
+	scene1_sub3.o \
+	scene1_sub4.o \
+	scene1_sub5.o \
+	scene1_sub7.o \
 	scene7.o \
 	scene7_actors.o \
 	world.o

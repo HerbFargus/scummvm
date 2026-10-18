@@ -24,7 +24,7 @@
 
 namespace NightmareNed {
 
-CollisionWorld::CollisionWorld() : _lastHit(0), _count(0), _user(nullptr) {
+CollisionWorld::CollisionWorld() : _lastHit(0), _count(0), _user(nullptr), _column(nullptr) {
 	for (int i = 0; i < kMaxMaps; i++) {
 		_disabled[i] = false;
 		_maps[i] = nullptr;
@@ -36,6 +36,10 @@ CollisionWorld::CollisionWorld() : _lastHit(0), _count(0), _user(nullptr) {
 bool CollisionWorld::addMap(CollisionMap *map, int x0, int y0, int x1, int y1) {
 	if (!map)
 		return true;
+	if (map->isColumn) {
+		_column = map;
+		return true;
+	}
 	if (_count >= kMaxMaps)
 		return false;
 	_maps[_count] = map;
@@ -49,6 +53,10 @@ bool CollisionWorld::addMap(CollisionMap *map, int x0, int y0, int x1, int y1) {
 
 // Shifts the later maps' pointers, bounds and disabled flags down by one
 void CollisionWorld::removeMap(CollisionMap *map) {
+	if (map && map == _column) {
+		_column = nullptr;
+		return;
+	}
 	int i = 0;
 	while (i < _count && _maps[i] != map)
 		i++;
@@ -91,8 +99,11 @@ bool CollisionWorld::testMap(int index, int16 x, int16 y) const {
 // The cached map first, then the rest from there to the end, then from 0 up to the cache
 bool CollisionWorld::isSolid(int x, int y) {
 	int16 sx = (int16)x, sy = (int16)y;
-	if (_count == 1)
-		return _maps[0] && _maps[0]->isSolid(sx, sy);
+	if (_count == 1) {
+		if (_maps[0] && _maps[0]->isSolid(sx, sy))
+			return true;
+		return _column && _column->isSolid(sx, sy);
+	}
 	int start = _lastHit;
 	for (int i = start; i < _count; i++) {
 		if (testMap(i, sx, sy)) {
@@ -105,6 +116,10 @@ bool CollisionWorld::isSolid(int x, int y) {
 			_lastHit = i;
 			return true;
 		}
+	}
+	if (_column && _column->isSolid(sx, sy)) {
+		_lastHit = 0;
+		return true;
 	}
 	return false;
 }

@@ -79,6 +79,11 @@ struct CollisionMap {
 	int32 maskStride;
 	Common::Rect maskBounds;
 	Common::Array<byte> mask;
+	// 'VC' column map instead: the floor's y for each x (0x48a040 tests column[x] == y)
+	bool isColumn;
+	Common::Array<uint16> columns;
+
+	CollisionMap() : maskStride(0), isColumn(false) {}
 
 	bool load(Common::SeekableReadStream &stream);
 	/** NITENED.EXE 0x48a040, with its (dx + 7) / 8 byte index */

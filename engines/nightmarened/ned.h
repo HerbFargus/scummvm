@@ -108,6 +108,8 @@ public:
 	void setFacing(int facing) { _facing = facing; }
 	/** DAT_004a5548: the current state */
 	int16 getState() const { return _state; }
+	/** DAT_004c56d4: the draw order Ned's sprites get */
+	int16 getZ() const { return _z; }
 	/** 0x44e9a0: hanging mode (DAT_004c601c) */
 	bool isHanging() const { return _hanging; }
 	/** 0x44e9e0: a slot's sequence step */

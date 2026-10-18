@@ -53,6 +53,8 @@ public:
 	/** 0x487400 / 0x487c90: the scene's own region map (a bc_new map that Ned's region tests read) */
 	void setUser(CollisionMap *map);
 	CollisionMap *getUser() const { return _user; }
+	/** +0x3f0: a 'VC' column map goes here instead of the list, and is tested last */
+	CollisionMap *getColumnMap() const { return _column; }
 
 	/** 0x487d10 world_solid_at */
 	bool isSolid(int x, int y);
@@ -66,6 +68,7 @@ private:
 	int _bounds[kMaxMaps][4];
 	CollisionMap *_maps[kMaxMaps];
 	CollisionMap *_user;
+	CollisionMap *_column;
 };
 
 } // End of namespace NightmareNed
