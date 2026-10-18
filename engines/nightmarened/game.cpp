@@ -138,6 +138,8 @@ void Game::switchScene(int scene, int sub, int originScene, int originSub) {
 		return;
 	}
 	debugC(1, kDebugLoading, "Scene %d:%d", scene, sub);
+	// The debug overlay must not draw the old scene's maps once they're freed
+	_display.setCollisionOverlay(Common::Array<CollisionMap *>(), Common::Point());
 	if (_ned)
 		_ned->sceneSwitchBegin();
 
