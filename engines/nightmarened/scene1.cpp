@@ -596,6 +596,9 @@ int Scene1::enter(int fromScene, int fromSub) {
 	} else {
 		_game->_optionsAllowed = true;
 		_tile = 0x4c0;
+		// Test hook: nightmarened_s1_tile=<n> starts the lap at tile n instead
+		if (ConfMan.hasKey("nightmarened_s1_tile"))
+			_tile = ConfMan.getInt("nightmarened_s1_tile");
 		ned()->listShow(1);
 		_toGrave = _bellRung = _toSub2 = _costumeOn = _costumeMode = _costumeOff = 0;
 		for (int i = 0; i < kEnemies; i++)
@@ -619,6 +622,11 @@ int Scene1::enter(int fromScene, int fromSub) {
 		}
 		ned()->setFacing(1);
 		arrival();
+		if (ConfMan.hasKey("nightmarened_s1_tile")) {
+			// (away from the keeper, who would otherwise keep Ned waiting for his greeting)
+			_keeperGreets = 0;
+			ned()->enable(true);
+		}
 		release(kMainList, 1);
 		cloudsVisible(true);
 		ambientEnable(true);

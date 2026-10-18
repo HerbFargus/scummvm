@@ -144,8 +144,9 @@ void RdxSprite::setFrames(const Common::Array<SpriteFrame *> &frames, int w, int
 	setSize(w, h);
 }
 
-// Sprites ignore the view and draw from (0, 0) of the frame. A flipped sprite cut by the
-// surface edge shows the mirror of the crop (rdxp5 ClipHFlipSprite8), not the crop of the mirror.
+// Sprites ignore the view and draw from (0, 0) of the frame. A flipped sprite mirrors about its
+// frame: Dino2d's SprRenderHFlip (d2:100065b6) turns the clip offset sx into frameW - w - sx
+// before rdxp5 ClipHFlipSprite8 skips that many source columns, so a cut shows the crop of the mirror.
 void RdxSprite::render(Graphics::Surface &dst, const Common::Rect &clip, const Common::Point &origin) {
 	if (_current >= (int)_frames.size() || !_frames[_current])
 		return;
@@ -161,7 +162,7 @@ void RdxSprite::render(Graphics::Surface &dst, const Common::Rect &clip, const C
 		int sy = off.y + i;
 		byte *out = (byte *)dst.getBasePtr(dest.left, dest.top + i);
 		for (int j = 0; j < w; j++) {
-			int sx = flip ? off.x + w - 1 - j : off.x + j;
+			int sx = flip ? f->surface.w - 1 - off.x - j : off.x + j;
 			if (f->isOpaque(sx, sy))
 				out[j] = *(const byte *)f->surface.getBasePtr(sx, sy);
 		}
