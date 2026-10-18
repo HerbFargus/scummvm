@@ -86,6 +86,8 @@ public:
 	Media &media() { return *_media; }
 	/** 0x48c5e0: the MSVC rand() */
 	uint32 crtRandom();
+	/** 0x48c5d0: the MSVC srand() */
+	void crtSeed(uint32 seed) { _randomSeed = seed; }
 	void setNed(Ned *ned) { _ned = ned; }
 
 	/** 0x445ed0: milliseconds since start-up (the clock the main loop passes in) */

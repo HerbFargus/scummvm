@@ -45,6 +45,7 @@
 #include "nightmarened/naf.h"
 #include "nightmarened/nightmarened.h"
 #include "nightmarened/rdx.h"
+#include "nightmarened/scene7.h"
 
 namespace NightmareNed {
 
@@ -508,19 +509,25 @@ void NightmareNedEngine::runDemo() {
 // WinMain 0x445f70 after the intro: the scenes are registered (0x403a40 ...), started
 // (0x4598b0), Ned is loaded (0x44f710, 0x44fbc0), and scene 0 is entered. Until the menus
 // exist the game starts in the attic; nightmarened_from=<scene> sets the origin it sees
-// (0 = from the menus: the TV clip 8702 plays).
+// (0 = from the menus: the TV clip 8702 plays); nightmarened_scene=<scene>[:<sub>] starts
+// in another registered scene.
 void NightmareNedEngine::runGame() {
 	_game = new Game(this);
 	_display = &_game->display();
 	_keysDown.resize(Common::KEYCODE_LAST);
 	_display->_showCollision = ConfMan.hasKey("nightmarened_collision") && ConfMan.getBool("nightmarened_collision");
 	_game->addScene(new AtticScene(_game));
+	_game->addScene(new Scene7(_game));
 	_game->initScenes();
 	_game->setNed(new Ned(_game));
 	if (!_game->ned()->init())
 		warning("Ned did not load");
 	int from = ConfMan.hasKey("nightmarened_from") ? ConfMan.getInt("nightmarened_from") : -1;
-	_game->switchScene(4, -1, from, -1);
+	int scene = 4, sub = -1;
+	if (ConfMan.hasKey("nightmarened_scene") &&
+		sscanf(ConfMan.get("nightmarened_scene").c_str(), "%d:%d", &scene, &sub) < 1)
+		scene = 4;
+	_game->switchScene(scene, sub, from, -1);
 	mainLoop(nullptr);
 }
 

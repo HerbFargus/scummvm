@@ -14,6 +14,8 @@ MODULE_OBJS = \
 	nightmarened.o \
 	rdx.o \
 	resources.o \
+	scene7.o \
+	scene7_actors.o \
 	world.o
 
 # This module can be built as a plugin

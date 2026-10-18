@@ -570,6 +570,41 @@ void Ned::startFall() {
 	fall(_state);
 }
 
+// 0x44ecf0
+void Ned::restoreIdle() {
+	_hanging = false;
+	if (_curSlot != 0 && slot(_curSlot).sprite)
+		slot(_curSlot).sprite->setVisibility(false);
+	readState(_states[kStateIdle], 0x4ae9f8);
+	readMatrixRow(kStateIdle, 0x4aea70);
+	if (!slot(1).sprite)
+		return;
+	if (_state == kStateAction && _onAction) {
+		_onAction(_onActionUser, _action);
+		_action = -1;
+		_onAction = nullptr;
+	}
+	stateReset(kStateIdle);
+	_state = kStateIdle;
+	_curSlot = 1;
+	slot(1).step = 0;
+}
+
+// 0x44f6f0
+void Ned::setBasePosition(int x, int y) {
+	if (slot(1).sprite)
+		slot(1).sprite->setPosition(x, y - slot(1).h);
+}
+
+// 0x455600
+bool Ned::dropToFloor(CollisionWorld &world, Common::Point &pos, int maxDist, uint dirs) {
+	int out;
+	if (!probe(world, pos.x, pos.y, maxDist, 0, 1, out, dirs))
+		return false;
+	pos.y += out;
+	return true;
+}
+
 // 0x44ebd0
 void Ned::releaseState() {
 	_states[_state].flags |= kStateRelease;

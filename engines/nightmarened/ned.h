@@ -131,6 +131,12 @@ public:
 	void startFall();
 	/** 0x450660: walking from the given loop slot, keeping its step */
 	void resumeWalk(int16 slot);
+	/** 0x44ecf0: leaves hanging, restores the idle state record and its matrix row, then idle */
+	void restoreIdle();
+	/** 0x44f6f0: puts slot 1's sprite at (x, y - its height) */
+	void setBasePosition(int x, int y);
+	/** 0x455600: moves pos down (dirs 2) or up (dirs 1) to the floor within maxDist; true if found */
+	bool dropToFloor(CollisionWorld &world, Common::Point &pos, int maxDist, uint dirs);
 
 	/** 0x44f650 ned_set_wrap1: 33 ms unit; wrap mode 1 makes x wrap modulo width */
 	void setWrap1(bool wrap, int width, NedXform xform, void *user);
