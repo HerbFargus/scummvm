@@ -35,8 +35,15 @@ public:
 		return Common::kNoError;
 	}
 
+	// Slots 1..8 are the game's GAME01..GAME08; ScummVM's header follows the game's data
 	bool hasFeature(MetaEngineFeature f) const override {
-		return false;
+		return f == kSupportsListSaves || f == kSupportsLoadingDuringStartup || f == kSupportsDeleteSave ||
+			f == kSavesSupportMetaInfo || f == kSavesSupportThumbnail || f == kSavesSupportCreationDate ||
+			f == kSavesSupportPlayTime || f == kSavesUseExtendedFormat;
+	}
+
+	int getMaximumSaveSlot() const override {
+		return 8;
 	}
 };
 

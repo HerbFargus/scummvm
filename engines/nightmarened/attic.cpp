@@ -19,6 +19,7 @@
  *
  */
 
+#include "common/config-manager.h"
 #include "common/debug.h"
 #include "common/ptr.h"
 #include "common/system.h"
@@ -792,6 +793,15 @@ int AtticScene::tick(uint32 input, uint32 now) {
 	}
 	_lastTick = now;
 	checkSoundEnd();
+	// Test hook: nightmarened_hint=<which>:<frames> calls the hint once that many frames have been drawn
+	if (!_hintTestDone && ConfMan.hasKey("nightmarened_hint")) {
+		int which = 0, frames = 0;
+		if (sscanf(ConfMan.get("nightmarened_hint").c_str(), "%d:%d", &which, &frames) >= 1 &&
+			_game->display()._drawCount >= (uint32)frames) {
+			_hintTestDone = true;
+			hint(which, facing() != 0);
+		}
+	}
 	Common::Point pos = ned()->getSpritePosition(ned()->getCurSlot());
 
 	// At the screen edges, a neighbour room that isn't shown yet stops Ned; so does Ctrl

@@ -32,6 +32,7 @@
 namespace NightmareNed {
 
 class Game;
+class Hints;
 class Media;
 class Ned;
 class NightmareNedEngine;
@@ -59,7 +60,9 @@ public:
 	virtual int unload(int toScene, int toSub) { return 0; }        // m5, +0x20
 	virtual void suspend() {}                                       // m6, +0x24
 	virtual int tick(uint32 input, uint32 now) { return 0; }        // m7, +0x28
-	// m8..m10 (+0x2c..+0x34) save and restore scene state; not ported yet
+	virtual int getSaveSize() const { return 0; }                   // m8, +0x2c: bytes m9 writes
+	virtual void saveState(int32 *out) {}                           // m9, +0x30
+	virtual void restoreState(const int32 *in, int size) {}         // m10, +0x34: size 0 = reset
 
 protected:
 	Game *_game;
@@ -84,12 +87,16 @@ public:
 	Ned *ned() { return _ned; }
 	/** The area music and the TV clip player (0x455960, 0x479ff0, 0x47a3e0) */
 	Media &media() { return *_media; }
+	/** Ned's visions (0x472960-0x4759e0) */
+	Hints &hints() { return *_hints; }
 	/** 0x48c5e0: the MSVC rand() */
 	uint32 crtRandom();
 	void setNed(Ned *ned) { _ned = ned; }
 
 	/** 0x445ed0: milliseconds since start-up (the clock the main loop passes in) */
 	uint32 now() const;
+	/** 0x445f30: moves the clock back by ms (the options screen stops game time) */
+	void adjustClock(uint32 ms) { _startMillis += ms; }
 
 	/** NAF by file-table index (0 = ned00000 .. 11 = ned99000); opened on demand, kept open */
 	NafArchive *getNaf(int fileIndex);
@@ -102,6 +109,8 @@ public:
 
 	/** Registers a top-level scene (0x459360). Owned by Game. */
 	void addScene(Scene *scene) { _scenes.push_back(scene); }
+	/** DAT_004c7170: the top-level scenes in registration order */
+	const Common::Array<Scene *> &getScenes() const { return _scenes; }
 	/** 0x4598b0: m0 on every scene and sub-scene */
 	void initScenes();
 	/**
@@ -110,6 +119,13 @@ public:
 	 */
 	void switchScene(int scene, int sub, int fromScene = -1, int fromSub = -1);
 	Scene *getCurrentScene() const { return _current; }
+	/**
+	 * 0x45a210 (new game, loading): the old scene's leave and unload, then the new one's
+	 * load and enter, all told (-1, -1)
+	 */
+	void jumpToScene(int scene, int sub);
+	/** A registered (scene, sub), or nullptr */
+	Scene *getScene(int scene, int sub) const { return findScene(scene, sub); }
 	/** Whether (scene, sub) is registered (ported) */
 	bool hasScene(int scene, int sub) const { return findScene(scene, sub) != nullptr; }
 	/** 0x45a2e0: the current top-level scene id, or -1 */
@@ -144,6 +160,7 @@ private:
 	Display _display;
 	Ned *_ned;
 	Media *_media;
+	Hints *_hints;
 	uint32 _randomSeed;
 	NafArchive *_nafs[12];
 	Common::Array<Scene *> _scenes;

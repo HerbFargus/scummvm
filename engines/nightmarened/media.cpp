@@ -31,6 +31,8 @@
 #include "image/png.h"
 #include "video/smk_decoder.h"
 
+#include <math.h>
+
 #include "nightmarened/detection.h"
 #include "nightmarened/display.h"
 #include "nightmarened/game.h"
@@ -52,7 +54,8 @@ enum {
 	kNafUi = 1                 // NED01000
 };
 
-Media::Media(Game *game) : _game(game), _transFps(15), _installLevel(1), _loadedClip(-1) {
+Media::Media(Game *game) : _game(game), _transFps(15), _installLevel(1), _loadedClip(-1),
+	_musicFile(-1), _musicLevel(10) {
 }
 
 Media::~Media() {
@@ -76,6 +79,9 @@ Common::String Media::getFileName(int index) const {
 // The game fades in to the music volume preference (0x455650); this plays at full volume
 void Media::playMusic(int fileIndex) {
 	stopMusic();
+	_musicFile = fileIndex;
+	if (_musicLevel == 0)
+		return;
 	Common::String name = getFileName(fileIndex);
 	Common::SeekableReadStream *stream = _game->getEngine()->openFile(name);
 	if (!stream) {
@@ -87,10 +93,29 @@ void Media::playMusic(int fileIndex) {
 		return;
 	debugC(1, kDebugSound, "Music %s", name.c_str());
 	g_system->getMixer()->playStream(Audio::Mixer::kMusicSoundType, &_music, Audio::makeLoopingAudioStream(wav, 0));
+	setMusicVolume(_musicLevel);
+}
+
+// 0x455650: level * 300 - 3000 hundredths of a dB (the game fades over 20 steps; this sets it at once)
+void Media::setMusicVolume(int level) {
+	int old = _musicLevel;
+	_musicLevel = CLIP(level, 0, 10);
+	Audio::Mixer *mixer = g_system->getMixer();
+	if (_musicLevel == 0) {
+		mixer->stopHandle(_music);
+		return;
+	}
+	if (old == 0 && !mixer->isSoundHandleActive(_music) && _musicFile >= 0) {
+		playMusic(_musicFile);
+		return;
+	}
+	double gain = pow(10.0, (_musicLevel * 300 - 3000) / 2000.0);
+	mixer->setChannelVolume(_music, (byte)(gain * Audio::Mixer::kMaxChannelVolume));
 }
 
 void Media::stopMusic() {
 	g_system->getMixer()->stopHandle(_music);
+	_musicFile = -1;
 }
 
 void Media::freeClip() {
@@ -208,6 +233,80 @@ int Media::playClip(int clip, int z, FrameCallback cb, void *user) {
 	stopMusic();
 	freeClip();
 	_game->closeNaf(kNafUi);
+	if (_game->ned())
+		_game->ned()->markTime();
+	return 0;
+}
+
+// 0x47aa00: the frame bitmap at z (the clip's palette bitmap at z + 1 when it has pixels),
+// SmackDoFrame / SmackToBuffer / srfDraw / SmackWait for every frame
+int Media::playClipFull(int z, int clip) {
+	if (_loadedClip != clip)
+		loadClip(clip);
+	Common::String name = getFileName(_game->exe().readUint32(kClipFiles + clip * 4));
+	BitmapRec *frameRec = _frameList.empty() ? nullptr : _frameList[0].bitmap;
+	Video::SmackerDecoder decoder;
+	Common::SeekableReadStream *stream = _game->getEngine()->openFile(name);
+	if (!frameRec || !frameRec->object || _clipList.empty() || !stream || !decoder.loadStream(stream)) {
+		warning("Can't play TV clip %s", name.c_str());
+		freeClip();
+		_game->closeNaf(kNafUi);
+		return -0x20;
+	}
+	debugC(1, kDebugVideo, "TV clip %d: %s, %d frames at the video's rate", clip, name.c_str(), decoder.getFrameCount());
+
+	Display &display = _game->display();
+	if (_clipList[0].hasPalette)
+		display.applyPalette(_clipList[0].palette, kPalAll);
+	frameRec->object->setDestination(display.getPrimary());
+	frameRec->object->setDrawOrder(z);
+	frameRec->object->setVisibility(true);
+	BitmapRec *palRec = _clipList[0].bitmap;
+	if (palRec && palRec->object) {
+		palRec->object->setDestination(display.getPrimary());
+		palRec->object->setDrawOrder(z + 1);
+		palRec->object->setVisibility(true);
+	}
+	Graphics::Surface &dst = frameRec->bitmap.surface;
+	dst.fillRect(Common::Rect(dst.w, dst.h), 0);
+
+	// Test hook: nightmarened_videoshot=<NAME.SMK>:<frame>:<png> saves that frame and quits
+	Common::String shotPath;
+	int shotFrame = -1;
+	if (ConfMan.hasKey("nightmarened_videoshot")) {
+		Common::String spec = ConfMan.get("nightmarened_videoshot");
+		size_t a = spec.findFirstOf(':'), b = a == Common::String::npos ? a : spec.find(':', a + 1);
+		if (b != Common::String::npos && spec.substr(0, a).equalsIgnoreCase(name)) {
+			shotFrame = atoi(spec.substr(a + 1, b - a - 1).c_str());
+			shotPath = spec.substr(b + 1);
+		}
+	}
+
+	decoder.start();
+	while (!decoder.endOfVideo() && !_game->getEngine()->shouldQuit()) {
+		if (decoder.needsUpdate()) {
+			const Graphics::Surface *src = decoder.decodeNextFrame();
+			if (src) {
+				int w = MIN<int>(src->w, dst.w), h = MIN<int>(src->h, dst.h);
+				for (int y = 0; y < h; y++)
+					memcpy(dst.getBasePtr(0, y), src->getBasePtr(0, y), w);
+			}
+			display.draw();
+			if (decoder.getCurFrame() == shotFrame) {
+				Common::DumpFile out;
+				byte pal[256 * 3];
+				g_system->getPaletteManager()->grabPalette(pal, 0, 256);
+				if (out.open(Common::Path(shotPath, '/'), true))
+					Image::writePNG(out, display.getPrimary()->getBuffer(), pal);
+				_game->getEngine()->quitGame();
+			}
+		}
+		Common::Event event;
+		while (g_system->getEventManager()->pollEvent(event)) {
+		}
+		g_system->delayMillis(MIN<uint32>(decoder.getTimeToNextFrame(), 10));
+	}
+	freeClip();
 	if (_game->ned())
 		_game->ned()->markTime();
 	return 0;

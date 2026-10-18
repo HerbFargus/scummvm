@@ -71,6 +71,8 @@ public:
 
 	/** Copies (part of) a 256 x rgb palette into the pending one */
 	void applyPalette(const byte *pal, PaletteMode mode);
+	/** The palette as last applied (256 x rgb), for 0x446b20 */
+	const byte *getPalette() const { return _palette; }
 	/** srfDraw on the primary surface, then upload a pending palette and present */
 	void draw();
 

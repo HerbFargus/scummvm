@@ -23,6 +23,7 @@
 #define NIGHTMARENED_NIGHTMARENED_H
 
 #include "common/array.h"
+#include "common/keyboard.h"
 #include "common/str.h"
 #include "audio/mixer.h"
 #include "engines/advancedDetector.h"
@@ -39,6 +40,7 @@ namespace NightmareNed {
 
 class Display;
 class Game;
+class Options;
 class NafArchive;
 class PlacementDemo;
 struct Background;
@@ -59,6 +61,21 @@ public:
 
 	Common::Error run() override;
 	bool hasFeature(EngineFeature f) const override;
+
+	// Saved games: ScummVM slots 1..8 are the game's GAME01..GAME08
+	bool canLoadGameStateCurrently(Common::U32String *msg = nullptr) override;
+	bool canSaveGameStateCurrently(Common::U32String *msg = nullptr) override;
+	Common::Error loadGameStream(Common::SeekableReadStream *stream) override;
+	Common::Error saveGameStream(Common::WriteStream *stream, bool isAutosave = false) override;
+	Common::Error saveGameState(int slot, const Common::String &desc, bool isAutosave = false) override;
+	/** The options screen's save (0x460580): name is the 12-byte name the game lists */
+	bool saveSlot(int slot, const Common::String &name);
+
+	/** Reads pending events into the key state (for the loops that run inside a tick) */
+	void pumpEvents();
+	/** Whether a key is held now (the DirectInput key state, 0x488770) */
+	bool isKeyDown(Common::KeyCode key) const;
+	Options *getOptions() { return _options; }
 
 	/** Opens a game file from the CD, or from DATA32.Z (DATA\, VIDEO\, SOUND\) */
 	Common::SeekableReadStream *openFile(const Common::String &name);
@@ -91,6 +108,9 @@ private:
 	Common::InstallShieldV3 *_data32;
 	ExeImage _exe;
 	Game *_game;
+	Options *_options;
+	bool _idle;                 // between two main-loop iterations: the ScummVM menu may save or load
+	Common::String _saveName;   // the 12-byte name saveGameStream writes first
 	Display *_display; // owned by _game
 	Common::Array<bool> _keysDown;
 	Graphics::Surface _screen;

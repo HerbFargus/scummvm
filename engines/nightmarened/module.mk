@@ -7,11 +7,14 @@ MODULE_OBJS = \
 	demo.o \
 	display.o \
 	game.o \
+	hints.o \
 	media.o \
+	menus.o \
 	metaengine.o \
 	naf.o \
 	ned.o \
 	nightmarened.o \
+	options.o \
 	rdx.o \
 	resources.o \
 	world.o

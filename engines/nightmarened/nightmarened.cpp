@@ -29,6 +29,7 @@
 #include "common/fs.h"
 #include "common/md5.h"
 #include "common/memstream.h"
+#include "common/savefile.h"
 #include "common/system.h"
 #include "common/textconsole.h"
 #include "engines/util.h"
@@ -37,11 +38,14 @@
 #include "video/smk_decoder.h"
 
 #include "nightmarened/attic.h"
+#include "nightmarened/menus.h"
+#include "nightmarened/options.h"
 #include "nightmarened/demo.h"
 #include "nightmarened/ned.h"
 #include "nightmarened/detection.h"
 #include "nightmarened/display.h"
 #include "nightmarened/game.h"
+#include "nightmarened/hints.h"
 #include "nightmarened/naf.h"
 #include "nightmarened/nightmarened.h"
 #include "nightmarened/rdx.h"
@@ -51,7 +55,7 @@ namespace NightmareNed {
 const int kNafNumbers[12] = { 0, 1000, 86000, 90000, 92000, 93000, 94000, 95000, 96000, 97000, 98000, 99000 };
 
 NightmareNedEngine::NightmareNedEngine(OSystem *syst, const ADGameDescription *gameDesc) : Engine(syst),
-	_gameDescription(gameDesc), _data32(nullptr), _game(nullptr), _display(nullptr), _naf(nullptr), _nafIndex(-1), _bgIndex(0),
+	_gameDescription(gameDesc), _data32(nullptr), _game(nullptr), _options(nullptr), _idle(false), _display(nullptr), _naf(nullptr), _nafIndex(-1), _bgIndex(0),
 	_scrollX(0), _scrollY(0), _spriteIndex(0), _frameIndex(0), _showSprite(false) {
 	memset(_palette, 0, sizeof(_palette));
 }
@@ -60,6 +64,7 @@ NightmareNedEngine::~NightmareNedEngine() {
 	for (SpriteFrame *f : _frames)
 		delete f;
 	delete _naf;
+	delete _options;
 	delete _game;
 	delete _data32;
 	_view.free();
@@ -67,7 +72,68 @@ NightmareNedEngine::~NightmareNedEngine() {
 }
 
 bool NightmareNedEngine::hasFeature(EngineFeature f) const {
-	return f == kSupportsReturnToLauncher;
+	return f == kSupportsReturnToLauncher || f == kSupportsLoadingDuringRuntime || f == kSupportsSavingDuringRuntime;
+}
+
+// The ScummVM menu opens from the main loop's event poll; the loops inside a tick don't allow it
+bool NightmareNedEngine::canLoadGameStateCurrently(Common::U32String *msg) {
+	return _idle && _game && _options;
+}
+
+// Saving needs a scene that would let the options screen open
+bool NightmareNedEngine::canSaveGameStateCurrently(Common::U32String *msg) {
+	return _idle && _game && _options && _game->_optionsAllowed && !_options->isOpen();
+}
+
+// GAMEnn (0x460580): the 12-byte name, then 0x459d90's game state; ScummVM's header follows
+Common::Error NightmareNedEngine::saveGameStream(Common::WriteStream *stream, bool isAutosave) {
+	if (!_options)
+		return Common::kWritingFailed;
+	char name[Options::kNameSize];
+	memset(name, 0, sizeof(name));
+	Common::strlcpy(name, _saveName.c_str(), sizeof(name));
+	stream->write(name, sizeof(name));
+	return _options->writeGame(*stream) ? Common::kNoError : Common::kWritingFailed;
+}
+
+// The game's names are capitals and spaces, at most 11
+Common::Error NightmareNedEngine::saveGameState(int slot, const Common::String &desc, bool isAutosave) {
+	_saveName.clear();
+	for (uint i = 0; i < desc.size() && _saveName.size() < Options::kNameSize - 1; i++)
+		_saveName += (char)toupper((byte)desc[i]);
+	return Engine::saveGameState(slot, desc, isAutosave);
+}
+
+bool NightmareNedEngine::saveSlot(int slot, const Common::String &name) {
+	return saveGameState(slot, name, false).getCode() == Common::kNoError;
+}
+
+// As the options screen's load (0x45f3c0): restore, close the screen, then 0x45a210
+Common::Error NightmareNedEngine::loadGameStream(Common::SeekableReadStream *stream) {
+	if (!_options || !_game)
+		return Common::kReadingFailed;
+	stream->skip(Options::kNameSize);
+	int scene = 0, sub = -1;
+	if (!_options->readGame(*stream, scene, sub))
+		return Common::kReadingFailed;
+	_options->closeForLoad();
+	debugC(1, kDebugLoading, "Loaded a saved game: scene %d:%d", scene, sub);
+	_game->jumpToScene(scene, sub);
+	return Common::kNoError;
+}
+
+void NightmareNedEngine::pumpEvents() {
+	Common::Event event;
+	while (g_system->getEventManager()->pollEvent(event)) {
+		if (event.type == Common::EVENT_KEYDOWN && event.kbd.keycode < (int)_keysDown.size())
+			_keysDown[event.kbd.keycode] = true;
+		else if (event.type == Common::EVENT_KEYUP && event.kbd.keycode < (int)_keysDown.size())
+			_keysDown[event.kbd.keycode] = false;
+	}
+}
+
+bool NightmareNedEngine::isKeyDown(Common::KeyCode key) const {
+	return key < (int)_keysDown.size() && _keysDown[key];
 }
 
 // The CD has DATA\DATA\*.NAF and DATA\VIDEO\*.SMK. NITENED.EXE, NED01000.NAF,
@@ -505,35 +571,91 @@ void NightmareNedEngine::runDemo() {
 	mainLoop(&demo);
 }
 
-// WinMain 0x445f70 after the intro: the scenes are registered (0x403a40 ...), started
-// (0x4598b0), Ned is loaded (0x44f710, 0x44fbc0), and scene 0 is entered. Until the menus
-// exist the game starts in the attic; nightmarened_from=<scene> sets the origin it sees
-// (0 = from the menus: the TV clip 8702 plays).
+// WinMain 0x445f70: the scenes are registered (0x4654b0 first), the options set up
+// (0x45da60), the scenes started (0x4598b0), Ned loaded (0x44f710, 0x44fbc0), and after the
+// intro scene 0 is entered from -1. A ScummVM save_slot loads that game instead.
+// Test hooks: nightmarened_scene=<n> starts in scene n; nightmarened_from=<scene> is the
+// origin it sees (alone, it starts the attic: 0 plays the TV clip 8702).
 void NightmareNedEngine::runGame() {
 	_game = new Game(this);
 	_display = &_game->display();
 	_keysDown.resize(Common::KEYCODE_LAST);
 	_display->_showCollision = ConfMan.hasKey("nightmarened_collision") && ConfMan.getBool("nightmarened_collision");
+	_game->addScene(new MenuScene(_game));
 	_game->addScene(new AtticScene(_game));
+	_options = new Options(_game);
+	if (_options->init())
+		warning("The options screen did not load");
 	_game->initScenes();
 	_game->setNed(new Ned(_game));
 	if (!_game->ned()->init())
 		warning("Ned did not load");
-	int from = ConfMan.hasKey("nightmarened_from") ? ConfMan.getInt("nightmarened_from") : -1;
-	_game->switchScene(4, -1, from, -1);
+
+	int slot = ConfMan.hasKey("save_slot") ? ConfMan.getInt("save_slot") : -1;
+	if (slot < 0 || loadGameState(slot).getCode() != Common::kNoError) {
+		int from = ConfMan.hasKey("nightmarened_from") ? ConfMan.getInt("nightmarened_from") : -1;
+		int scene = ConfMan.hasKey("nightmarened_scene") ? ConfMan.getInt("nightmarened_scene") :
+			(ConfMan.hasKey("nightmarened_from") ? 4 : 0);
+		_game->switchScene(scene, -1, from, -1);
+	}
 	mainLoop(nullptr);
 }
 
-// One WinMain loop iteration at a time: events, the input bitmask (0x446700), then
-// options (0x10000), quit to the menus (0x20000) or the scene tick (0x45a310).
+// The Windows virtual key a WM_KEYDOWN would carry (only what 0x45e740 reads matters)
+static uint32 virtualKey(const Common::KeyState &kbd) {
+	if (kbd.keycode >= Common::KEYCODE_a && kbd.keycode <= Common::KEYCODE_z)
+		return 'A' + (kbd.keycode - Common::KEYCODE_a);
+	if (kbd.keycode >= Common::KEYCODE_0 && kbd.keycode <= Common::KEYCODE_9)
+		return '0' + (kbd.keycode - Common::KEYCODE_0);
+	switch (kbd.keycode) {
+	case Common::KEYCODE_BACKSPACE:
+		return 0x08;
+	case Common::KEYCODE_TAB:
+		return 0x09;
+	case Common::KEYCODE_RETURN:
+		return 0x0d;
+	case Common::KEYCODE_ESCAPE:
+		return 0x1b;
+	case Common::KEYCODE_SPACE:
+		return 0x20;
+	case Common::KEYCODE_LEFT:
+		return 0x25;
+	case Common::KEYCODE_UP:
+		return 0x26;
+	case Common::KEYCODE_RIGHT:
+		return 0x27;
+	case Common::KEYCODE_DOWN:
+		return 0x28;
+	case Common::KEYCODE_DELETE:
+		return 0x2e;
+	default:
+		return 0;
+	}
+}
+
+static void writeShot(Display *display, const Common::String &path) {
+	Common::DumpFile out;
+	byte pal[256 * 3];
+	g_system->getPaletteManager()->grabPalette(pal, 0, 256);
+	if (out.open(Common::Path(path, '/'), true))
+		Image::writePNG(out, display->getPrimary()->getBuffer(), pal);
+}
+
+// One WinMain loop iteration at a time: events (WM_KEYDOWN goes to 0x45e740 while the
+// options screen is open), then the options loop 0x45e060, or the input bitmask (0x446700)
+// and options (0x10000, 0x45db30), quit to the quilt (0x20000) or the scene tick (0x45a310).
 // Test hooks: nightmarened_ticks=<n> runs n drawn frames, then nightmarened_shot=<png>;
-// nightmarened_inputs=<bits>:<frames>,... replaces the keyboard for that many drawn frames each.
+// nightmarened_shots=<frame>:<png>,... saves several and quits after the last;
+// nightmarened_inputs=<bits>:<frames>,... replaces the keyboard for that many drawn frames
+// each, and t<LETTERS> types those keys (_ is a space) for one frame.
+// While the options screen is open every 41 ms counts as a frame.
 // F9 toggles the collision overlay (ned.ini ShowCollisionRects).
 void NightmareNedEngine::mainLoop(PlacementDemo *demo) {
 	int ticksLeft = ConfMan.hasKey("nightmarened_ticks") ? ConfMan.getInt("nightmarened_ticks") : -1;
 	struct ScriptedInput {
 		uint32 bits;
 		int ticks;
+		Common::String text;
 	};
 	Common::Array<ScriptedInput> script;
 	if (ConfMan.hasKey("nightmarened_inputs")) {
@@ -542,10 +664,16 @@ void NightmareNedEngine::mainLoop(PlacementDemo *demo) {
 		while (*p) {
 			char *end;
 			ScriptedInput in;
-			in.bits = strtoul(p, &end, 0);
-			if (end == p)
-				break;
-			p = end;
+			in.bits = 0;
+			if (*p == 't') {
+				for (p++; *p && *p != ',' && *p != ':' && *p != ' '; p++)
+					in.text += *p == '_' ? ' ' : *p;
+			} else {
+				in.bits = strtoul(p, &end, 0);
+				if (end == p)
+					break;
+				p = end;
+			}
 			in.ticks = 1;
 			if (*p == ':') {
 				in.ticks = strtol(p + 1, &end, 0);
@@ -556,19 +684,54 @@ void NightmareNedEngine::mainLoop(PlacementDemo *demo) {
 				p++;
 		}
 	}
+	struct Shot {
+		int frame;
+		Common::String path;
+	};
+	Common::Array<Shot> shots;
+	if (ConfMan.hasKey("nightmarened_shots")) {
+		Common::String spec = ConfMan.get("nightmarened_shots");
+		const char *p = spec.c_str();
+		while (*p) {
+			char *end;
+			Shot shot;
+			shot.frame = strtol(p, &end, 0);
+			if (end == p || *end != ':')
+				break;
+			p = end + 1;
+			while (*p && *p != ',')
+				shot.path += *p++;
+			shots.push_back(shot);
+			while (*p == ',')
+				p++;
+		}
+	}
+	int frames = 0;
+	uint shotIndex = 0;
 	uint scriptIndex = 0;
 	int scriptTicks = 0;
-	uint32 lastOptions = 0, lastQuit = 0;
+	bool typed = false;
 	while (!shouldQuit()) {
+		uint32 start = g_system->getMillis();
+		bool optionsOpen = _options && _options->isOpen();
 		Common::Event event;
+		_idle = true;
 		while (g_system->getEventManager()->pollEvent(event)) {
 			if (event.type == Common::EVENT_KEYDOWN && event.kbd.keycode < Common::KEYCODE_LAST) {
 				if (event.kbd.keycode == Common::KEYCODE_F9)
 					_display->_showCollision = !_display->_showCollision;
 				_keysDown[event.kbd.keycode] = true;
+				if (_options && _options->isOpen())
+					_options->keyDown(virtualKey(event.kbd));
 			} else if (event.type == Common::EVENT_KEYUP && event.kbd.keycode < Common::KEYCODE_LAST) {
 				_keysDown[event.kbd.keycode] = false;
 			}
+		}
+		_idle = false;
+		if (scriptIndex < script.size() && !typed && _options && _options->isOpen()) {
+			for (uint i = 0; i < script[scriptIndex].text.size(); i++)
+				_options->keyDown((byte)toupper((byte)script[scriptIndex].text[i]));
+			typed = true;
 		}
 		uint32 input = readInput();
 		if (scriptIndex < script.size())
@@ -576,34 +739,52 @@ void NightmareNedEngine::mainLoop(PlacementDemo *demo) {
 		uint32 draws = _display->_drawCount;
 		if (demo) {
 			demo->tick(input, _game->now());
-		} else if (_game->_optionsAllowed && (input & kInputOptions)) {
-			// 0x45db30, the options screen, is not ported
-			if (!lastOptions)
-				debugC(1, kDebugLoading, "Options screen requested (not ported)");
-			g_system->delayMillis(10);
+		} else if (_options && _options->isOpen()) {
+			// 0x45e650 reads the arrows and Space itself
+			uint32 keys = 0;
+			if (scriptIndex < script.size()) {
+				keys = script[scriptIndex].bits & (kInputLeft | kInputRight | kInputUp | kInputDown | kInputButton2);
+			} else {
+				keys = (_keysDown[Common::KEYCODE_LEFT] ? kInputLeft : 0) | (_keysDown[Common::KEYCODE_RIGHT] ? kInputRight : 0) |
+					(_keysDown[Common::KEYCODE_UP] ? kInputUp : 0) | (_keysDown[Common::KEYCODE_DOWN] ? kInputDown : 0) |
+					(_keysDown[Common::KEYCODE_SPACE] ? kInputButton2 : 0);
+			}
+			_options->tick(keys, _game->now());
+		} else if (_game->_optionsAllowed && (input & kInputOptions) && _options) {
+			_options->open();
 		} else if (input & kInputQuit) {
 			int scene = _game->getCurrentSceneId();
-			if (!lastQuit && scene != 0 && scene != -1)
-				debugC(1, kDebugLoading, "Quit to scene 0 requested (the menus are not ported)");
-			g_system->delayMillis(10);
+			if (scene != 0 && scene != -1) {
+				if (_game->hints().isActive())
+					_game->hints().cancel();
+				_game->switchScene(0, -1);
+			}
 		} else {
 			_game->tick(input, _game->now());
 		}
-		lastOptions = input & kInputOptions;
-		lastQuit = input & kInputQuit;
 		bool drew = _display->_drawCount != draws;
+		if (optionsOpen || (_options && _options->isOpen())) {
+			uint32 elapsed = g_system->getMillis() - start;
+			if (elapsed < kMsPerStep)
+				g_system->delayMillis(kMsPerStep - elapsed);
+			drew = true;
+		}
 		if (drew && scriptIndex < script.size() && ++scriptTicks >= script[scriptIndex].ticks) {
 			scriptIndex++;
 			scriptTicks = 0;
+			typed = false;
+		}
+		if (drew)
+			frames++;
+		while (drew && shotIndex < shots.size() && frames >= shots[shotIndex].frame) {
+			writeShot(_display, shots[shotIndex].path);
+			debugC(1, kDebugGraphics, "Frame %d saved to %s", frames, shots[shotIndex].path.c_str());
+			if (++shotIndex == shots.size() && ticksLeft < 0)
+				return;
 		}
 		if (drew && ticksLeft > 0 && --ticksLeft == 0) {
-			if (ConfMan.hasKey("nightmarened_shot")) {
-				Common::DumpFile out;
-				byte pal[256 * 3];
-				g_system->getPaletteManager()->grabPalette(pal, 0, 256);
-				if (out.open(Common::Path(ConfMan.get("nightmarened_shot"), '/'), true))
-					Image::writePNG(out, _display->getPrimary()->getBuffer(), pal);
-			}
+			if (ConfMan.hasKey("nightmarened_shot"))
+				writeShot(_display, ConfMan.get("nightmarened_shot"));
 			break;
 		}
 		if (demo)
@@ -621,7 +802,8 @@ Common::Error NightmareNedEngine::run() {
 		dumpChecksums(ConfMan.get("nightmarened_checksums"));
 		return Common::kNoError;
 	}
-	if (!(ConfMan.hasKey("nightmarened_skipintro") && ConfMan.getBool("nightmarened_skipintro")))
+	bool loading = ConfMan.hasKey("save_slot") && ConfMan.getInt("save_slot") >= 0;
+	if (!loading && !(ConfMan.hasKey("nightmarened_skipintro") && ConfMan.getBool("nightmarened_skipintro")))
 		playIntro();
 	if (shouldQuit())
 		return Common::kNoError;
