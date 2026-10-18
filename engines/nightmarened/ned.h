@@ -183,6 +183,8 @@ public:
 	void setActionCallback(NedActionCallback cb, void *user) { _onAction = cb; _onActionUser = user; }
 	/** 0x44e970: lets the idle fidget change after each play */
 	void enableFidgetRotation() { _fidgetRotate = true; }
+	/** 0x44edb0: plays an area-1 slot's sound (stopping Ned's last one) when it has one */
+	void playOwnSound(int16 id) { if (!slot(id).sound.empty()) playSound(id); }
 	/** 0x44eaa0: state 0's first start slot */
 	void setUseSlot(int16 slot);
 	/** 0x44f6b0 / 0x44f680: the region Ned last touched */

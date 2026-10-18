@@ -65,6 +65,8 @@ public:
 
 	/** 0x475970: a vision is playing (the hook is 0x472a30) */
 	bool isActive() const { return _hooked; }
+	/** 0x477070: the camera moved; the slot playing moves with it */
+	void nudge(int dx, int dy);
 	/** 0x4759c0 (WinMain, on quit to the menus): ends the vision now */
 	void cancel();
 

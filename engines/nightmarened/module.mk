@@ -17,6 +17,12 @@ MODULE_OBJS = \
 	options.o \
 	rdx.o \
 	resources.o \
+	puff.o \
+	scene3.o \
+	scene3_room.o \
+	scene3_rooms.o \
+	scene3_school.o \
+	scene3_school_actors.o \
 	scene7.o \
 	scene7_actors.o \
 	world.o

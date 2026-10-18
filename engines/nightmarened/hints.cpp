@@ -870,6 +870,12 @@ int Hints::stepWorld4(uint32 now) {
 
 // ---- Helpers ----
 
+// 0x477070 (0x430a30 on area 9)
+void Hints::nudge(int dx, int dy) {
+	if (_cur >= 0 && _cur < kAreaSlots && slot(_cur).sprite)
+		slot(_cur).sprite->adjPosition(dx, dy);
+}
+
 Slot &Hints::slot(int id) {
 	return _game->res().getSlot(kHintArea, id);
 }
