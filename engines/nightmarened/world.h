@@ -55,6 +55,8 @@ public:
 	CollisionMap *getUser() const { return _user; }
 	/** 0x487cf0: the map that last had a solid pixel (where Ned stands) */
 	CollisionMap *getLastHitMap() const { return _maps[_lastHit]; }
+	/** +0x3f0: a 'VC' column map goes here instead of the list, and is tested last */
+	CollisionMap *getColumnMap() const { return _column; }
 
 	/** 0x487d10 world_solid_at */
 	bool isSolid(int x, int y);
@@ -68,6 +70,7 @@ private:
 	int _bounds[kMaxMaps][4];
 	CollisionMap *_maps[kMaxMaps];
 	CollisionMap *_user;
+	CollisionMap *_column;
 };
 
 } // End of namespace NightmareNed

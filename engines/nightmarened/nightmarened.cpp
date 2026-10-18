@@ -53,6 +53,7 @@
 #include "nightmarened/scene5.h"
 #include "nightmarened/scene2.h"
 #include "nightmarened/scene6.h"
+#include "nightmarened/scene1.h"
 #include "nightmarened/scene7.h"
 
 namespace NightmareNed {
@@ -587,6 +588,7 @@ void NightmareNedEngine::runGame() {
 	_keysDown.resize(Common::KEYCODE_LAST);
 	_display->_showCollision = ConfMan.hasKey("nightmarened_collision") && ConfMan.getBool("nightmarened_collision");
 	_game->addScene(new MenuScene(_game));
+	_game->addScene(new Scene1(_game));
 	_game->addScene(new AtticScene(_game));
 	_game->addScene(new Scene3(_game));
 	Scene5 *scene5 = new Scene5(_game);
