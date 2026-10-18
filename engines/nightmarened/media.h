@@ -47,6 +47,8 @@ public:
 	void playMusic(int fileIndex);
 	/** 0x455960(NULL) */
 	void stopMusic();
+	/** 0x455650: level 0..10 (ned.ini MusicVolume) is -30..0 dB; 0 stops the music, raising it restarts it */
+	void setMusicVolume(int level);
 
 	/** 0x479ff0: loads the frame bitmap (0x4b4a68) and clip's palette bitmap (0x4b4b94 + clip * 0x24) */
 	int loadClip(int clip);
@@ -56,6 +58,11 @@ public:
 	 * one frame per 1000 / trans_fps ms, then frees what loadClip loaded. Blocks, polling events.
 	 */
 	int playClip(int clip, int z, FrameCallback cb = nullptr, void *user = nullptr);
+	/**
+	 * 0x47aa00: plays clip at the video's own frame rate at draw order z, with no music;
+	 * only quitting stops it. Frees what loadClip loaded.
+	 */
+	int playClipFull(int z, int clip);
 
 	/** File-table entry name (0x4a05d0 + index * 0x14, +0x0c) */
 	Common::String getFileName(int index) const;
@@ -71,6 +78,8 @@ private:
 	Common::Array<Request> _clipList;  // 0x4b4b94 + clip * 0x24: palette into DAT_00520208
 	int _loadedClip;
 	Audio::SoundHandle _music;         // DAT_004c613c
+	int _musicFile;                    // DAT_004c6038: the last music asked for
+	int _musicLevel;                   // DAT_004c6144 as a 0..10 level
 };
 
 } // End of namespace NightmareNed

@@ -29,6 +29,7 @@
 
 #include "nightmarened/detection.h"
 #include "nightmarened/game.h"
+#include "nightmarened/hints.h"
 #include "nightmarened/media.h"
 #include "nightmarened/naf.h"
 #include "nightmarened/ned.h"
@@ -53,11 +54,13 @@ Game::Game(NightmareNedEngine *vm) : _vm(vm), _display(&_res), _ned(nullptr), _c
 	_startMillis = g_system->getMillis();
 	_randomSeed = 1; // the CRT default until a scene calls srand (0x48c5d0)
 	_media = new Media(this);
+	_hints = new Hints(this);
 }
 
 Game::~Game() {
 	for (Scene *s : _scenes)
 		delete s;
+	delete _hints;
 	delete _media;
 	delete _ned;
 	for (int i = 0; i < 12; i++)
@@ -98,6 +101,7 @@ bool Game::loadList(int fileIndex, Common::Array<Request> &list, int scene) {
 }
 
 void Game::initScenes() {
+	_hints->newGame();
 	for (Scene *s : _scenes) {
 		s->init();
 		for (Scene *sub : s->getSubScenes())
@@ -162,6 +166,26 @@ void Game::switchScene(int scene, int sub, int originScene, int originSub) {
 	target->enter(fromScene, fromSub);
 	if (_ned)
 		_ned->markTime();
+	_current = target;
+}
+
+void Game::jumpToScene(int scene, int sub) {
+	Scene *target = findScene(scene, sub);
+	if (!target) {
+		warning("No scene %d:%d", scene, sub);
+		return;
+	}
+	debugC(1, kDebugLoading, "Scene %d:%d (restart)", scene, sub);
+	if (_ned)
+		_ned->sceneSwitchBegin();
+	if (_current) {
+		_current->leave(-1, -1);
+		_current->unload(-1, -1);
+	}
+	target->load(-1, -1);
+	if (_ned)
+		_ned->show(false);
+	target->enter(-1, -1);
 	_current = target;
 }
 

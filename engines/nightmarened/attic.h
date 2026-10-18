@@ -54,11 +54,11 @@ public:
 	void suspend() override;                         // m6 0x403ad0
 	int tick(uint32 input, uint32 now) override;     // m7 0x404f10
 	/** m8 0x403af0 */
-	int getSaveSize() const { return 0x4c; }
+	int getSaveSize() const override { return 0x4c; }
 	/** m9 0x403b00 */
-	void saveState(int32 *out);
+	void saveState(int32 *out) override;
 	/** m10 0x403c30 */
-	void restoreState(const int32 *in, int size);
+	void restoreState(const int32 *in, int size) override;
 
 	int getRoom() const { return _room; }
 	const Common::Point &getNedPosition() const { return _nedPos; }
@@ -428,6 +428,7 @@ private:
 	int _hint3Shown = 0;               // DAT_005257cc (saved)
 	int _hint4Shown = 0;               // DAT_00525294 (saved)
 	int _hint5Shown = 0;               // DAT_005257ac (saved)
+	bool _hintTestDone = false;        // nightmarened_hint test hook
 
 	// ---- Room 2 ----
 	int16 _r2s14 = 0, _r2s4 = 0, _r2sC9 = 0, _r2s9 = 0, _r2sCD = 0; // DAT_005258e6, DAT_00525992, DAT_00525990, DAT_00525896, DAT_005258bc

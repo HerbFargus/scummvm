@@ -31,6 +31,7 @@
 #include "nightmarened/ned.h"
 #include "nightmarened/nightmarened.h"
 #include "nightmarened/rdx.h"
+#include "nightmarened/hints.h"
 #include "nightmarened/scene7.h"
 
 namespace NightmareNed {
@@ -560,21 +561,21 @@ void Scene7::xform(void *user, int &x, int &y) {
 	y += s->_scrollY;
 }
 
-// ---- Calls into modules that are not ported ----
+// ---- Calls into shared modules ----
 
-// 0x475180: the help hints (Ned's thought balloons) belong to the hints module
+// 0x475180: a vision of this world's creature (Hints)
 void Scene7::hint(int which) {
-	debugC(1, kDebugGraphics, "Scene 7: hint %d (0x475180) not ported", which);
+	_game->hints().trigger(which, _game->ned()->getFacing() != 0, _nedPos.x, _nedPos.y, xform, this);
 }
 
-// 0x475970: whether a hint is showing (DAT_0051f760 == 0x472a30); never, until hints exist
+// 0x475970
 bool Scene7::hintActive() const {
-	return false;
+	return _game->hints().isActive();
 }
 
-// 0x479ff0 + 0x47aa00: a TV clip at its own rate without music, not ported
+// 0x479ff0 + 0x47aa00 (0x42f9c0 plays it at z 1)
 void Scene7::playClipNoMusic(int clip) {
-	debugC(1, kDebugVideo, "Scene 7: TV clip %d (0x47aa00) not ported", clip);
+	_game->media().playClipFull(1, clip);
 }
 
 // 0x45a0f0, staying here when the target isn't registered yet
