@@ -16,6 +16,7 @@ MODULE_OBJS = \
 	nightmarened.o \
 	options.o \
 	rdx.o \
+	placements.o \
 	resources.o \
 	puff.o \
 	scene3.o \
@@ -27,6 +28,12 @@ MODULE_OBJS = \
 	scene5_actors.o \
 	scene5_level.o \
 	scene5_subs.o \
+	scene6.o \
+	scene6_res.o \
+	scene6_room0.o \
+	scene6_room1.o \
+	scene6_room2.o \
+	scene6_room3.o \
 	scene7.o \
 	scene7_actors.o \
 	slotanim.o \
