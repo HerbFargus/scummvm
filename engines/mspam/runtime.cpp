@@ -377,8 +377,11 @@ void Runtime::executeAction(int owner, const Action &a) {
 	if (level <= 0) {
 		int el = _layout->find(a.target);
 		if (el < 0) {
+			// The list runs on without the action (FUN_1028_6c10 skips a target
+			// that FINDTARGET doesn't find): R-Neptune, R-Saturn and R-Uranus name a
+			// p3video that no layout has
 			if (!_warned.contains(a.target))
-				warning("%s: no element '%s'", _layout->layout->_name.c_str(), a.target.c_str());
+				debugC(1, kDebugActions, "%s: no element '%s', the action is skipped", _layout->layout->_name.c_str(), a.target.c_str());
 			_warned[a.target] = true;
 			return;
 		}
