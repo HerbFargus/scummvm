@@ -1329,9 +1329,14 @@ Common::Error DreamForgeEngine::run() {
 				newGame();
 				break;
 			}
-			// TODO: the saved games and options screens
-			if (choice == 1 || choice == 3)
+			// TODO: the game's own saved games and options screens; ScummVM's stand in.
+			// Loading a game from either goes straight into it.
+			if (choice == 1)
+				loadGameDialog();
+			else if (choice == 3)
 				openMainMenuDialog();
+			if (_scene)
+				break;
 		}
 	} else {
 		// Test hook: dreamforge_scene=1X01X06 starts in a room, puppies placed by its spots
