@@ -1290,6 +1290,15 @@ void Runtime::updateVideos() {
 	}
 }
 
+void Runtime::pauseEngine(bool pause) {
+	if (!_layout)
+		return;
+	for (ElementState &e : _layout->elements) {
+		if (e.video)
+			e.video->pauseEngine(pause);
+	}
+}
+
 bool Runtime::isVideoPlaying() const {
 	if (!_layout)
 		return false;

@@ -121,6 +121,11 @@ void VideoPlayer::resume() {
 	_state = kPlaying;
 }
 
+void VideoPlayer::pauseEngine(bool pause) {
+	if (_decoder)
+		_decoder->pauseVideo(pause);
+}
+
 void VideoPlayer::seek(int32 pos, bool frames) {
 	if (!_decoder)
 		return;

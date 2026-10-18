@@ -60,6 +60,10 @@ public:
 	bool isDone() const { return _done; }
 	/** The LobotomyGameResult value: 0 left without the coin, 1 won, 2 quit, 100+ sprite errors */
 	int getResult() const;
+	/** WM_CLOSE asks "Are you sure you want to quit?" while the game has no result yet */
+	bool asksBeforeClosing() const { return _result == -1; }
+	/** WM_CLOSE: the window closes, a game without a result yet as quit (2) */
+	void closeWindow();
 
 private:
 	struct Image {

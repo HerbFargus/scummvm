@@ -163,6 +163,8 @@ public:
 	void escape();
 
 	bool quitRequested() const { return _quit; }
+	/** The engine pauses or resumes (the global main menu, dialogs): the open videos stop their clocks */
+	void pauseEngine(bool pause);
 
 	/** Exec: Start Game: the command line for the arcade game (see BusGame), which the engine loop runs */
 	void startBusGame(const Common::String &command);

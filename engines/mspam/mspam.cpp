@@ -23,6 +23,7 @@
 #include "common/debug.h"
 #include "common/events.h"
 #include "common/file.h"
+#include "common/formats/winexe_ne.h"
 #include "common/fs.h"
 #include "common/str-array.h"
 #include "common/tokenizer.h"
@@ -32,6 +33,7 @@
 #include "graphics/cursorman.h"
 #include "graphics/paletteman.h"
 #include "graphics/wincursor.h"
+#include "gui/message.h"
 #include "image/png.h"
 
 #include "mspam/busgame.h"
@@ -51,7 +53,7 @@ enum {
 
 MSPAMEngine::MSPAMEngine(OSystem *syst, const ADGameDescription *gameDesc) : Engine(syst),
 	_gameDescription(gameDesc), _media(nullptr), _title(nullptr), _layout(nullptr), _layoutIndex(-1),
-	_showHidden(false), _showHotspots(false) {
+	_showHidden(false), _showHotspots(false), _runtime(nullptr), _test(nullptr), _menuQuitGrace(0) {
 	memset(_palette, 0, sizeof(_palette));
 	MediaManager::setStaticColors(_palette);
 }
@@ -63,8 +65,25 @@ MSPAMEngine::~MSPAMEngine() {
 	_screen.free();
 }
 
+// The title asks before its window closes (WM_CLOSE), so it overrides the quit dialog
 bool MSPAMEngine::hasFeature(EngineFeature f) const {
-	return f == kSupportsReturnToLauncher;
+	return f == kSupportsReturnToLauncher || f == kSupportsQuitDialogOverride;
+}
+
+// The global main menu's Quit pushes EVENT_QUIT as it closes: that one isn't
+// the window's close box, so it quits without the title's question
+int MSPAMEngine::runDialog(GUI::Dialog &dialog) {
+	int result = Engine::runDialog(dialog);
+	_menuQuitGrace = 2;
+	return result;
+}
+
+// The global main menu and dialogs pause the sounds (the default), the open
+// videos' clocks and, through getGameTime(), the title's and the arcade game's timers
+void MSPAMEngine::pauseEngineIntern(bool pause) {
+	Engine::pauseEngineIntern(pause);
+	if (_runtime)
+		_runtime->pauseEngine(pause);
 }
 
 // MSBSOLAR.INI's [Media] section: msbsolar.mdf/cmf (the CMF stays on the disc) and
@@ -371,8 +390,13 @@ void MSPAMEngine::viewer() {
 //   click <x> <y>      click at screen coordinates
 //   clickon <name> [hotspot ID in hex]
 //                      click a visible element (on a hotspot, or its picture)
+//   rclick <x> <y>, rclickon <name> [hotspot]
+//                      the same with the right button
 //   move <x> <y>       move the mouse
-//   key <esc|space|enter>
+//   key <esc|space|enter|about>   (about = Ctrl+Shift+I)
+//   close              close the window (EVENT_QUIT)
+//   answer <yes|no>    how the following Yes/No questions are answered (no at first)
+//   pause <ms>         pause the engine as the global main menu does, for a while
 //   keydown <left|right|up|down|space>, keyup <...>
 //                      hold and release a key (for the arcade game)
 //   game [ms]          wait until the arcade game runs (60 s at most)
@@ -381,7 +405,7 @@ void MSPAMEngine::viewer() {
 //   quit               quit
 class TestInputScript {
 public:
-	explicit TestInputScript(const Common::Path &path) : _line(0), _waitUntil(0), _waitStart(0) {
+	explicit TestInputScript(const Common::Path &path) : answer(0), _line(0), _waitUntil(0), _waitStart(0) {
 		Common::File f;
 		if (!f.open(Common::FSNode(path))) {
 			warning("Test input: can't open '%s'", path.toString().c_str());
@@ -424,9 +448,10 @@ public:
 					debug(1, "Test input: layout %s", arg.c_str());
 				else
 					warning("Test input: still in %s, not %s", runtime->getLayoutName().c_str(), arg.c_str());
-			} else if (cmd == "click" || cmd == "clickon") {
+			} else if (cmd == "click" || cmd == "clickon" || cmd == "rclick" || cmd == "rclickon") {
 				Common::Point pt;
-				if (cmd == "click") {
+				bool right = cmd[0] == 'r';
+				if (cmd == "click" || cmd == "rclick") {
 					sscanf(arg.c_str(), "%d %d", &x, &y);
 					pt = Common::Point(x, y);
 				} else {
@@ -442,8 +467,8 @@ public:
 					debug(1, "Test input: clicking %s at %d,%d", arg.c_str(), pt.x, pt.y);
 				}
 				pushMouse(events, Common::EVENT_MOUSEMOVE, pt);
-				pushMouse(events, Common::EVENT_LBUTTONDOWN, pt);
-				pushMouse(events, Common::EVENT_LBUTTONUP, pt);
+				pushMouse(events, right ? Common::EVENT_RBUTTONDOWN : Common::EVENT_LBUTTONDOWN, pt);
+				pushMouse(events, right ? Common::EVENT_RBUTTONUP : Common::EVENT_LBUTTONUP, pt);
 				_waitUntil = now + 100;
 			} else if (cmd == "move") {
 				sscanf(arg.c_str(), "%d %d", &x, &y);
@@ -452,8 +477,11 @@ public:
 				Common::Event ev;
 				bool esc = arg == "esc", enter = arg == "enter";
 				ev.type = Common::EVENT_KEYDOWN;
-				ev.kbd = Common::KeyState(esc ? Common::KEYCODE_ESCAPE : enter ? Common::KEYCODE_RETURN : Common::KEYCODE_SPACE,
-					esc ? 27 : enter ? 13 : ' ');
+				if (arg == "about")
+					ev.kbd = Common::KeyState(Common::KEYCODE_i, 9, Common::KBD_CTRL | Common::KBD_SHIFT);
+				else
+					ev.kbd = Common::KeyState(esc ? Common::KEYCODE_ESCAPE : enter ? Common::KEYCODE_RETURN : Common::KEYCODE_SPACE,
+						esc ? 27 : enter ? 13 : ' ');
 				events->pushEvent(ev);
 				ev.type = Common::EVENT_KEYUP;
 				events->pushEvent(ev);
@@ -483,6 +511,20 @@ public:
 					Image::writePNG(out, screen, palette);
 				else
 					warning("Test input: can't write '%s'", arg.c_str());
+			} else if (cmd == "close") {
+				Common::Event ev;
+				ev.type = Common::EVENT_QUIT;
+				events->pushEvent(ev);
+				_waitUntil = now + 100;
+			} else if (cmd == "pause") {
+				uint32 start = g_engine->getTotalPlayTime();
+				{
+					PauseToken pt = g_engine->pauseEngine();
+					g_system->delayMillis(atoi(arg.c_str()));
+				}
+				debug(1, "Test input: paused, the game clock moved %u ms", g_engine->getTotalPlayTime() - start);
+			} else if (cmd == "answer") {
+				answer = arg == "yes" ? 1 : 0;
 			} else if (cmd == "list") {
 				runtime->listClickable();
 			} else if (cmd == "quit") {
@@ -494,6 +536,8 @@ public:
 		}
 		return true;
 	}
+
+	int answer; ///< 1 answers the Yes/No questions with yes
 
 private:
 	static void pushMouse(Common::EventManager *events, Common::EventType type, const Common::Point &pt) {
@@ -509,12 +553,43 @@ private:
 	uint32 _waitStart;
 };
 
+bool MSPAMEngine::askYesNo(const Common::U32String &text) {
+	if (_test) {
+		bool yes = _test->answer > 0;
+		debug(1, "Test input: \"%s\" answered %s", text.encode().c_str(), yes ? "yes" : "no");
+		return yes;
+	}
+	GUI::MessageDialog dialog(text, Common::U32String("Yes"), Common::U32String("No"));
+	return Engine::runDialog(dialog) == GUI::kMessageOK;
+}
+
+// MSBSOLAR.DLL's About box (dialog 201, ABOUT 1008:7166): the title, and the
+// product ID from the RCDATA resource that Setup fills in
+void MSPAMEngine::showAbout() {
+	Common::String productId;
+	Common::NEResources dll;
+	if (dll.loadFromEXE(Common::Path("MSBSOLAR.DLL"))) {
+		Common::ScopedPtr<Common::SeekableReadStream> res(dll.getResource(Common::kWinRCData, 128));
+		if (res)
+			productId = res->readString();
+	}
+	Common::U32String text(Common::String::format("Magic School Bus\nProduct ID: %s", productId.c_str()));
+	if (_test) {
+		debug(1, "Test input: About box \"%s\"", text.encode().c_str());
+		return;
+	}
+	GUI::MessageDialog dialog(text);
+	Engine::runDialog(dialog);
+}
+
 void MSPAMEngine::runGame(const Common::String &start) {
 	Runtime runtime(_media, _tdf, _title, _mixer);
 	Common::ScopedPtr<TestInputScript> test;
 	if (ConfMan.hasKey("mspam_test_input"))
 		test.reset(new TestInputScript(Common::Path(ConfMan.get("mspam_test_input"), Common::Path::kNativeSeparator)));
 
+	_runtime = &runtime;
+	_test = test.get();
 	runtime.start(start);
 	// Test hook: the arcade game of a planet straight away
 	if (ConfMan.hasKey("mspam_busgame"))
@@ -541,13 +616,22 @@ void MSPAMEngine::runGame(const Common::String &start) {
 			case Common::EVENT_KEYDOWN:
 				if (event.kbd.keycode == Common::KEYCODE_ESCAPE || event.kbd.keycode == Common::KEYCODE_SPACE)
 					runtime.escape();
+				else if (event.kbd.keycode == Common::KEYCODE_i && (event.kbd.flags & Common::KBD_CTRL) && (event.kbd.flags & Common::KBD_SHIFT))
+					showAbout();
+				break;
+			case Common::EVENT_QUIT:
+				// WM_CLOSE (MSBSOLAR.DLL TITLEWNDPROC 1008:985e): "Are you sure you want to quit?", Yes or No
+				if (!isMenuQuit() && !askYesNo(Common::U32String("Are you sure you want to quit?")))
+					g_system->getEventManager()->resetQuit();
 				break;
 			default:
 				break;
 			}
 		}
+		if (_menuQuitGrace)
+			_menuQuitGrace--;
 
-		uint32 now = g_system->getMillis();
+		uint32 now = getGameTime();
 		Common::String planet;
 		bool lizIntro;
 		if (runtime.takeBusGame(planet, lizIntro)) {
@@ -567,6 +651,8 @@ void MSPAMEngine::runGame(const Common::String &start) {
 		g_system->delayMillis(10);
 	}
 	runtime.logStatistics();
+	_runtime = nullptr;
+	_test = nullptr;
 }
 
 // The arcade game in place of the title's window; -1 when the engine quits
@@ -575,7 +661,7 @@ int MSPAMEngine::playBusGame(const Common::String &planet, bool lizIntro, Runtim
 	if (!game.load())
 		return game.getResult();
 	while (!game.isDone()) {
-		if (shouldQuit())
+		if (shouldQuit() || runtime->quitRequested())
 			return -1;
 		Common::Event event;
 		while (g_system->getEventManager()->pollEvent(event)) {
@@ -591,11 +677,22 @@ int MSPAMEngine::playBusGame(const Common::String &planet, bool lizIntro, Runtim
 			case Common::EVENT_LBUTTONDOWN:
 				game.mouseDown(event.mouse.x, event.mouse.y);
 				break;
+			case Common::EVENT_QUIT:
+				// The arcade game has a window of its own: closing it (WM_CLOSE,
+				// BUSGAME1 1000:1b66) asks while the game is on, then goes back to the title
+				if (isMenuQuit())
+					break;
+				g_system->getEventManager()->resetQuit();
+				if (!game.asksBeforeClosing() || askYesNo(Common::U32String("Are you sure you want to quit?")))
+					game.closeWindow();
+				break;
 			default:
 				break;
 			}
 		}
-		uint32 now = g_system->getMillis();
+		if (_menuQuitGrace)
+			_menuQuitGrace--;
+		uint32 now = getGameTime();
 		game.update(now);
 		game.render(_screen);
 		if (test && !test->update(runtime, _screen, game.getPalette(), true, now))

@@ -30,6 +30,10 @@
 
 #include "mspam/compound.h"
 
+namespace GUI {
+class Dialog;
+}
+
 namespace MSPAM {
 
 class Layout;
@@ -50,6 +54,7 @@ public:
 
 	Common::Error run() override;
 	bool hasFeature(EngineFeature f) const override;
+	int runDialog(GUI::Dialog &dialog) override;
 
 private:
 	bool loadTitle();
@@ -65,6 +70,15 @@ private:
 	/** Runs the title from a layout with the action runtime */
 	void runGame(const Common::String &start);
 	int playBusGame(const Common::String &planet, bool lizIntro, Runtime *runtime, TestInputScript *test);
+	void pauseEngineIntern(bool pause) override;
+	/** The game clock: milliseconds without the time spent paused */
+	uint32 getGameTime() const { return getTotalPlayTime(); }
+	/** A Windows message box with Yes and No (a test script answers it instead) */
+	bool askYesNo(const Common::U32String &text);
+	/** The title's About box (Ctrl+Shift+I) */
+	void showAbout();
+	/** A quit request that came from the global main menu, not the window: no question */
+	bool isMenuQuit() const { return _menuQuitGrace > 0; }
 
 	const ADGameDescription *_gameDescription;
 	CompoundFile _tdf;
@@ -76,6 +90,9 @@ private:
 	byte _palette[256 * 3];
 	bool _showHidden;
 	bool _showHotspots;
+	Runtime *_runtime;       ///< the running title, while runGame runs
+	TestInputScript *_test;
+	int _menuQuitGrace;      ///< frames after a dialog closed in which EVENT_QUIT came from it
 };
 
 } // End of namespace MSPAM

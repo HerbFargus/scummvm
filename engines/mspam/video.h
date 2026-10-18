@@ -60,6 +60,9 @@ public:
 	/** Moves to a position and shows its picture */
 	void seek(int32 pos, bool frames);
 
+	/** The engine pauses (the global main menu, dialogs): the decoder's clock stops, nested */
+	void pauseEngine(bool pause);
+
 	bool isPlaying() const { return _state == kPlaying; }
 	bool isPaused() const { return _state == kPaused; }
 	/** Decodes the frames that are due; true when playback reached its end */

@@ -837,6 +837,14 @@ void BusGame::quit() {
 	_done = true;
 }
 
+// WM_CLOSE (1000:1b66): the timer is killed and the player asked (the engine does
+// that, see MSPAMEngine::playBusGame); the yes ends the game with result 2
+void BusGame::closeWindow() {
+	if (_result == -1)
+		_result = 2;
+	_done = true;
+}
+
 void BusGame::update(uint32 now) {
 	_now = now;
 	if (!_nextTick)
