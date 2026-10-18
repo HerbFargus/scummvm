@@ -428,6 +428,7 @@ private:
 	int _hint3Shown = 0;               // DAT_005257cc (saved)
 	int _hint4Shown = 0;               // DAT_00525294 (saved)
 	int _hint5Shown = 0;               // DAT_005257ac (saved)
+	bool _hintTestDone = false;        // nightmarened_hint test hook
 
 	// ---- Room 2 ----
 	int16 _r2s14 = 0, _r2s4 = 0, _r2sC9 = 0, _r2s9 = 0, _r2sCD = 0; // DAT_005258e6, DAT_00525992, DAT_00525990, DAT_00525896, DAT_005258bc

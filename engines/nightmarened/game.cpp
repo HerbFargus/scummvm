@@ -29,6 +29,7 @@
 
 #include "nightmarened/detection.h"
 #include "nightmarened/game.h"
+#include "nightmarened/hints.h"
 #include "nightmarened/media.h"
 #include "nightmarened/naf.h"
 #include "nightmarened/ned.h"
@@ -53,11 +54,13 @@ Game::Game(NightmareNedEngine *vm) : _vm(vm), _display(&_res), _ned(nullptr), _c
 	_startMillis = g_system->getMillis();
 	_randomSeed = 1; // the CRT default until a scene calls srand (0x48c5d0)
 	_media = new Media(this);
+	_hints = new Hints(this);
 }
 
 Game::~Game() {
 	for (Scene *s : _scenes)
 		delete s;
+	delete _hints;
 	delete _media;
 	delete _ned;
 	for (int i = 0; i < 12; i++)
@@ -98,6 +101,7 @@ bool Game::loadList(int fileIndex, Common::Array<Request> &list, int scene) {
 }
 
 void Game::initScenes() {
+	_hints->newGame();
 	for (Scene *s : _scenes) {
 		s->init();
 		for (Scene *sub : s->getSubScenes())
