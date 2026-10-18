@@ -23,8 +23,13 @@ MODULE_OBJS = \
 	scene3_rooms.o \
 	scene3_school.o \
 	scene3_school_actors.o \
+	scene5.o \
+	scene5_actors.o \
+	scene5_level.o \
+	scene5_subs.o \
 	scene7.o \
 	scene7_actors.o \
+	slotanim.o \
 	world.o
 
 # This module can be built as a plugin

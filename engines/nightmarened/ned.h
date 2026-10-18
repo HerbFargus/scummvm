@@ -185,6 +185,10 @@ public:
 	void enableFidgetRotation() { _fidgetRotate = true; }
 	/** 0x44edb0: plays an area-1 slot's sound (stopping Ned's last one) when it has one */
 	void playOwnSound(int16 id) { if (!slot(id).sound.empty()) playSound(id); }
+	/** 0x44f950: state 10's slot speeds raised by percent (scene 5, on a tub) */
+	void setRunSpeeds(int percent);
+	/** 0x44f920: state 10's default slot speeds */
+	void resetRunSpeeds();
 	/** 0x44eaa0: state 0's first start slot */
 	void setUseSlot(int16 slot);
 	/** 0x44f6b0 / 0x44f680: the region Ned last touched */

@@ -50,6 +50,7 @@
 #include "nightmarened/nightmarened.h"
 #include "nightmarened/rdx.h"
 #include "nightmarened/scene3.h"
+#include "nightmarened/scene5.h"
 #include "nightmarened/scene7.h"
 
 namespace NightmareNed {
@@ -586,6 +587,10 @@ void NightmareNedEngine::runGame() {
 	_game->addScene(new MenuScene(_game));
 	_game->addScene(new AtticScene(_game));
 	_game->addScene(new Scene3(_game));
+	Scene5 *scene5 = new Scene5(_game);
+	scene5->addSubScene(new Scene5Toilets(_game));
+	scene5->addSubScene(new Scene5Washroom(_game));
+	_game->addScene(scene5);
 	_game->addScene(new Scene7(_game));
 	_options = new Options(_game);
 	if (_options->init())

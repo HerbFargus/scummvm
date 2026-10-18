@@ -1236,6 +1236,18 @@ int Ned::enterHangWalk(CollisionWorld &world, int16 &state, int16 facing, Common
 	return 1;
 }
 
+// 0x44f950
+void Ned::setRunSpeeds(int percent) {
+	static const int16 kBase[5] = { 0x2d, 0x28, 0x1b, 0x1c, 0x26 };
+	for (int i = 0; i < 5; i++)
+		_saved3[i] = (int16)(kBase[i] + percent * kBase[i] / 100);
+}
+
+// 0x44f920
+void Ned::resetRunSpeeds() {
+	setRunSpeeds(0);
+}
+
 // 0x4505e0 (state 10)
 void Ned::restoreButton3() {
 	slot(19).flags |= 0x20;

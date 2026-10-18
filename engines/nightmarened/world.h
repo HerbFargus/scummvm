@@ -53,6 +53,8 @@ public:
 	/** 0x487400 / 0x487c90: the scene's own region map (a bc_new map that Ned's region tests read) */
 	void setUser(CollisionMap *map);
 	CollisionMap *getUser() const { return _user; }
+	/** 0x487cf0: the map that last had a solid pixel (where Ned stands) */
+	CollisionMap *getLastHitMap() const { return _maps[_lastHit]; }
 
 	/** 0x487d10 world_solid_at */
 	bool isSolid(int x, int y);
