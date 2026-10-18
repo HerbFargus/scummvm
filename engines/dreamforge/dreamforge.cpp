@@ -84,7 +84,7 @@ DreamForgeEngine::DreamForgeEngine(OSystem *syst, const ADGameDescription *gameD
 	_nextStep = 0;
 	_inScript = false;
 	_shotEvery = _nextShot = _shotCount = 0;
-	_currentRegion = -1;
+	_currentRegion[0] = _currentRegion[1] = -1;
 	_quitAt = 0;
 	for (uint i = 0; i < kArchiveCount; i++)
 		_archives[i] = nullptr;
@@ -182,7 +182,7 @@ bool DreamForgeEngine::loadScene(int act, int area, int room) {
 	delete _scene;
 	_scene = scene;
 	_walkMap.load(_scene->_walkMap);
-	_currentRegion = -1;
+	_currentRegion[0] = _currentRegion[1] = -1;
 	_input.clear();
 	for (int n = 0; n < 2; n++)
 		_actors[n]->_arrivalCode = -1;
@@ -403,14 +403,28 @@ const Record *DreamForgeEngine::regionAt(int y, int x) const {
 void DreamForgeEngine::checkRegions() {
 	if (_inScript || !_scene)
 		return;
-	const Actor *a = _actors[0];
-	const Record *r = a->_hidden ? nullptr : regionAt(a->_y, a->_x);
-	int id = r ? r->id : -1;
-	if (id == _currentRegion)
-		return;
-	_currentRegion = id;
-	if (r)
+	// Both puppies, hidden or not (a close-up's way out is a region its hidden puppy
+	// walks into); flag 0xc stops it for puppy 1 and 0x16 for puppy 2
+	for (int n = 0; n < 2 && _scene; n++) {
+		const Actor *a = _actors[n];
+		const Record *r = nullptr;
+		for (auto &h : _scene->_hotspots)
+			if ((h.mask & 1) && h.rect.contains(Common::Point(a->_x, a->_y)) && conditionsHold(h.data.data() + 0x496, 9)) {
+				r = &h;
+				break;
+			}
+		if (!r) {
+			_currentRegion[n] = -1;
+			continue;
+		}
+		if (r->id == _currentRegion[n] || isFlagSet(n == 0 ? 0xC : 0x16))
+			continue;
+		_currentRegion[n] = r->id;
+		Scene *scene = _scene;
 		useHotspot(*r, false);
+		if (_scene != scene)
+			return;
+	}
 }
 
 const Record *DreamForgeEngine::findHotspot(int id) const {
@@ -1087,7 +1101,7 @@ void DreamForgeEngine::syncGame(Common::Serializer &s) {
 		}
 		_sound->playMusic(music, true);
 		setScroll(scroll);
-		_currentRegion = -1;
+		_currentRegion[0] = _currentRegion[1] = -1;
 		_dirty = true;
 	}
 }

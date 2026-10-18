@@ -194,7 +194,7 @@ public:
 	void animateCursor();
 	int cursorFrame() const;
 	int _cursorId, _cursorFrame;
-	int _currentRegion;
+	int _currentRegion[2];  // 0x64a40: the region each puppy is in
 	uint32 _quitAt;
 	/** The first hotspot with this id in the current scene, or nullptr */
 	const Record *findHotspot(int id) const;
