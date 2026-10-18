@@ -264,7 +264,8 @@ private:
 	bool _lizCarry, _running, _stateChanged, _pushFlag, _fellOff;
 	uint32 _powerups;
 	int _result;
-	uint32 _ticks, _lastOuch;
+	uint32 _ticks, _lastOuch, _frame;
+	int16 _warp[3];  ///< test hook mspam_busgame_warp
 	bool _done;
 };
 

@@ -96,10 +96,11 @@ BusGame::BusGame(Audio::Mixer *mixer, const Common::String &planet, bool lizIntr
 	_grav(0), _planetGrav(0), _air(0), _floorLimit(419), _lizTX(0), _lizTY(0), _lizVy(0), _airShown(0),
 	_score32(0), _planetIndex(0), _screen(1), _pendingScreen(-1), _screenChange(false), _screenSolid(true),
 	_lizState(0), _lizCarry(false), _running(false), _stateChanged(false), _pushFlag(false), _fellOff(false),
-	_powerups(0), _result(-1), _ticks(0), _lastOuch(0), _done(false) {
+	_powerups(0), _result(-1), _ticks(0), _lastOuch(0), _frame(0), _done(false) {
 	_planet.toUppercase();
 	memset(_palette, 0, sizeof(_palette));
 	memset(_heights, 0, sizeof(_heights));
+	memset(_warp, 0, sizeof(_warp));
 	memset(&_level, 0, sizeof(_level));
 	memset(&_backup, 0, sizeof(_backup));
 	for (int i = 0; i < 6; i++)
@@ -361,15 +362,16 @@ bool BusGame::loadLevel() {
 			_level.start[j] = (int16)READ_LE_UINT16(p + 0x6b8a + 2 * j);
 	}
 	_running = true;
-	// Test hook: Liz drops the player off at the object of this type (3 = the coin)
+	// Test hook: once Liz has dropped the player off, the player jumps to the
+	// object of this type (3 = the coin)
 	if (ConfMan.hasKey("mspam_busgame_warp")) {
 		int type = ConfMan.getInt("mspam_busgame_warp");
 		for (int i = 0; i < _level.count; i++) {
 			const Object &o = _level.obj[i];
-			if (o.w[kOType] == type) {
-				_level.start[0] = o.w[kOScreen];
-				_level.start[1] = (o.w[kOLeft] + o.w[kORight]) / 2 - 20;
-				_level.start[2] = o.w[kOBottom] - 2;
+			if (o.w[kOType] == type && o.w[kORight] > o.w[kOLeft]) {
+				_warp[0] = o.w[kOScreen];
+				_warp[1] = (o.w[kOLeft] + o.w[kORight]) / 2 - 20;
+				_warp[2] = o.w[kOBottom] - 2;
 				break;
 			}
 		}
@@ -881,6 +883,9 @@ void BusGame::tick() {
 		}
 	}
 	moveAction();
+	if (++_frame % 25 == 0 && _player)
+		debugC(2, kDebugActions, "BUSGAME tick %u: screen %d, player %s at %.1f,%.1f state %d, v %.2f,%.2f, gravity %.2f, air %.1f, Liz %d",
+			_frame, _screen, _player->type->name.c_str(), _player->x, _player->y, _player->state, _vx, _vy, _grav, _air, _lizState);
 }
 
 // ---- The game (BUSGAME1.EX_) ----
@@ -2177,6 +2182,14 @@ void BusGame::cbLiz(Sprite *&self) {
 	launchSprite(l);
 	if (_air > 0 && !_lizCarry) {
 		_running = true;
+		if (_warp[0]) {
+			_screen = _warp[0];
+			requestScreen(_screen);
+			_player->x = _warp[1];
+			_player->y = _warp[2];
+			_grav = _planetGrav;
+			_warp[0] = 0;
+		}
 		if (_lizIntro) {
 			lizTalk();
 			_lizIntro = false;
