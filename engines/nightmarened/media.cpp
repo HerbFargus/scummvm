@@ -240,7 +240,7 @@ int Media::playClip(int clip, int z, FrameCallback cb, void *user) {
 
 // 0x47aa00: the frame bitmap at z (the clip's palette bitmap at z + 1 when it has pixels),
 // SmackDoFrame / SmackToBuffer / srfDraw / SmackWait for every frame
-int Media::playClipFull(int z, int clip) {
+int Media::playClipFull(int z, int clip, bool music) {
 	if (_loadedClip != clip)
 		loadClip(clip);
 	Common::String name = getFileName(_game->exe().readUint32(kClipFiles + clip * 4));
@@ -282,6 +282,8 @@ int Media::playClipFull(int z, int clip) {
 		}
 	}
 
+	if (music)
+		playMusic(0x51);
 	decoder.start();
 	while (!decoder.endOfVideo() && !_game->getEngine()->shouldQuit()) {
 		if (decoder.needsUpdate()) {
@@ -306,6 +308,8 @@ int Media::playClipFull(int z, int clip) {
 		}
 		g_system->delayMillis(MIN<uint32>(decoder.getTimeToNextFrame(), 10));
 	}
+	if (music)
+		stopMusic();
 	freeClip();
 	if (_game->ned())
 		_game->ned()->markTime();

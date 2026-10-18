@@ -842,13 +842,14 @@ int Scene7::leave(int toScene, int toSub) {
 	return 0;
 }
 
-// m5 0x429b10: 0x47a6b0 plays the TV clip with a voice track instead of the music
+// m5 0x429b10: the TV clip for the world Ned falls into (0x47a6b0 at z 1; its file
+// name arguments are unused, the clip comes from the clip table)
 int Scene7::unload(int toScene, int toSub) {
 	_game->closeNaf(kNafMouth);
 	if (toScene == 1)
-		debugC(1, kDebugVideo, "Scene 7: TV clip 0x15 with 87210001.wav (0x47a6b0) not ported");
+		_game->media().playClipWithMusic(1, 0x15);
 	else if (toScene == 3)
-		debugC(1, kDebugVideo, "Scene 7: TV clip 0x17 with 87230001.wav (0x47a6b0) not ported");
+		_game->media().playClipWithMusic(1, 0x17);
 	return 0;
 }
 

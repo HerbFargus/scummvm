@@ -62,7 +62,9 @@ public:
 	 * 0x47aa00: plays clip at the video's own frame rate at draw order z, with no music;
 	 * only quitting stops it. Frees what loadClip loaded.
 	 */
-	int playClipFull(int z, int clip);
+	int playClipFull(int z, int clip, bool music = false);
+	/** 0x47a6b0: the same, with the TV-room music (file 0x51) playing during the clip */
+	int playClipWithMusic(int z, int clip) { return playClipFull(z, clip, true); }
 
 	/** File-table entry name (0x4a05d0 + index * 0x14, +0x0c) */
 	Common::String getFileName(int index) const;
