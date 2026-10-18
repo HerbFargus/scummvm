@@ -32,6 +32,7 @@
 #include "nightmarened/nightmarened.h"
 #include "nightmarened/rdx.h"
 #include "nightmarened/hints.h"
+#include "nightmarened/scene2.h"
 #include "nightmarened/scene7.h"
 
 namespace NightmareNed {
@@ -1233,7 +1234,10 @@ int Scene7::tick(uint32 input, uint32 now) {
 		_toScene1 = 0;
 	}
 	if (_toScene2) {
-		// 0x482e60 sets a flag of scene 2's (*DAT_00521840 = 1); scene 2 isn't ported
+		// 0x482e60: the hallway's attic door opens
+		Scene *s2 = _game->getScene(2, -1);
+		if (s2)
+			static_cast<Scene2 *>(s2)->openExit();
 		if (!switchTo(2))
 			return 0;
 		_toScene2 = 0;

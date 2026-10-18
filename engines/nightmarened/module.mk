@@ -30,6 +30,12 @@ MODULE_OBJS = \
 	scene7.o \
 	scene7_actors.o \
 	slotanim.o \
+	scene2.o \
+	scene2_belt.o \
+	scene2_board.o \
+	scene7.o \
+	scene7_actors.o \
+	slothelpers.o \
 	world.o
 
 # This module can be built as a plugin
