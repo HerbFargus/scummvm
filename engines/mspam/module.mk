@@ -1,6 +1,7 @@
 MODULE := engines/mspam
 
 MODULE_OBJS = \
+	busgame.o \
 	compound.o \
 	flight.o \
 	layout.o \

@@ -163,6 +163,13 @@ public:
 	void escape();
 
 	bool quitRequested() const { return _quit; }
+
+	/** Exec: Start Game: the command line for the arcade game (see BusGame), which the engine loop runs */
+	void startBusGame(const Common::String &command);
+	/** The pending game's planet and whether Liz introduces it (-x, the first game only) */
+	bool takeBusGame(Common::String &planet, bool &lizIntro);
+	/** LobotomyGameResult (MSBSOLAR.DLL FUN_1008_4574) */
+	void busGameEnded(int result);
 	Common::String getLayoutName() const;
 	bool isIdle() const;
 	/** The screen position of a visible element's picture centre, or a hotspot's */
@@ -272,6 +279,8 @@ private:
 	Common::String _pendingLayout;
 	bool _reenter;
 	bool _quit;
+	Common::String _busGame;
+	bool _busGameIntro;
 
 	Common::List<QueuedList> _queue;
 	uint32 _now;

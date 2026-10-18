@@ -25,6 +25,7 @@
 #include "common/debug-channels.h"
 #include "common/endian.h"
 #include "common/textconsole.h"
+#include "common/tokenizer.h"
 
 #include "mspam/compound.h"
 #include "mspam/detection.h"
@@ -78,7 +79,7 @@ int LayoutState::find(const Common::String &name) const {
 }
 
 Runtime::Runtime(MediaManager *media, const CompoundFile &tdf, const Title *title, Audio::Mixer *mixer) :
-	_media(media), _tdf(tdf), _title(title), _layout(nullptr), _nextSerial(1), _reenter(false), _quit(false),
+	_media(media), _tdf(tdf), _title(title), _layout(nullptr), _nextSerial(1), _reenter(false), _quit(false), _busGameIntro(true),
 	_now(0), _lastUpdate(0), _blockedUntil(0), _leaving(false), _fadeFrom(kFadeFull), _fadeTo(kFadeFull),
 	_fadeLevel(kFadeFull), _fadeStart(0), _fadeDuration(0), _skitElement(-1), _skitPos(-1), _skitExprs(0), _flight(nullptr),
 	_lastDownTime(0), _random("mspam") {
@@ -96,6 +97,45 @@ Runtime::~Runtime() {
 	delete _eval;
 	for (auto &it : _cache)
 		delete it._value;
+}
+
+// FUN_1008_43e6 runs "<Planet param> -w <hwnd> [-x] -i <ini>"; the Planet parameter
+// is the command, e.g. "busgame1 -p MARS". Start Game always ends its action list.
+void Runtime::startBusGame(const Common::String &command) {
+	debugC(1, kDebugActions, "BUSGAME '%s'", command.c_str());
+	_busGame = command;
+	_sound->killAll();
+}
+
+bool Runtime::takeBusGame(Common::String &planet, bool &lizIntro) {
+	if (_busGame.empty())
+		return false;
+	Common::StringArray words = Common::StringTokenizer(_busGame).split();
+	_busGame.clear();
+	planet.clear();
+	for (uint i = 0; i + 1 < words.size(); i++)
+		if (words[i].equalsIgnoreCase("-p"))
+			planet = words[i + 1];
+	// GENTITLE+0x118 (inferred to start set): -x only until the first result
+	lizIntro = _busGameIntro;
+	_busGameIntro = false;
+	return true;
+}
+
+// 0 and 1 set GVarGameWin and GVarCoin; every result but the error ones goes
+// back into the layout
+void Runtime::busGameEnded(int result) {
+	debugC(1, kDebugActions, "LobotomyGameResult %d", result);
+	if (result == 0x68 || result == 0x65) {
+		_quit = true;
+		return;
+	}
+	if (result == 0 || result == 1) {
+		_eval->execute(result ? "GVarGameWin=1" : "GVarGameWin=0");
+		_eval->execute(result ? "GVarCoin=1" : "GVarCoin=0");
+	}
+	_reenter = true;
+	requestLayout(getLayoutName());
 }
 
 Common::String Runtime::getLayoutName() const {
@@ -519,14 +559,7 @@ void Runtime::titleAction(const Action &a) {
 		_vars.free(paramString(a, 0));
 		break;
 	case 0x16:
-		// Exec: Start Game: until M6, the arcade game counts as won with its coin;
-		// the title then comes back to the layout as after LobotomyGameResult
-		debugC(1, kDebugActions, "BUSGAME '%s' skipped", paramString(a, 0).c_str());
-		unimplemented(a, "busgame");
-		_eval->execute("GVarGameWin=1");
-		_eval->execute("GVarCoin=1");
-		_reenter = true;
-		requestLayout(getLayoutName());
+		startBusGame(paramString(a, 0));
 		break;
 	case 0x19: {
 		int32 value = _eval->execute(paramString(a, 0));

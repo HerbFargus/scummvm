@@ -33,6 +33,8 @@
 namespace MSPAM {
 
 class Layout;
+class Runtime;
+class TestInputScript;
 class MediaManager;
 class Title;
 
@@ -62,6 +64,7 @@ private:
 	void viewer();
 	/** Runs the title from a layout with the action runtime */
 	void runGame(const Common::String &start);
+	int playBusGame(const Common::String &planet, bool lizIntro, Runtime *runtime, TestInputScript *test);
 
 	const ADGameDescription *_gameDescription;
 	CompoundFile _tdf;

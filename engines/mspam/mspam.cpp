@@ -34,6 +34,7 @@
 #include "graphics/wincursor.h"
 #include "image/png.h"
 
+#include "mspam/busgame.h"
 #include "mspam/detection.h"
 #include "mspam/layout.h"
 #include "mspam/media.h"
@@ -372,6 +373,9 @@ void MSPAMEngine::viewer() {
 //                      click a visible element (on a hotspot, or its picture)
 //   move <x> <y>       move the mouse
 //   key <esc|space|enter>
+//   keydown <left|right|up|down|space>, keyup <...>
+//                      hold and release a key (for the arcade game)
+//   game [ms]          wait until the arcade game runs (60 s at most)
 //   shot <path>        save a PNG of the screen
 //   list               log the elements that react to clicks
 //   quit               quit
@@ -391,7 +395,7 @@ public:
 		}
 	}
 
-	bool update(Runtime *runtime, const Graphics::Surface &screen, uint32 now) {
+	bool update(Runtime *runtime, const Graphics::Surface &screen, const byte *palette, bool inGame, uint32 now) {
 		Common::EventManager *events = g_system->getEventManager();
 		while (_line < _lines.size() && now >= _waitUntil) {
 			Common::String cmd = _lines[_line], arg;
@@ -412,7 +416,7 @@ public:
 				uint32 timeout = words.size() > 1 ? atoi(words[1].c_str()) : 60000;
 				if (!_waitStart)
 					_waitStart = now;
-				bool there = !words.empty() && runtime->getLayoutName().equalsIgnoreCase(words[0]) && runtime->isIdle();
+				bool there = !inGame && !words.empty() && runtime->getLayoutName().equalsIgnoreCase(words[0]) && runtime->isIdle();
 				if (!there && now - _waitStart < timeout)
 					return true;
 				_waitStart = 0;
@@ -453,10 +457,30 @@ public:
 				events->pushEvent(ev);
 				ev.type = Common::EVENT_KEYUP;
 				events->pushEvent(ev);
+			} else if (cmd == "keydown" || cmd == "keyup") {
+				static const struct { const char *name; Common::KeyCode key; } keys[] = {
+					{ "left", Common::KEYCODE_LEFT }, { "right", Common::KEYCODE_RIGHT }, { "up", Common::KEYCODE_UP },
+					{ "down", Common::KEYCODE_DOWN }, { "space", Common::KEYCODE_SPACE }
+				};
+				Common::Event ev;
+				ev.type = cmd == "keydown" ? Common::EVENT_KEYDOWN : Common::EVENT_KEYUP;
+				for (const auto &k : keys)
+					if (arg == k.name)
+						ev.kbd = Common::KeyState(k.key, k.key == Common::KEYCODE_SPACE ? ' ' : 0);
+				events->pushEvent(ev);
+			} else if (cmd == "game") {
+				uint32 timeout = arg.empty() ? 60000 : atoi(arg.c_str());
+				if (!_waitStart)
+					_waitStart = now;
+				if (!inGame && now - _waitStart < timeout)
+					return true;
+				_waitStart = 0;
+				if (!inGame)
+					warning("Test input: the arcade game didn't start");
 			} else if (cmd == "shot") {
 				Common::DumpFile out;
 				if (out.open(Common::FSNode(Common::Path(arg, Common::Path::kNativeSeparator))))
-					Image::writePNG(out, screen, runtime->getPalette());
+					Image::writePNG(out, screen, palette);
 				else
 					warning("Test input: can't write '%s'", arg.c_str());
 			} else if (cmd == "list") {
@@ -492,6 +516,9 @@ void MSPAMEngine::runGame(const Common::String &start) {
 		test.reset(new TestInputScript(Common::Path(ConfMan.get("mspam_test_input"), Common::Path::kNativeSeparator)));
 
 	runtime.start(start);
+	// Test hook: the arcade game of a planet straight away
+	if (ConfMan.hasKey("mspam_busgame"))
+		runtime.startBusGame("busgame1 -p " + ConfMan.get("mspam_busgame"));
 	while (!shouldQuit() && !runtime.quitRequested()) {
 		Common::Event event;
 		while (g_system->getEventManager()->pollEvent(event)) {
@@ -521,9 +548,18 @@ void MSPAMEngine::runGame(const Common::String &start) {
 		}
 
 		uint32 now = g_system->getMillis();
+		Common::String planet;
+		bool lizIntro;
+		if (runtime.takeBusGame(planet, lizIntro)) {
+			int result = playBusGame(planet, lizIntro, &runtime, test.get());
+			if (result < 0)
+				break;
+			runtime.busGameEnded(result);
+			continue;
+		}
 		runtime.update(now);
 		runtime.render(_screen);
-		if (test && !test->update(&runtime, _screen, now))
+		if (test && !test->update(&runtime, _screen, runtime.getPalette(), false, now))
 			break;
 		g_system->getPaletteManager()->setPalette(runtime.getPalette(), 0, 256);
 		g_system->copyRectToScreen(_screen.getPixels(), _screen.pitch, 0, 0, kScreenWidth, kScreenHeight);
@@ -531,6 +567,46 @@ void MSPAMEngine::runGame(const Common::String &start) {
 		g_system->delayMillis(10);
 	}
 	runtime.logStatistics();
+}
+
+// The arcade game in place of the title's window; -1 when the engine quits
+int MSPAMEngine::playBusGame(const Common::String &planet, bool lizIntro, Runtime *runtime, TestInputScript *test) {
+	BusGame game(_mixer, planet, lizIntro, false);
+	if (!game.load())
+		return game.getResult();
+	while (!game.isDone()) {
+		if (shouldQuit())
+			return -1;
+		Common::Event event;
+		while (g_system->getEventManager()->pollEvent(event)) {
+			switch (event.type) {
+			case Common::EVENT_KEYDOWN:
+				game.keyDown(event.kbd.keycode);
+				if (event.kbd.ascii)
+					game.charTyped(event.kbd.ascii);
+				break;
+			case Common::EVENT_KEYUP:
+				game.keyUp(event.kbd.keycode);
+				break;
+			case Common::EVENT_LBUTTONDOWN:
+				game.mouseDown(event.mouse.x, event.mouse.y);
+				break;
+			default:
+				break;
+			}
+		}
+		uint32 now = g_system->getMillis();
+		game.update(now);
+		game.render(_screen);
+		if (test && !test->update(runtime, _screen, game.getPalette(), true, now))
+			return -1;
+		g_system->getPaletteManager()->setPalette(game.getPalette(), 0, 256);
+		g_system->copyRectToScreen(_screen.getPixels(), _screen.pitch, 0, 0, kScreenWidth, kScreenHeight);
+		g_system->updateScreen();
+		g_system->delayMillis(10);
+	}
+	debugC(1, kDebugActions, "BUSGAME %s ends: result %d", planet.c_str(), game.getResult());
+	return game.getResult();
 }
 
 Common::Error MSPAMEngine::run() {
