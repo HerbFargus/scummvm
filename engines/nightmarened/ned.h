@@ -183,6 +183,10 @@ public:
 	void setActionCallback(NedActionCallback cb, void *user) { _onAction = cb; _onActionUser = user; }
 	/** 0x44e970: lets the idle fidget change after each play */
 	void enableFidgetRotation() { _fidgetRotate = true; }
+	/** 0x44f950: state 10's slot speeds raised by percent (scene 5, on a tub) */
+	void setRunSpeeds(int percent);
+	/** 0x44f920: state 10's default slot speeds */
+	void resetRunSpeeds();
 	/** 0x44eaa0: state 0's first start slot */
 	void setUseSlot(int16 slot);
 	/** 0x44f6b0 / 0x44f680: the region Ned last touched */
