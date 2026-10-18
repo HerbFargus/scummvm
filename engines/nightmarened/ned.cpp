@@ -1790,6 +1790,8 @@ int Ned::tick(CollisionWorld &world, uint32 input, int &facing, Common::Point &p
 	if (!s.sprite)
 		return -1;
 	s.sprite->setVisibility(_enabled);
+	debugC(4, kDebugGraphics, "Ned: input %x state %d slot %d step %d at %d,%d facing %d", input, _state, id, s.step,
+		pos.x, pos.y, _facing);
 	return result;
 }
 
